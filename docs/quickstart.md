@@ -1,7 +1,7 @@
 # Quickstart
 
-You need Python 3.11+, a POSIX shell, Git, `howhard` 2.1+, and a current Codex, Claude Code,
-or Antigravity client with native plugin support.
+You need Python 3.11+, a POSIX shell, Git, `howhard` 2.1.0+ and a current Codex,
+Claude Code or Antigravity client with native plugin support.
 
 ## Install the backend
 
@@ -14,13 +14,18 @@ python -m pip install "agroute==0.1.0" "howhard>=2.1.0"
 agroute --version
 ```
 
-Expect `agroute 0.1.0`. Keep this environment active and start your coding agent from the
-same shell so it can find `agroute` and `howhard`.
+Expect `agroute 0.1.0`. The Python package is available on
+[PyPI](https://pypi.org/project/agroute/0.1.0/).
+
+Keep this environment active and start your coding agent from the same shell so it
+can find `agroute` and `howhard`. If an existing GUI session cannot find it, configure
+the absolute path to your project's `.venv-agroute/bin/agroute`; reopening a GUI does
+not activate the shell's environment.
 
 ## Install the native plugin
 
-The Python package supplies the backend. The native plugin supplies the `agroute` skill.
-Install the plugin through your agent's own plugin manager.
+The Python package supplies the backend. The native plugin supplies the `agroute`
+routing skill. Install the plugin through your agent's own plugin manager.
 
 Codex:
 
@@ -43,40 +48,109 @@ agy plugin install https://github.com/xu-hao/agroute
 agy plugin list
 ```
 
-See [native installation and lifecycle](skills.md) for scope and update commands.
+These commands use the user's plugin environment. Claude Code also supports explicit
+`--scope project` or `--scope local` for both marketplace addition and installation.
+Reopen the agent if the skill is not visible. Backend and plugin updates are separate;
+see [native installation and lifecycle](skills.md) for update and scope commands.
 
-## Route a task within live usage limits
+## Use agroute on a real task
 
-1. **Inspect or update native quota state**:
+Give the coordinating agent an authorized task and ask it to use `agroute` and `howhard`
+before starting a worker. For example:
 
-   ```sh
-   agroute usage show --json
-   agroute usage ingest --agent codex --file /tmp/codex-status.jsonl --json
-   ```
+> Use agroute and howhard for this task: repair transaction rollback and verify its
+> failure boundary. Inspect or refresh live agent quota state, emit eligible
+> provider-qualified candidates for this host, obtain an independent baseline and
+> consult memory in howhard, resolve the execution plan, execute the work, record the
+> actual outcome and measured usage under a stable execution ID, then update memory.
+> Report exhausted quotas or unsupported controls.
 
-2. **Emit filtered `howhard` candidates for the current host**:
+Explicit skill invocation is `$agroute` or `/skills` in Codex, `/agroute:agroute` in
+Claude Code, and `/agroute` in Antigravity. Codex can also activate the skill when the
+task matches its description. Installing the plugin does not make every worker start
+run it automatically.
 
-   ```sh
-   agroute candidates --host agy --output /tmp/task-candidates.json --json
-   ```
+For persistent use across tasks, copy this {ref}`coordinating-agent instruction <require-agroute-before-delegation>`
+into your project's `AGENTS.md` or `CLAUDE.md`:
 
-   `--output` writes the 1–32 cell JSON array expected by `howhard` (`<agent>/<model>` and
-   `<effort>`). When `target == host`, `agroute` uses `native_candidates` supported by the
-   host's native subagent tool; when `target != host`, `agroute` uses `cli_candidates`
-   supported by the target's non-interactive CLI.
+```text
+Before delegating an authorized task to a worker, use the installed agroute and howhard
+skills:
+1. Inspect or refresh live agent quota state with `agroute usage`.
+2. Emit eligible provider-qualified candidates for this host with
+   `agroute candidates --host <codex|claude|agy> --output /tmp/TASK-candidates.json --json`.
+3. Select a route with `howhard` (`context`/`retrieve`/`decide` with an independent
+   stateless baseline forecast, or `pick`), then resolve the execution plan with
+   `agroute plan --host <codex|claude|agy> --decision /tmp/TASK-decision.json --json`.
+4. Honor `needs_review`. Execute native plans (`target_agent == host_agent`) with the
+   host's native subagent tool and cross-agent plans (`target_agent != host_agent`) with
+   the returned non-interactive CLI command.
+5. Record the actual outcome and measured usage in `howhard` following the plan's
+   `feedback` block (`matched_receipt` or `raw_native`), then update `howhard` memory.
+```
 
-3. **Select a cell with `howhard` and resolve the execution plan**:
+The agent updates or inspects live quota state (`agroute usage`), writes the filtered
+1–32 cell candidate list (`agroute candidates --host HOST --output FILE`), calls
+`howhard` to choose a provider-qualified `<agent>/<model>` and `effort`, and resolves
+the decision into an `agroute-execution-plan-v1` payload (`agroute plan --host HOST --decision FILE`):
 
-   ```sh
-   howhard context task --text-file /tmp/task.txt --candidates /tmp/task-candidates.json --llm off --json
-   # After independent baseline forecast, optional retrieval, and decide:
-   agroute plan --host agy --decision /tmp/task-decision.json --prompt-file /tmp/task.txt --json
-   ```
+```sh
+agroute usage show --json
+agroute candidates --host agy --output /tmp/task-candidates.json --json
+howhard context task --text-file /tmp/task.txt --candidates /tmp/task-candidates.json --llm off --json > /tmp/task-context.json
+# After independent baseline forecast, optional retrieval, and decide:
+agroute plan --host agy --decision /tmp/task-decision.json --prompt-file /tmp/task.txt --json
+```
 
-4. **Execute and record feedback**:
+When `target_agent == host_agent`, `agroute` selects from `native_candidates` and emits
+`execution_mode = "native"` with the host's native delegation tool (`invoke_subagent`
+in Antigravity, `Agent` in Claude Code, or `spawn_agent` in Codex). When
+`target_agent != host_agent`, `agroute` selects from `cli_candidates` and emits
+`execution_mode = "cli"` with the target's non-interactive CLI command (`codex exec`,
+`claude -p`, or `agy -p`). Honor `needs_review` before executing or accepting
+silent-risk work.
 
-   - If `execution_mode == "native"`, invoke the host's native delegation tool
-     (`invoke_subagent`, `Agent`, or `spawn_agent`) with `invocation.parameters`.
-   - If `execution_mode == "cli"`, execute `invocation.argv` and capture the output stream.
-   - Follow `feedback` in the returned plan to record the outcome via `howhard observe`,
-     attach measured usage via `howhard usage collect` / `attach`, and update `howhard` memory.
+## Record the outcome and learn
+
+After actual execution, follow the `feedback` block in the resolved plan to record the
+outcome in `howhard`. When `feedback.mode == "matched_receipt"`, replace `DECISION_ID`
+with the returned receipt, `EXECUTION_ID` with a stable ID for that invocation, and
+`OUTCOME` with `clean`, `loud` or `silent`:
+
+```sh
+howhard observe DECISION_ID OUTCOME --id EXECUTION_ID --json
+howhard evidence EXECUTION_ID --raw --json
+howhard memory learn-context EXECUTION_ID --json
+```
+
+When `feedback.mode == "raw_native"` (for example, when `host_affinity_epsilon`
+selected an eligible native host route within `epsilon` of `howhard`'s cross-agent
+choice), record raw native feedback with `howhard observe ... --native` using the
+command template in `feedback.command_template` without attaching the unexecuted
+cross-agent receipt. See {ref}`execution plan resolution <execution-plan-resolution>`
+for the full protocol.
+
+Apply the memory writer response with the exact revision and event key returned by
+`howhard memory learn-context`:
+
+```sh
+howhard memory learn EXECUTION_ID --file WRITER_RESPONSE.json --expected-revision N --event-key EVENT_KEY --json
+```
+
+For cross-agent CLI runs that capture an owned JSONL stream (`codex-exec-v1` or
+`claude-sdk-v1`), use `howhard usage collect` and `howhard usage attach` to attach
+measured token usage to the recorded execution.
+
+## Inspect project state
+
+```sh
+agroute paths --json
+agroute usage show --json
+agroute candidates --host agy --json
+agroute inventory --host agy --name router
+```
+
+Git worktrees share repository state in `<git-common-dir>/agroute` while each task
+captures its current checkout. Plain folders use local `.agroute`. `paths` shows the
+resolved locations; the {ref}`worktree state contract <worktree-state-contract>`
+explains project identity checks and explicit `--state-dir` selection.
