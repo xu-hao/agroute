@@ -6,9 +6,12 @@ Run from the current project directory with `agroute` and `howhard` installed:
 
 ```sh
 agroute paths --json
+agroute models --json
 agroute candidates --host agy --output /tmp/task-candidates.json --json
 ```
 
+Unless explicitly overridden in `agroute.toml`, `agroute` automatically discovers the live
+available models and reasoning efforts from the installed `codex`, `claude`, and `agy` clients.
 `--output` writes the raw 1–32-element candidate JSON array expected by `howhard`'s
 `--candidates` flag, while stdout prints the full `agroute-candidates-v1` envelope including
 any `excluded` agents or model tiers and their quota exclusion reasons.

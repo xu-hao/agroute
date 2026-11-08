@@ -8,6 +8,7 @@ import sys
 from . import __version__
 from .files import atomic_write
 from .router import Router
+from . import tui
 from .validation import AgRouteError
 
 
@@ -105,6 +106,36 @@ def _build_parser():
     p_plan.add_argument("--include-agents", default=None, help="Comma-separated subset of agents to consider")
     p_plan.add_argument("--output", default=None, help="Write resolved execution plan JSON to this file")
     _add_common_flags(p_plan)
+
+    # models
+    p_models = subparsers.add_parser(
+        "models", help="Discover or inspect available native and CLI model candidates per agent"
+    )
+    p_models.add_argument("--refresh", action="store_true", help="Force re-probing live CLI model catalogs")
+    _add_common_flags(p_models)
+
+    # list
+    p_list = subparsers.add_parser("list", help="Show active and observed model routes")
+    p_list.add_argument("--repo", default=None, help="Filter by repository name or path")
+    p_list.add_argument("--agent", default=None, help="Filter by target agent (codex|claude|agy)")
+    p_list.add_argument("--state", default=None, help="Filter by state (routed|review|clean|loud|silent)")
+    p_list.add_argument("--limit", type=int, default=50, help="Maximum routes to display (default: 50)")
+    p_list.add_argument("--current-repo", action="store_true", help="Inspect only the current repository")
+    _add_common_flags(p_list)
+
+    # show
+    p_show = subparsers.add_parser("show", help="Show one model route or decision in detail")
+    p_show.add_argument("identifier", help="Route ID, decision ID, or execution ID (or unique prefix)")
+    p_show.add_argument("--current-repo", action="store_true", help="Inspect only the current repository")
+    _add_common_flags(p_show)
+
+    # tui
+    p_tui = subparsers.add_parser("tui", help="Open the realtime model-route terminal view")
+    p_tui.add_argument("--refresh-interval", type=float, default=1.0, help="Refresh interval in seconds (default: 1.0)")
+    p_tui.add_argument("--repo", default=None, help="Initial repository filter")
+    p_tui.add_argument("--agent", default=None, help="Initial target agent filter (codex|claude|agy)")
+    p_tui.add_argument("--current-repo", action="store_true", help="Inspect only the current repository")
+    _add_common_flags(p_tui)
 
     return parser
 
@@ -239,6 +270,63 @@ def main(argv=None):
                 atomic_write(args.output, json.dumps(plan_obj, indent=2) + "\n")
             _emit(plan_obj, as_json=True)
             return 0
+
+        if args.command == "models":
+            _emit(router.models(refresh=args.refresh), as_json=True)
+            return 0
+
+        if args.command == "list":
+            res = router.list_routes(
+                all_repos=not args.current_repo,
+                repo=args.repo,
+                agent=args.agent,
+                state=args.state,
+                limit=args.limit,
+                now=args.now,
+            )
+            if args.json:
+                _emit(res, as_json=True)
+            else:
+                routes = res["routes"]
+                if not routes:
+                    _emit("no model routes recorded", as_json=False)
+                else:
+                    lines = [
+                        f"{'STATE':<7} {'MODE':<6} {'REPO':<12} {'AGENT':<11} {'MODEL':<22} {'EFFORT':<7} {'ROUTE':<15} LABEL"
+                    ]
+                    for r in routes:
+                        repo_lbl = tui._repository_label(r["repository"])[:12]
+                        ag_lbl = tui._agent_label(r)[:11]
+                        lines.append(
+                            f"{r['status']:<7} {r['execution_mode']:<6} {repo_lbl:<12} {ag_lbl:<11} "
+                            f"{r['model'][:22]:<22} {r['effort'][:7]:<7} {r['route_id']:<15} {r['label'][:48]}"
+                        )
+                    _emit("\n".join(lines), as_json=False)
+            return 0
+
+        if args.command == "show":
+            route = router.show_route(
+                args.identifier,
+                all_repos=not args.current_repo,
+                now=args.now,
+            )
+            if args.json:
+                _emit(route, as_json=True)
+            else:
+                _emit(tui._modal_detail(route), as_json=False)
+            return 0
+
+        if args.command == "tui":
+            return tui.run(
+                lambda: Router(
+                    args.config,
+                    state_directory=args.state_dir,
+                    include_user_config=not args.no_user_config,
+                ).snapshot(all_repos=not args.current_repo, now=args.now),
+                refresh_interval=args.refresh_interval,
+                initial_repository_filter=args.repo,
+                initial_agent_filter=args.agent,
+            )
 
     except AgRouteError as exc:
         print(f"agroute: error: {exc}", file=sys.stderr)

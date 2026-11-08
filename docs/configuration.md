@@ -10,6 +10,14 @@
 Unknown keys, out-of-range percentages, negative `host_affinity_epsilon`, bare models containing
 `/` or `:`, and `model_default` effort strings are refused before any state is modified.
 
+## Dynamic model discovery
+
+Packaged defaults in `agroute/data/default_config.toml` set `native_candidates = []` and
+`cli_candidates = []` for every agent. `agroute` discovers each agent's available models and
+supported reasoning efforts dynamically at runtime from its local installation (`agroute models`),
+so configuration files do not need static model lists as providers release new models and
+retire older ones.
+
 ## Example `agroute.toml`
 
 ```toml
@@ -26,21 +34,6 @@ max_tier_used_pct = 95.0
 host_reserve_pct = 5.0
 usage_probe_cmd = []
 
-[[agents.agy.native_candidates]]
-model = "pro"
-effort = "standard"
-tier = "pro"
-
-[[agents.agy.native_candidates]]
-model = "flash"
-effort = "standard"
-tier = "flash"
-
-[[agents.agy.cli_candidates]]
-model = "gemini-2.5-pro"
-effort = "high"
-tier = "pro"
-
 [agents.codex]
 enabled = true
 max_session_used_pct = 90.0
@@ -49,18 +42,6 @@ max_tier_used_pct = 95.0
 host_reserve_pct = 0.0
 usage_probe_cmd = []
 
-[[agents.codex.native_candidates]]
-model = "gpt-5.4"
-effort = "high"
-
-[[agents.codex.cli_candidates]]
-model = "gpt-5.4"
-effort = "high"
-
-[[agents.codex.cli_candidates]]
-model = "gpt-5.4"
-effort = "medium"
-
 [agents.claude]
 enabled = true
 max_session_used_pct = 90.0
@@ -68,21 +49,6 @@ max_weekly_used_pct = 95.0
 max_tier_used_pct = 95.0
 host_reserve_pct = 0.0
 usage_probe_cmd = []
-
-[[agents.claude.native_candidates]]
-model = "claude-sonnet-4-6"
-effort = "high"
-tier = "sonnet"
-
-[[agents.claude.cli_candidates]]
-model = "claude-opus-4-6"
-effort = "high"
-tier = "opus"
-
-[[agents.claude.cli_candidates]]
-model = "claude-sonnet-4-6"
-effort = "high"
-tier = "sonnet"
 ```
 
 (howhard-inventories)=

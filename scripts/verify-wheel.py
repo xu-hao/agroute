@@ -44,10 +44,68 @@ with tempfile.TemporaryDirectory(prefix="agroute-wheel-") as directory:
     environment.pop("PYTHONPATH", None)
     environment.pop("AGROUTE_STATE_DIR", None)
     environment.pop("AGROUTE_USER_CONFIG", None)
-    subprocess.run([sys.executable, "-m", "venv", str(root / "venv")], check=True)
+    codex_home = root / "codex-home"
+    codex_home.mkdir()
+    (codex_home / "models_cache.json").write_text(
+        json.dumps(
+            {
+                "models": [
+                    {
+                        "slug": "gpt-5.4",
+                        "visibility": "list",
+                        "priority": 1,
+                        "default_reasoning_level": "medium",
+                        "supported_reasoning_levels": [{"effort": "medium"}, {"effort": "high"}],
+                    }
+                ]
+            }
+        )
+    )
+    claude_home = root / "claude-home"
+    (claude_home / "cache" / "model-catalog").mkdir(parents=True)
+    (claude_home / "cache" / "model-catalog" / "catalog.json").write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "catalog": {
+                    "config": {
+                        "models": [
+                            {
+                                "id": "claude-sonnet-4-6",
+                                "short_name": "Sonnet",
+                                "section": "main",
+                                "quick_select": True,
+                                "runtime": {
+                                    "effort_levels": ["medium", "high"],
+                                    "default_effort": "medium",
+                                },
+                            }
+                        ]
+                    }
+                },
+            }
+        )
+    )
+    spool_dir = root / "agroute-spool"
+    spool_dir.mkdir()
+    (spool_dir / "agy_models_cache.json").write_text(
+        json.dumps(
+            {
+                "format": "agroute-agy-models-cache-v1",
+                "fetched_at": 9999999999.0,
+                "candidates": [
+                    {"model": "gemini-2.5-pro", "effort": "high", "tier": "pro"},
+                ],
+            }
+        )
+    )
+    environment["CODEX_HOME"] = str(codex_home)
+    environment["CLAUDE_CONFIG_DIR"] = str(claude_home)
+    environment["AGROUTE_SPOOL_DIR"] = str(spool_dir)
+    subprocess.run([sys.executable, "-m", "venv", "--system-site-packages", str(root / "venv")], check=True)
     python = root / "venv/bin/python"
     subprocess.run(
-        [str(python), "-m", "pip", "install", "--quiet", str(wheel.resolve())],
+        [str(python), "-m", "pip", "install", "--quiet", "--no-deps", str(wheel.resolve())],
         cwd=root,
         env=environment,
         check=True,
@@ -207,5 +265,24 @@ with tempfile.TemporaryDirectory(prefix="agroute-wheel-") as directory:
     )
     assert plan_cli["execution_mode"] == "cli"
     assert plan_cli["invocation"]["argv"][:3] == ["claude", "-p", "--verbose"]
+
+    listed = json.loads(
+        subprocess.check_output(
+            [str(command), "list", "--no-user-config", "--json"],
+            cwd=root,
+            env=environment,
+            text=True,
+        )
+    )
+    assert len(listed["routes"]) == 2
+    shown = json.loads(
+        subprocess.check_output(
+            [str(command), "show", plan_cli["route_id"], "--no-user-config", "--json"],
+            cwd=root,
+            env=environment,
+            text=True,
+        )
+    )
+    assert shown["route_id"] == plan_cli["route_id"]
 
 print(f"Verified agroute {expected} source distribution and clean installed wheel")

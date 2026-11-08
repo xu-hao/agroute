@@ -98,15 +98,27 @@ emission, execution-plan resolution, feedback and memory learning. If all candid
 routes are exhausted or a required execution control is unavailable, `agroute` refuses
 selection explicitly.
 
-Inspect local state, effective quota windows and eligible candidate routes with:
+Inspect local state, discovered models, effective quota windows, eligible candidate
+routes, and realtime routing decisions with:
 
 ```sh
 agroute paths --json
+agroute models --json
 agroute usage show --json
 agroute candidates --host agy --json
+agroute list
+agroute show <id>
+agroute tui
 ```
 
+`agroute` ships with no hardcoded model list in its packaged defaults: unless
+`native_candidates` or `cli_candidates` are explicitly pinned in configuration,
+`agroute` automatically discovers the live available models and supported reasoning
+efforts from the locally installed agents (`~/.codex/models_cache.json` for Codex,
+`~/.claude/cache/model-catalog/` for Claude Code, and `agy models` for Antigravity).
+
 The [routing and storage contracts](docs/reference.md) and
-[configuration guide](docs/configuration.md) describe the CLI/API, native versus CLI
-candidate surfaces, `host_affinity_epsilon`, and `[inventories]` generation for
-`howhard.toml`. Contributors use [isolated worktrees and the documentation-only exemption](docs/contributing.md).
+[configuration guide](docs/configuration.md) describe the CLI/API, live model discovery,
+native versus CLI candidate surfaces, `host_affinity_epsilon`, `[inventories]`
+generation for `howhard.toml`, and the realtime model-route TUI. Contributors use
+[isolated worktrees and the documentation-only exemption](docs/contributing.md).
