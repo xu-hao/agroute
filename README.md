@@ -1,30 +1,30 @@
 # agroute
 
-*Route delegated agent tasks across local coding agents within live usage limits.*
+*Which agent should run this task within your live usage limits?*
 
-`agroute` is a configurable, **plan-only** local task router for coding agents (`codex`,
-`claude`, and `agy`). Given a host agent and native quota/rate-limit state, it filters
-available `(agent, model, effort)` candidate routes, emits a [`howhard` 2.1+](https://github.com/xu-hao/howhard)
-candidate inventory with provider-qualified model identities (`<agent>/<model>`), and
-resolves a `howhard` decision into a deterministic execution plan:
+[Read the documentation](https://agroute.readthedocs.io/en/latest/).
 
-- **Native host delegation** (`target_agent == host_agent`): emits a structured native
-  subagent tool directive for the current host (`invoke_subagent` in Antigravity,
-  `Agent` in Claude Code, or `spawn_agent` in Codex).
-- **Cross-agent CLI execution** (`target_agent != host_agent`): emits a non-interactive
-  CLI execution plan (`codex exec --json`, `claude -p --verbose --output-format stream-json`,
-  or `agy -p --output-format stream-json`) with exact model, effort, and output-capture
-  adapter metadata.
+`agroute` routes delegated coding-agent tasks across Codex (`codex`), Claude Code
+(`claude`), and Antigravity (`agy`) within live subscription quota and rate-limit
+windows. It filters available `(agent, model, effort)` candidate routes, emits a
+[`howhard` 2.1+](https://github.com/xu-hao/howhard) candidate inventory with
+provider-qualified model identities (`<agent>/<model>`), and resolves a `howhard`
+decision into a deterministic execution plan.
 
-`agroute` never spawns worker processes itself. Model/effort selection, outcome observation,
-portable execution accounting, and writable semantic memory remain in `howhard`.
+When the selected target agent matches the current host agent, `agroute` emits a
+native delegation tool directive (`invoke_subagent`, `Agent`, or `spawn_agent`).
+When the target agent differs from the host, `agroute` emits a non-interactive CLI
+execution plan (`codex exec`, `claude -p`, or `agy -p`). `agroute` never spawns
+worker processes itself; selection, outcome observation, execution accounting, and
+writable semantic memory remain in `howhard`.
 
 ## Quickstart
 
-You need Python 3.11+, a POSIX shell, Git, [`howhard` 2.1+](https://pypi.org/project/howhard/2.1.0/),
-and a current Codex, Claude Code, or Antigravity client with native plugin support.
+You need Python 3.11+, a POSIX shell, Git, [`howhard` 2.1.0+](https://pypi.org/project/howhard/2.1.0/)
+and a current Codex, Claude Code or Antigravity client with native plugin support.
 
-Install `agroute` and `howhard` in your project environment:
+Install the Python backend from [PyPI](https://pypi.org/project/agroute/0.1.0/) in your
+project directory:
 
 ```sh
 python3 -m venv .venv-agroute
@@ -33,8 +33,9 @@ python -m pip install "agroute==0.1.0" "howhard>=2.1.0"
 agroute --version
 ```
 
-Expect `agroute 0.1.0`. Keep the environment active and start your coding agent from the
-same shell so it can find `agroute` and `howhard`.
+Expect `agroute 0.1.0`. Keep the environment active and start your agent from the same
+shell so it can find `agroute` and `howhard`. An existing GUI session may need the
+absolute path to `.venv-agroute/bin/agroute` in your project.
 
 Install the native plugin for your host:
 
@@ -56,40 +57,38 @@ agy plugin install https://github.com/xu-hao/agroute
 agy plugin list
 ```
 
-Invoke the skill explicitly with `$agroute` or `/skills` in Codex, `/agroute:agroute` in
-Claude Code, or `/agroute` in Antigravity.
+The plugin supplies the `agroute` routing skill. Backend and plugin updates are
+separate; the [native installation guide](docs/skills.md) covers scopes and lifecycle
+commands.
 
-## Core workflow
+Ask your coordinating agent to use `agroute` and `howhard` on a real, authorized task
+before starting a worker:
 
-1. **Inspect or update native quota state**:
+> Use agroute and howhard to choose the target agent, model and reasoning effort for
+> this task within live usage limits. Inspect or refresh quota state, emit eligible
+> candidates, obtain an independent baseline and consult memory in howhard, resolve
+> the execution plan, execute with the host's native delegation tool or cross-agent
+> CLI, then record the actual outcome and measured usage and update memory.
 
-   ```sh
-   agroute usage show --json
-   agroute usage ingest --agent codex --file /tmp/codex-status.jsonl --json
-   agroute usage set --agent claude --session-used-pct 92 --session-reset-at 2026-11-08T21:00:00Z --json
-   ```
+Invoke the skill explicitly with `$agroute` or `/skills` in Codex,
+`/agroute:agroute` in Claude Code, or `/agroute` in Antigravity. To require it before
+delegation, add the [coordinating-agent instruction](docs/skills.md#require-agroute-before-delegation)
+to your project instructions. Plugin installation alone does not enforce worker launches.
 
-2. **Emit filtered `howhard` candidates for the current host**:
+The [complete quickstart](docs/quickstart.md) walks through quota inspection, candidate
+emission, execution-plan resolution, feedback and memory learning. If all candidate
+routes are exhausted or a required execution control is unavailable, `agroute` refuses
+selection explicitly.
 
-   ```sh
-   agroute candidates --host agy --output /tmp/task-candidates.json --json
-   ```
+Inspect local state, effective quota windows and eligible candidate routes with:
 
-3. **Select a cell with `howhard`** (calling-agent `context`/`retrieve`/`decide` or `pick`)
-   and **resolve the decision into an execution plan**:
+```sh
+agroute paths --json
+agroute usage show --json
+agroute candidates --host agy --json
+```
 
-   ```sh
-   agroute plan --host agy --decision /tmp/task-decision.json --prompt-file /tmp/task.txt --json
-   ```
-
-4. **Execute the returned plan** (native tool call when `target_agent == host_agent`, or
-   CLI command when `target_agent != host_agent`) and **record the outcome in `howhard`**:
-
-   ```sh
-   howhard observe DECISION_ID clean --id EXECUTION_ID --json
-   ```
-
-See the [quickstart](docs/quickstart.md), [documentation index](docs/index.md),
-[routing and storage contracts](docs/reference.md), [configuration guide](docs/configuration.md),
-[skill guide](docs/skills.md), and [changelog](CHANGELOG.md). Contributors use
-[AGCoord and isolated worktrees](docs/contributing.md).
+The [routing and storage contracts](docs/reference.md) and
+[configuration guide](docs/configuration.md) describe the CLI/API, native versus CLI
+candidate surfaces, `host_affinity_epsilon`, and `[inventories]` generation for
+`howhard.toml`. Contributors use [isolated worktrees and the documentation-only exemption](docs/contributing.md).
