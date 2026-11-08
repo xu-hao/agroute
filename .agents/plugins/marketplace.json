@@ -1,0 +1,11 @@
+{
+  "name": "agroute",
+  "plugins": [
+    {
+      "name": "agroute",
+      "source": {"source": "local", "path": "./"},
+      "policy": {"installation": "AVAILABLE", "authentication": "ON_INSTALL"},
+      "category": "Productivity"
+    }
+  ]
+}
