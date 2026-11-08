@@ -71,9 +71,27 @@ before starting a worker:
 > CLI, then record the actual outcome and measured usage and update memory.
 
 Invoke the skill explicitly with `$agroute` or `/skills` in Codex,
-`/agroute:agroute` in Claude Code, or `/agroute` in Antigravity. To require it before
-delegation, add the [coordinating-agent instruction](docs/skills.md#require-agroute-before-delegation)
-to your project instructions. Plugin installation alone does not enforce worker launches.
+`/agroute:agroute` in Claude Code, or `/agroute` in Antigravity.
+
+To require `agroute` and `howhard` before worker delegation across sessions, paste this
+into your repository's `AGENTS.md` or `CLAUDE.md` (see
+[requiring agroute before delegation](docs/skills.md#require-agroute-before-delegation)):
+
+```text
+Before delegating an authorized task to a worker, use the installed agroute and howhard
+skills:
+1. Inspect or refresh live agent quota state with `agroute usage`.
+2. Emit eligible provider-qualified candidates for this host with
+   `agroute candidates --host <codex|claude|agy> --output /tmp/TASK-candidates.json --json`.
+3. Select a route with `howhard` (`context`/`retrieve`/`decide` with an independent
+   stateless baseline forecast, or `pick`), then resolve the execution plan with
+   `agroute plan --host <codex|claude|agy> --decision /tmp/TASK-decision.json --json`.
+4. Honor `needs_review`. Execute native plans (`target_agent == host_agent`) with the
+   host's native subagent tool and cross-agent plans (`target_agent != host_agent`) with
+   the returned non-interactive CLI command.
+5. Record the actual outcome and measured usage in `howhard` following the plan's
+   `feedback` block (`matched_receipt` or `raw_native`), then update `howhard` memory.
+```
 
 The [complete quickstart](docs/quickstart.md) walks through quota inspection, candidate
 emission, execution-plan resolution, feedback and memory learning. If all candidate
