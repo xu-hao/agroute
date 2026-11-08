@@ -1,0 +1,513 @@
+"""Lightweight native quota and rate-limit tracking across Codex, Claude Code, and Antigravity."""
+
+from contextlib import contextmanager
+from copy import deepcopy
+from datetime import datetime, timezone
+import fcntl
+import json
+import re
+import subprocess
+
+from .files import atomic_write
+from .state import check, claim, identity_locked
+from .validation import (
+    AGENTS,
+    AgRouteError,
+    agent_id,
+    boolean,
+    format_timestamp,
+    keys,
+     percentage,
+    parse_timestamp,
+    table,
+    text,
+)
+
+USAGE_STORE_FORMAT = "agroute-usage-store-v1"
+
+
+def _empty_window():
+    return {"used_pct": None, "reset_at": None}
+
+
+def _empty_agent_state():
+    return {
+        "session_5h": _empty_window(),
+        "weekly_7d": _empty_window(),
+        "rate_limited": False,
+        "cooldown_until": None,
+        "tiers": {},
+        "updated_at": None,
+        "source": None,
+    }
+
+
+def _empty_store():
+    return {
+        "format": USAGE_STORE_FORMAT,
+        "agents": {name: _empty_agent_state() for name in AGENTS},
+    }
+
+
+def _now_utc(now=None):
+    if now is None:
+        return datetime.now(timezone.utc)
+    return parse_timestamp(now, "now")
+
+
+def _validate_window(win, where):
+    table(win, where)
+    keys(win, ["used_pct", "reset_at"], where=where)
+    used = win["used_pct"]
+    if used is not None:
+        used = percentage(used, f"{where}.used_pct")
+    reset_at = win["reset_at"]
+    if reset_at is not None:
+        reset_at = format_timestamp(parse_timestamp(reset_at, f"{where}.reset_at"))
+    return {"used_pct": used, "reset_at": reset_at}
+
+
+def _validate_store_payload(payload):
+    table(payload, "usage store")
+    keys(payload, ["format", "agents"], where="usage store")
+    if payload["format"] != USAGE_STORE_FORMAT:
+        raise AgRouteError(f"usage store: unsupported format {payload['format']!r}")
+    agents_obj = table(payload["agents"], "usage store.agents")
+    keys(agents_obj, AGENTS, where="usage store.agents")
+    normalized = {"format": USAGE_STORE_FORMAT, "agents": {}}
+    for name in AGENTS:
+        where = f"usage store.agents.{name}"
+        raw = table(agents_obj[name], where)
+        keys(
+            raw,
+            ["session_5h", "weekly_7d", "rate_limited", "cooldown_until", "tiers", "updated_at", "source"],
+            where=where,
+        )
+        s5 = _validate_window(raw["session_5h"], f"{where}.session_5h")
+        w7 = _validate_window(raw["weekly_7d"], f"{where}.weekly_7d")
+        rl = boolean(raw["rate_limited"], f"{where}.rate_limited")
+        cd = raw["cooldown_until"]
+        if cd is not None:
+            cd = format_timestamp(parse_timestamp(cd, f"{where}.cooldown_until"))
+        tiers_raw = table(raw["tiers"], f"{where}.tiers")
+        tiers = {}
+        for tier_name, tier_win in tiers_raw.items():
+            text(tier_name, f"{where}.tiers.{tier_name}", label=True, max_length=64)
+            tiers[tier_name] = _validate_window(tier_win, f"{where}.tiers.{tier_name}")
+        updated = raw["updated_at"]
+        if updated is not None:
+            updated = format_timestamp(parse_timestamp(updated, f"{where}.updated_at"))
+        src = raw["source"]
+        if src is not None:
+            src = text(src, f"{where}.source", max_length=64)
+        normalized["agents"][name] = {
+            "session_5h": s5,
+            "weekly_7d": w7,
+            "rate_limited": rl,
+            "cooldown_until": cd,
+            "tiers": tiers,
+            "updated_at": updated,
+            "source": src,
+        }
+    return normalized
+
+
+@contextmanager
+def _usage_locked(config):
+    with identity_locked(config):
+        config.state_root.mkdir(parents=True, exist_ok=True)
+        lock_path = config.state_root / "usage.lock"
+        with lock_path.open("a+b") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            try:
+                check(config)
+                yield
+            finally:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def read_store(config):
+    check(config)
+    path = config.state_root / "usage.json"
+    if not path.exists():
+        return _empty_store()
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeError) as exc:
+        raise AgRouteError(f"usage store: invalid JSON at {path}: {exc}") from exc
+    return _validate_store_payload(raw)
+
+
+def write_store(config, store):
+    validated = _validate_store_payload(store)
+    claim(config)
+    path = config.state_root / "usage.json"
+    atomic_write(path, json.dumps(validated, indent=2, sort_keys=True) + "\n")
+    return validated
+
+
+def effective_agent_state(agent_state, now_dt):
+    state = deepcopy(agent_state)
+    for win_key in ("session_5h", "weekly_7d"):
+        win = state[win_key]
+        if win["reset_at"] is not None and now_dt >= parse_timestamp(win["reset_at"]):
+            state[win_key] = _empty_window()
+    if state["cooldown_until"] is not None and now_dt >= parse_timestamp(state["cooldown_until"]):
+        state["cooldown_until"] = None
+        state["rate_limited"] = False
+    active_tiers = {}
+    for tier_name, tier_win in state["tiers"].items():
+        if tier_win["reset_at"] is not None and now_dt >= parse_timestamp(tier_win["reset_at"]):
+            continue
+        active_tiers[tier_name] = tier_win
+    state["tiers"] = active_tiers
+    return state
+
+
+def evaluate_agent_quota(agent_name, agent_cfg, effective_state, *, is_host=False):
+    """Return (eligible: bool, reason: str | None) for the agent as a whole."""
+    if not agent_cfg["enabled"]:
+        return False, "agent is disabled in configuration"
+    if effective_state["rate_limited"]:
+        until = effective_state["cooldown_until"]
+        suffix = f" until {until}" if until else ""
+        return False, f"agent is rate-limited{suffix}"
+    if effective_state["cooldown_until"] is not None:
+        return False, f"agent is in cooldown until {effective_state['cooldown_until']}"
+
+    reserve = agent_cfg["host_reserve_pct"] if is_host else 0.0
+    max_session = max(0.0, agent_cfg["max_session_used_pct"] - reserve)
+    max_weekly = max(0.0, agent_cfg["max_weekly_used_pct"] - reserve)
+
+    s_used = effective_state["session_5h"]["used_pct"]
+    if s_used is not None and s_used >= max_session:
+        return (
+            False,
+            f"session_5h used_pct ({s_used:.1f}%) >= effective limit ({max_session:.1f}%)",
+        )
+    w_used = effective_state["weekly_7d"]["used_pct"]
+    if w_used is not None and w_used >= max_weekly:
+        return (
+            False,
+            f"weekly_7d used_pct ({w_used:.1f}%) >= effective limit ({max_weekly:.1f}%)",
+        )
+    return True, None
+
+
+def evaluate_candidate_tier(agent_cfg, effective_state, candidate):
+    """Return (eligible: bool, reason: str | None) for a candidate's model/tier window."""
+    max_tier = agent_cfg["max_tier_used_pct"]
+    keys_to_check = [candidate["model"]]
+    if "tier" in candidate and candidate["tier"] not in keys_to_check:
+        keys_to_check.append(candidate["tier"])
+    for key in keys_to_check:
+        tier_win = effective_state["tiers"].get(key)
+        if tier_win is not None and tier_win["used_pct"] is not None:
+            if tier_win["used_pct"] >= max_tier:
+                return (
+                    False,
+                    f"tier '{key}' used_pct ({tier_win['used_pct']:.1f}%) >= max_tier_used_pct ({max_tier:.1f}%)",
+                )
+    return True, None
+
+
+def _extract_window_dict(obj, where):
+    table(obj, where)
+    used = obj.get("used_pct", obj.get("used_percent"))
+    if used is None and "remaining_pct" in obj and obj["remaining_pct"] is not None:
+        used = 100.0 - percentage(obj["remaining_pct"], f"{where}.remaining_pct")
+    elif used is None and "remaining_percent" in obj and obj["remaining_percent"] is not None:
+        used = 100.0 - percentage(obj["remaining_percent"], f"{where}.remaining_percent")
+    elif used is None and "utilization" in obj and obj["utilization"] is not None:
+        util = percentage(obj["utilization"], f"{where}.utilization")
+        used = util * 100.0 if util <= 1.0 and isinstance(obj["utilization"], float) and obj["utilization"] < 1.0 else util
+    elif used is not None:
+        used = percentage(used, f"{where}.used_pct")
+    reset_raw = obj.get("reset_at", obj.get("resets_at"))
+    reset_at = format_timestamp(parse_timestamp(reset_raw, f"{where}.reset_at")) if reset_raw is not None else None
+    return {"used_pct": used, "reset_at": reset_at}
+
+
+def _apply_rate_limits_dict(rl_obj, patch, where="rate_limits"):
+    table(rl_obj, where)
+    changed = False
+    for slot in ("primary", "secondary", "session_5h", "weekly_7d"):
+        if slot in rl_obj and isinstance(rl_obj[slot], dict):
+            sub = rl_obj[slot]
+            win = _extract_window_dict(sub, f"{where}.{slot}")
+            win_mins = sub.get("window_minutes")
+            if slot == "session_5h" or (slot == "primary" and (win_mins is None or win_mins <= 360)):
+                patch["session_5h"] = win
+                changed = True
+            elif slot == "weekly_7d" or slot == "secondary" or (win_mins is not None and win_mins > 360):
+                patch["weekly_7d"] = win
+                changed = True
+    if "rate_limited" in rl_obj and rl_obj["rate_limited"] is not None:
+        patch["rate_limited"] = boolean(rl_obj["rate_limited"], f"{where}.rate_limited")
+        changed = True
+    if "cooldown_until" in rl_obj and rl_obj["cooldown_until"] is not None:
+        patch["cooldown_until"] = format_timestamp(
+            parse_timestamp(rl_obj["cooldown_until"], f"{where}.cooldown_until")
+        )
+        changed = True
+    if "tiers" in rl_obj and isinstance(rl_obj["tiers"], dict):
+        tiers = patch.setdefault("tiers", {})
+        for tier_name, tier_obj in rl_obj["tiers"].items():
+            text(tier_name, f"{where}.tiers.{tier_name}", label=True, max_length=64)
+            tiers[tier_name] = _extract_window_dict(tier_obj, f"{where}.tiers.{tier_name}")
+            changed = True
+    return changed
+
+
+def _parse_json_events(raw_text, patch):
+    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+    if not lines:
+        return False
+    parsed_objects = []
+    try:
+        top = json.loads(raw_text)
+        if isinstance(top, dict):
+            parsed_objects = [top]
+        elif isinstance(top, list) and all(isinstance(item, dict) for item in top):
+            parsed_objects = top
+    except ValueError:
+        for line in lines:
+            if not line.startswith("{"):
+                return False
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                return False
+            if not isinstance(obj, dict):
+                return False
+            parsed_objects.append(obj)
+
+    changed = False
+    for obj in parsed_objects:
+        if _apply_rate_limits_dict(obj, patch, "usage object"):
+            changed = True
+        if "rate_limits" in obj and isinstance(obj["rate_limits"], dict):
+            if _apply_rate_limits_dict(obj["rate_limits"], patch, "rate_limits"):
+                changed = True
+        payload = obj.get("payload")
+        if isinstance(payload, dict):
+            if "rate_limits" in payload and isinstance(payload["rate_limits"], dict):
+                if _apply_rate_limits_dict(payload["rate_limits"], patch, "payload.rate_limits"):
+                    changed = True
+            info = payload.get("info")
+            if isinstance(info, dict) and isinstance(info.get("rate_limits"), dict):
+                if _apply_rate_limits_dict(info["rate_limits"], patch, "payload.info.rate_limits"):
+                    changed = True
+        if obj.get("type") == "rate_limit_event" or "rate_limit_info" in obj:
+            rli = obj.get("rate_limit_info", obj)
+            if isinstance(rli, dict):
+                status = rli.get("status")
+                resets_raw = rli.get("resets_at", rli.get("reset_at"))
+                reset_iso = (
+                    format_timestamp(parse_timestamp(resets_raw, "rate_limit_info.resets_at"))
+                    if resets_raw is not None
+                    else None
+                )
+                if status in ("rejected", "rate_limited", "exhausted") or rli.get("rate_limited") is True:
+                    patch["rate_limited"] = True
+                    if reset_iso is not None:
+                        patch["cooldown_until"] = reset_iso
+                    changed = True
+                if _apply_rate_limits_dict(rli, patch, "rate_limit_info"):
+                    changed = True
+                win_type = rli.get("rate_limit_type", rli.get("window"))
+                if win_type in ("five_hour", "session_5h", "5h"):
+                    win = _extract_window_dict(rli, "rate_limit_info")
+                    if win["used_pct"] is not None or win["reset_at"] is not None:
+                        patch["session_5h"] = win
+                        changed = True
+                elif win_type in ("seven_day", "weekly_7d", "7d", "weekly"):
+                    win = _extract_window_dict(rli, "rate_limit_info")
+                    if win["used_pct"] is not None or win["reset_at"] is not None:
+                        patch["weekly_7d"] = win
+                        changed = True
+    return changed
+
+
+_PCT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%\s*(used|remaining)?", re.IGNORECASE)
+_RESET_RE = re.compile(
+    r"resets?\s+(?:at\s+)?([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.+-]+Z?|\d{10}(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+_CLAUDE_LIMIT_RE = re.compile(r"Claude AI usage limit reached\|(\d+)", re.IGNORECASE)
+
+
+def _parse_text_usage(raw_text, patch):
+    changed = False
+    claude_match = _CLAUDE_LIMIT_RE.search(raw_text)
+    if claude_match:
+        epoch = int(claude_match.group(1))
+        iso = format_timestamp(parse_timestamp(epoch, "claude usage limit epoch"))
+        patch["rate_limited"] = True
+        patch["cooldown_until"] = iso
+        changed = True
+
+    for raw_line in raw_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        lower = line.lower()
+        reset_match = _RESET_RE.search(line)
+        reset_iso = (
+            format_timestamp(parse_timestamp(reset_match.group(1), "text reset_at"))
+            if reset_match
+            else None
+        )
+        if any(phrase in lower for phrase in ("rate limit reached", "quota exceeded", "usage limit reached")):
+            patch["rate_limited"] = True
+            if reset_iso is not None:
+                patch["cooldown_until"] = reset_iso
+            changed = True
+
+        pct_match = _PCT_RE.search(line)
+        if not pct_match:
+            continue
+        val = percentage(float(pct_match.group(1)), "text percentage")
+        direction = (pct_match.group(2) or "used").lower()
+        used_pct = 100.0 - val if direction == "remaining" else val
+        win = {"used_pct": used_pct, "reset_at": reset_iso}
+
+        # Check model tier lines first (e.g. "Current week (Opus): 80% used" or "tier pro: 75% used")
+        tier_matched = False
+        for tier_token in ("opus", "sonnet", "haiku", "flash_lite", "flash", "pro", "gpt-5.4", "gemini-2.5-pro"):
+            if re.search(rf"\b{re.escape(tier_token)}\b", lower):
+                if any(w in lower for w in ("session", "5h", "5-hour")) and tier_token not in (
+                    "opus",
+                    "sonnet",
+                    "haiku",
+                    "flash_lite",
+                    "flash",
+                    "pro",
+                ):
+                    break
+                tiers = patch.setdefault("tiers", {})
+                tiers[tier_token] = win
+                tier_matched = True
+                changed = True
+                break
+        if tier_matched:
+            continue
+
+        if any(tok in lower for tok in ("5h", "5-hour", "current session", "session_5h", "session limit", "primary")):
+            patch["session_5h"] = win
+            changed = True
+        elif any(tok in lower for tok in ("7d", "7-day", "weekly", "current week", "weekly_7d", "secondary")):
+            patch["weekly_7d"] = win
+            changed = True
+    return changed
+
+
+def parse_native_usage(agent, raw_text):
+    agent_id(agent, "agent")
+    if not isinstance(raw_text, str) or not raw_text.strip():
+        raise AgRouteError("usage ingest: input text is empty")
+    patch = {}
+    if not _parse_json_events(raw_text, patch):
+        _parse_text_usage(raw_text, patch)
+    else:
+        # Also allow hybrid streams where JSONL lines are accompanied by status text
+        _parse_text_usage(raw_text, patch)
+    if not patch:
+        raise AgRouteError(f"usage ingest: no recognizable native usage or rate-limit data found for '{agent}'")
+    return patch
+
+
+def apply_usage_patch(config, agent, patch, *, source="ingest", now=None):
+    agent_id(agent, "agent")
+    now_dt = _now_utc(now)
+    with _usage_locked(config):
+        store = read_store(config)
+        current = effective_agent_state(store["agents"][agent], now_dt)
+        if "session_5h" in patch:
+            s5 = patch["session_5h"]
+            if s5.get("used_pct") is not None:
+                current["session_5h"]["used_pct"] = percentage(s5["used_pct"], "session_5h.used_pct")
+            if s5.get("reset_at") is not None:
+                current["session_5h"]["reset_at"] = format_timestamp(
+                    parse_timestamp(s5["reset_at"], "session_5h.reset_at")
+                )
+        if "weekly_7d" in patch:
+            w7 = patch["weekly_7d"]
+            if w7.get("used_pct") is not None:
+                current["weekly_7d"]["used_pct"] = percentage(w7["used_pct"], "weekly_7d.used_pct")
+            if w7.get("reset_at") is not None:
+                current["weekly_7d"]["reset_at"] = format_timestamp(
+                    parse_timestamp(w7["reset_at"], "weekly_7d.reset_at")
+                )
+        if "rate_limited" in patch and patch["rate_limited"] is not None:
+            current["rate_limited"] = boolean(patch["rate_limited"], "rate_limited")
+            if not current["rate_limited"] and "cooldown_until" not in patch:
+                current["cooldown_until"] = None
+        if "cooldown_until" in patch:
+            cd = patch["cooldown_until"]
+            current["cooldown_until"] = (
+                format_timestamp(parse_timestamp(cd, "cooldown_until")) if cd is not None else None
+            )
+            if current["cooldown_until"] is not None and "rate_limited" not in patch:
+                current["rate_limited"] = True
+        if "tiers" in patch and isinstance(patch["tiers"], dict):
+            for tier_name, tier_win in patch["tiers"].items():
+                text(tier_name, f"tiers.{tier_name}", label=True, max_length=64)
+                existing_tier = current["tiers"].get(tier_name, _empty_window())
+                if tier_win.get("used_pct") is not None:
+                    existing_tier["used_pct"] = percentage(
+                        tier_win["used_pct"], f"tiers.{tier_name}.used_pct"
+                    )
+                if tier_win.get("reset_at") is not None:
+                    existing_tier["reset_at"] = format_timestamp(
+                        parse_timestamp(tier_win["reset_at"], f"tiers.{tier_name}.reset_at")
+                    )
+                current["tiers"][tier_name] = existing_tier
+        current = effective_agent_state(current, now_dt)
+        current["updated_at"] = format_timestamp(now_dt)
+        current["source"] = source
+        store["agents"][agent] = current
+        write_store(config, store)
+        return current
+
+
+def clear_usage(config, agent=None):
+    if agent is not None:
+        agent_id(agent, "agent")
+    with _usage_locked(config):
+        store = read_store(config)
+        targets = [agent] if agent is not None else list(AGENTS)
+        for name in targets:
+            store["agents"][name] = _empty_agent_state()
+        write_store(config, store)
+        return store["agents"][agent] if agent is not None else store["agents"]
+
+
+def probe_usage(config, agent=None, *, now=None):
+    targets = [agent_id(agent, "agent")] if agent is not None else [
+        name for name in AGENTS if config.agents[name]["enabled"] and config.agents[name]["usage_probe_cmd"]
+    ]
+    results = {}
+    for name in targets:
+        cmd = config.agents[name]["usage_probe_cmd"]
+        if not cmd:
+            raise AgRouteError(f"usage probe: agents.{name}.usage_probe_cmd is not configured")
+        try:
+            proc = subprocess.run(
+                cmd,
+                cwd=config.capture_root,
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise AgRouteError(f"usage probe: failed to run probe command for '{name}': {exc}") from exc
+        combined = "\n".join(part for part in (proc.stdout, proc.stderr) if part).strip()
+        if proc.returncode != 0 and not combined:
+            raise AgRouteError(
+                f"usage probe: command for '{name}' exited with status {proc.returncode} and no output"
+            )
+        patch = parse_native_usage(name, combined)
+        results[name] = apply_usage_patch(config, name, patch, source="probe", now=now)
+    return results

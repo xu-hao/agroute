@@ -1,0 +1,103 @@
+[routing]
+default_host = "agy"
+host_affinity_epsilon = 0.0
+namespace_separator = "/"
+
+[agents.agy]
+enabled = true
+max_session_used_pct = 90.0
+max_weekly_used_pct = 95.0
+max_tier_used_pct = 95.0
+host_reserve_pct = 0.0
+usage_probe_cmd = []
+
+[[agents.agy.native_candidates]]
+model = "pro"
+effort = "standard"
+tier = "pro"
+
+[[agents.agy.native_candidates]]
+model = "flash"
+effort = "standard"
+tier = "flash"
+
+[[agents.agy.native_candidates]]
+model = "flash_lite"
+effort = "standard"
+tier = "flash_lite"
+
+[[agents.agy.cli_candidates]]
+model = "gemini-2.5-pro"
+effort = "high"
+tier = "pro"
+
+[[agents.agy.cli_candidates]]
+model = "gemini-2.5-flash"
+effort = "medium"
+tier = "flash"
+
+[agents.codex]
+enabled = true
+max_session_used_pct = 90.0
+max_weekly_used_pct = 95.0
+max_tier_used_pct = 95.0
+host_reserve_pct = 0.0
+usage_probe_cmd = []
+
+[[agents.codex.native_candidates]]
+model = "gpt-5.4"
+effort = "high"
+
+[[agents.codex.native_candidates]]
+model = "gpt-5.4"
+effort = "medium"
+
+[[agents.codex.cli_candidates]]
+model = "gpt-5.4"
+effort = "high"
+
+[[agents.codex.cli_candidates]]
+model = "gpt-5.4"
+effort = "medium"
+
+[[agents.codex.cli_candidates]]
+model = "gpt-5.4-mini"
+effort = "low"
+
+[agents.claude]
+enabled = true
+max_session_used_pct = 90.0
+max_weekly_used_pct = 95.0
+max_tier_used_pct = 95.0
+host_reserve_pct = 0.0
+usage_probe_cmd = []
+
+[[agents.claude.native_candidates]]
+model = "claude-opus-4-6"
+effort = "high"
+tier = "opus"
+
+[[agents.claude.native_candidates]]
+model = "claude-sonnet-4-6"
+effort = "high"
+tier = "sonnet"
+
+[[agents.claude.native_candidates]]
+model = "claude-sonnet-4-6"
+effort = "medium"
+tier = "sonnet"
+
+[[agents.claude.cli_candidates]]
+model = "claude-opus-4-6"
+effort = "high"
+tier = "opus"
+
+[[agents.claude.cli_candidates]]
+model = "claude-sonnet-4-6"
+effort = "high"
+tier = "sonnet"
+
+[[agents.claude.cli_candidates]]
+model = "claude-sonnet-4-6"
+effort = "medium"
+tier = "sonnet"

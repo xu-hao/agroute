@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+python -m pytest -q
+python -m build
+python scripts/verify-wheel.py
+python -m sphinx -W --keep-going -b html docs docs/_build/html

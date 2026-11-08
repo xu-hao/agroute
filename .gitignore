@@ -1,0 +1,10 @@
+.venv*/
+.worktrees/
+.agents/hooks.json
+__pycache__/
+*.egg-info/
+.pytest_cache/
+dist/
+build/
+docs/_build/
+.agroute/
