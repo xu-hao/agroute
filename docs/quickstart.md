@@ -68,9 +68,26 @@ before starting a worker. For example:
 Explicit skill invocation is `$agroute` or `/skills` in Codex, `/agroute:agroute` in
 Claude Code, and `/agroute` in Antigravity. Codex can also activate the skill when the
 task matches its description. Installing the plugin does not make every worker start
-run it automatically. For persistent use, copy the
-{ref}`coordinating-agent instruction <require-agroute-before-delegation>` into
-your host's project instructions.
+run it automatically.
+
+For persistent use across tasks, copy this {ref}`coordinating-agent instruction <require-agroute-before-delegation>`
+into your project's `AGENTS.md` or `CLAUDE.md`:
+
+```text
+Before delegating an authorized task to a worker, use the installed agroute and howhard
+skills:
+1. Inspect or refresh live agent quota state with `agroute usage`.
+2. Emit eligible provider-qualified candidates for this host with
+   `agroute candidates --host <codex|claude|agy> --output /tmp/TASK-candidates.json --json`.
+3. Select a route with `howhard` (`context`/`retrieve`/`decide` with an independent
+   stateless baseline forecast, or `pick`), then resolve the execution plan with
+   `agroute plan --host <codex|claude|agy> --decision /tmp/TASK-decision.json --json`.
+4. Honor `needs_review`. Execute native plans (`target_agent == host_agent`) with the
+   host's native subagent tool and cross-agent plans (`target_agent != host_agent`) with
+   the returned non-interactive CLI command.
+5. Record the actual outcome and measured usage in `howhard` following the plan's
+   `feedback` block (`matched_receipt` or `raw_native`), then update `howhard` memory.
+```
 
 The agent updates or inspects live quota state (`agroute usage`), writes the filtered
 1–32 cell candidate list (`agroute candidates --host HOST --output FILE`), calls
