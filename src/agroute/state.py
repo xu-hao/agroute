@@ -16,6 +16,7 @@ KNOWN_STORE_ENTRIES = {
     "usage.json",
     "usage.lock",
     "plans.jsonl",
+    "routes.jsonl",
     "store.json",
     "project.json",
     "project.lock",

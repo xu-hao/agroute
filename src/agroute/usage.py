@@ -335,6 +335,10 @@ _RESET_RE = re.compile(
     re.IGNORECASE,
 )
 _CLAUDE_LIMIT_RE = re.compile(r"Claude AI usage limit reached\|(\d+)", re.IGNORECASE)
+_TIER_LINE_RE = re.compile(
+    r"(?:tier\s+([a-z0-9._-]+)|(?:current\s+week|weekly|limit|quota)\s*\(\s*([a-z0-9._-]+)\s*\)|^\s*([a-z0-9._-]+)\s*:\s*\d)",
+    re.IGNORECASE,
+)
 
 
 def _parse_text_usage(raw_text, patch):
@@ -372,26 +376,29 @@ def _parse_text_usage(raw_text, patch):
         used_pct = 100.0 - val if direction == "remaining" else val
         win = {"used_pct": used_pct, "reset_at": reset_iso}
 
-        # Check model tier lines first (e.g. "Current week (Opus): 80% used" or "tier pro: 75% used")
-        tier_matched = False
-        for tier_token in ("opus", "sonnet", "haiku", "flash_lite", "flash", "pro", "gpt-5.4", "gemini-2.5-pro"):
-            if re.search(rf"\b{re.escape(tier_token)}\b", lower):
-                if any(w in lower for w in ("session", "5h", "5-hour")) and tier_token not in (
-                    "opus",
-                    "sonnet",
-                    "haiku",
-                    "flash_lite",
-                    "flash",
-                    "pro",
-                ):
-                    break
+        # Check model tier lines first (e.g. "Current week (Opus): 80% used", "tier pro: 75% used", or "pro: 97% used")
+        tier_match = _TIER_LINE_RE.search(lower)
+        if tier_match:
+            tier_token = (tier_match.group(1) or tier_match.group(2) or tier_match.group(3) or "").strip()
+            if tier_token and tier_token not in (
+                "all",
+                "session",
+                "session_5h",
+                "5h",
+                "5-hour",
+                "7d",
+                "7-day",
+                "weekly",
+                "weekly_7d",
+                "primary",
+                "secondary",
+                "limit",
+                "quota",
+            ):
                 tiers = patch.setdefault("tiers", {})
                 tiers[tier_token] = win
-                tier_matched = True
                 changed = True
-                break
-        if tier_matched:
-            continue
+                continue
 
         if any(tok in lower for tok in ("5h", "5-hour", "current session", "session_5h", "session limit", "primary")):
             patch["session_5h"] = win

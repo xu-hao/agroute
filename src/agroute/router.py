@@ -4,6 +4,8 @@ from copy import deepcopy
 import json
 
 from .config import load_config
+from .discovery import discover_agent_candidates
+from .routes import build_snapshot, find_route, record_plan_route, register_repository
 from .usage import (
     _now_utc,
     apply_usage_patch,
@@ -192,13 +194,15 @@ class Router:
             surface_name = "native" if is_host else "cli"
             source_list = cfg["native_candidates"] if is_host else cfg["cli_candidates"]
             if not source_list:
+                source_list = discover_agent_candidates(name, surface_name)
+            if not source_list:
                 excluded.append(
                     {
                         "agent": name,
                         "surface": surface_name,
                         "model": None,
                         "effort": None,
-                        "reason": f"no {surface_name}_candidates configured for '{name}'",
+                        "reason": f"no {surface_name}_candidates discovered or configured for '{name}'",
                     }
                 )
                 continue
@@ -512,7 +516,7 @@ class Router:
                 ],
             }
 
-        return {
+        result = {
             "format": PLAN_FORMAT,
             "evaluated_at": format_timestamp(now_dt),
             "host_agent": host,
@@ -536,4 +540,65 @@ class Router:
             "host_affinity_detail": affinity_detail,
             "invocation": invocation,
             "feedback": feedback,
+        }
+        result["route_id"] = record_plan_route(self.config, result)
+        return result
+
+    def snapshot(self, *, all_repos=True, now=None):
+        return build_snapshot(self, all_repos=all_repos, now=now)
+
+    def list_routes(
+        self,
+        *,
+        all_repos=True,
+        repo=None,
+        agent=None,
+        state=None,
+        limit=None,
+        now=None,
+    ):
+        snap = self.snapshot(all_repos=all_repos, now=now)
+        routes = list(snap["routes"])
+        if repo is not None:
+            needle = text(repo, "repo").strip()
+            routes = [
+                r
+                for r in routes
+                if needle in (r["repository_id"], r["repository"], r["repository"].rsplit("/", 1)[-1])
+            ]
+        if agent is not None:
+            ag = agent_id(agent, "agent")
+            routes = [r for r in routes if r["target_agent"] == ag]
+        if state is not None:
+            st = text(state, "state", label=True, max_length=32)
+            routes = [r for r in routes if r["status"] == st]
+        if limit is not None:
+            if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+                raise AgRouteError("limit: expected a positive integer")
+            routes = routes[:limit]
+        return {
+            **snap,
+            "routes": routes,
+        }
+
+    def show_route(self, identifier, *, all_repos=True, now=None):
+        snap = self.snapshot(all_repos=all_repos, now=now)
+        return find_route(snap, identifier)
+
+    def models(self, *, refresh=False):
+        out = {}
+        for name in AGENTS:
+            cfg = self.config.agents[name]
+            nat_cfg = cfg["native_candidates"]
+            cli_cfg = cfg["cli_candidates"]
+            out[name] = {
+                "enabled": cfg["enabled"],
+                "native_source": "configured" if nat_cfg else "discovered",
+                "native_candidates": deepcopy(nat_cfg) if nat_cfg else discover_agent_candidates(name, "native", refresh=refresh),
+                "cli_source": "configured" if cli_cfg else "discovered",
+                "cli_candidates": deepcopy(cli_cfg) if cli_cfg else discover_agent_candidates(name, "cli", refresh=refresh),
+            }
+        return {
+            "format": "agroute-models-v1",
+            "agents": out,
         }
