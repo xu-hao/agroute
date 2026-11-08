@@ -4,17 +4,37 @@
 candidate selection and host execution surfaces.
 
 (candidate-qualification)=
-## Candidate qualification and surface separation
+## Candidate qualification, dynamic model discovery, and surface separation
 
 An agent's native delegation tool (used when `target_agent == host_agent`) exposes different
 controls from its non-interactive CLI (used when `target_agent != host_agent`). Each agent
-configures two distinct lists in `agroute.toml`:
+supports two distinct candidate surfaces in `agroute.toml`:
 
 - `native_candidates`: candidate `(model, effort)` cells enforceable through the host's
   native delegation tool (`invoke_subagent` in Antigravity, `Agent` in Claude Code, or
   `spawn_agent` in Codex).
 - `cli_candidates`: candidate `(model, effort)` cells enforceable through the target's
   non-interactive CLI (`codex exec`, `claude -p`, or `agy -p`).
+
+By default, `agroute` leaves `native_candidates` and `cli_candidates` empty in its packaged
+defaults and automatically discovers the currently available models and reasoning efforts
+from the locally installed agents at runtime:
+
+- **Codex (`codex`)**: reads `${CODEX_HOME:-~/.codex}/models_cache.json`, keeps visible models
+  from the highest available generation ordered by `priority`, and selects representative
+  supported reasoning levels (`supported_reasoning_levels`).
+- **Claude Code (`claude`)**: reads the newest catalog in
+  `${CLAUDE_CONFIG_DIR:-~/.claude}/cache/model-catalog/*.json`, selects `main` (`quick_select`)
+  models, infers quota tier (`opus`, `fable`, `sonnet`, `haiku`), and selects representative
+  `runtime.effort_levels`.
+- **Antigravity (`agy`)**: uses the host `invoke_subagent` schema tiers (`pro`, `flash`,
+  `flash_lite` at `standard` effort) for `native_candidates`, and queries `agy models` (cached
+  in `${AGROUTE_SPOOL_DIR:-~/.local/share/agroute}/agy_models_cache.json`, refreshable via
+  `agroute models --refresh`) for `cli_candidates`.
+
+Inspect discovered or configured models per agent and surface with `agroute models [--refresh] [--json]`.
+Explicit `[[agents.<name>.native_candidates]]` or `[[agents.<name>.cli_candidates]]` entries in
+`agroute.toml` or `~/.config/agroute/config.toml` override runtime discovery for that surface.
 
 `agroute candidates --host HOST` evaluates enabled agents, selects `native_candidates` for
 `agent == HOST` and `cli_candidates` for `agent != HOST`, filters out quota-blocked agents
@@ -76,3 +96,24 @@ and `config_path`. Fresh zero-config Git worktrees share `<git-common-dir>/agrou
 capturing the current checkout root. Plain folders use local `.agroute`. `--state-dir PATH`
 (or `AGROUTE_STATE_DIR`) selects an intentional store and enforces `agroute-project-v1` and
 `agroute-store-v1` identity checks so another project's store is refused.
+
+(realtime-route-monitoring)=
+## Realtime route monitoring (`tui`, `list`, `show`)
+
+Every `agroute plan` resolution appends a record to `<state_root>/routes.jsonl` and registers
+the repository in `${AGROUTE_SPOOL_DIR:-~/.local/share/agroute}/repositories.json`. `agroute`
+correlates `<state_root>/routes.jsonl` with `.git/howhard/` (`decision-events.jsonl`,
+`decisions/*.json`, and `pending.jsonl`, including `amends` chains) so both `agroute plan`
+resolutions and direct `howhard` routing decisions appear in reverse-chronological order with
+their live outcome state (`pending`, `clean`, `loud`, `silent`, `review`, `planned`) and
+task summary.
+
+- `agroute tui [--all] [--repo NAME] [--agent AGENT] [--model MODEL] [--state STATE] [--refresh-seconds SEC]`:
+  interactive Textual terminal dashboard showing live agent quota/eligibility badges, active and
+  historical model routes, `Enter` route detail modal, `u` live usage & eligibility modal,
+  `h` history toggle, and filter pickers for repository (`p`), target agent (`a`), model (`m`),
+  and state (`s`).
+- `agroute list [--all] [--repo NAME] [--agent AGENT] [--model MODEL] [--state STATE] [--limit N] [--json]`:
+  scriptable tabular or JSON view of the same route records.
+- `agroute show <id> [--json]`: full route record, invocation details, and `howhard` decision
+  for a route ID, decision ID, or execution ID.

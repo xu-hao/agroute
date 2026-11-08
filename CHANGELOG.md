@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Discover available models and supported reasoning efforts dynamically at runtime from locally
+  installed agents (`~/.codex/models_cache.json` for Codex, `~/.claude/cache/model-catalog/`
+  for Claude Code, and `agy models` for Antigravity) instead of shipping hardcoded model lists
+  in `default_config.toml`, and expose `agroute models [--refresh] [--json]` (`Router.models()`).
+- Add `agroute tui`, `agroute list`, and `agroute show <id>` to inspect realtime and historical
+  model routes across repositories, correlating `<state_root>/routes.jsonl` with `.git/howhard/`
+  decisions and outcomes alongside live agent quota and eligibility state.
+
 ## 0.1.0 — 2026-11-08
 
 - Build `agroute` (`agroute` CLI, Python `Router` API, and native plugin manifests for

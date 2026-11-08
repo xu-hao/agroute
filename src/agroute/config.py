@@ -37,6 +37,7 @@ class Config:
     host_affinity_epsilon: float
     namespace_separator: str
     agents: dict
+    explicit_state: bool = False
 
 
 def _validate_rate_card(card, where):
@@ -185,8 +186,6 @@ def _validate_merged(raw):
         cli_cands = _validate_candidate_list(
             spec["cli_candidates"], f"{where}.cli_candidates", agent=name
         )
-        if enabled and not native_cands and not cli_cands:
-            raise AgRouteError(f"{where}: enabled agent must declare at least one candidate")
         agents[name] = {
             "enabled": enabled,
             "max_session_used_pct": max_session,
@@ -269,4 +268,5 @@ def load_config(path=None, *, project=None, state_directory=None, include_user_c
         host_affinity_epsilon=epsilon,
         namespace_separator=separator,
         agents=agents,
+        explicit_state=bool(cfg_state_dir is not None or os.environ.get("AGROUTE_STATE_DIR")),
     )

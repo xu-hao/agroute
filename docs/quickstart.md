@@ -141,14 +141,25 @@ For cross-agent CLI runs that capture an owned JSONL stream (`codex-exec-v1` or
 `claude-sdk-v1`), use `howhard usage collect` and `howhard usage attach` to attach
 measured token usage to the recorded execution.
 
-## Inspect project state
+## Inspect project state, discovered models, and realtime routes
 
 ```sh
 agroute paths --json
+agroute models --json
 agroute usage show --json
 agroute candidates --host agy --json
 agroute inventory --host agy --name router
+agroute list
+agroute show <id>
+agroute tui
 ```
+
+By default, `agroute` automatically discovers available models and reasoning efforts
+from your installed agents (`codex`, `claude`, and `agy`) at runtime (`agroute models`,
+or `agroute models --refresh` to refresh the Antigravity CLI cache). `agroute tui`
+opens a live terminal dashboard of `agroute plan` executions and `howhard` routing
+decisions across registered repositories, while `agroute list` and `agroute show <id>`
+provide scriptable CLI access.
 
 Git worktrees share repository state in `<git-common-dir>/agroute` while each task
 captures its current checkout. Plain folders use local `.agroute`. `paths` shows the
