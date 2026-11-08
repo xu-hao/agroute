@@ -1,0 +1,11 @@
+include AGENTS.md CHANGELOG.md LICENSE
+include .readthedocs.yaml
+include plugin.json
+include .agents/plugins/marketplace.json
+include .claude-plugin/plugin.json .claude-plugin/marketplace.json
+include .antigravity-plugin/plugin.json
+recursive-include docs *.md *.py *.txt
+recursive-exclude docs/_build *
+recursive-include scripts *
+recursive-include skills *.md
+recursive-include tests *.py

@@ -1,0 +1,12 @@
+{
+  "name": "agroute",
+  "description": "The agroute skill for usage-limit-aware local agent routing with howhard.",
+  "owner": {"name": "agroute contributors"},
+  "plugins": [
+    {
+      "name": "agroute",
+      "source": "./",
+      "description": "Usage-limit-aware local agent routing across Codex, Claude Code, and Antigravity with howhard."
+    }
+  ]
+}
