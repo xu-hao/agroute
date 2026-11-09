@@ -45,6 +45,7 @@ def _empty_agent_state():
         "updated_at": None,
         "source": None,
         "availability": _empty_window(),
+        "scope_availability": {},
         "probe": {},
     }
 
@@ -119,7 +120,7 @@ def _validate_store_payload(payload):
         keys(
             raw,
             ["session_5h", "weekly_7d", "rate_limited", "cooldown_until", "tiers", "updated_at", "source"],
-            ["availability", "probe"],
+            ["availability", "scope_availability", "probe"],
             where=where,
         )
         s5 = _validate_window(raw["session_5h"], f"{where}.session_5h")
@@ -133,6 +134,10 @@ def _validate_store_payload(payload):
         for tier_name, tier_win in tiers_raw.items():
             text(tier_name, f"{where}.tiers.{tier_name}", label=True, max_length=64)
             tiers[tier_name] = _validate_window(tier_win, f"{where}.tiers.{tier_name}")
+        scoped = {}
+        for scope, win in table(raw.get("scope_availability", {}), f"{where}.scope_availability").items():
+            text(scope, f"{where}.scope_availability.{scope}", label=True, max_length=57)
+            scoped[scope] = _validate_window(win, f"{where}.scope_availability.{scope}")
         updated = raw["updated_at"]
         if updated is not None:
             updated = format_timestamp(parse_timestamp(updated, f"{where}.updated_at"))
@@ -148,6 +153,7 @@ def _validate_store_payload(payload):
             "updated_at": updated,
             "source": src,
             "availability": _validate_window(raw.get("availability", _empty_window()), f"{where}.availability"),
+            "scope_availability": scoped,
             "probe": _validate_probe(raw.get("probe", {}), f"{where}.probe"),
         }
         if name == "claude" and "availability" not in raw and "probe" not in raw:
@@ -418,19 +424,22 @@ def _patch_windows(patch):
     for key in ("session_5h", "weekly_7d", "availability"):
         if isinstance(patch.get(key), dict):
             yield key, patch[key]
-    for key, win in patch.get("tiers", {}).items():
-        yield "tiers." + key, win
+    for container in ("tiers", "scope_availability"):
+        for key, win in patch.get(container, {}).items():
+            yield container + "." + key, win
 
 
 def _get_window(state, key):
-    if key.startswith("tiers."):
-        return state.get("tiers", {}).get(key[6:], _empty_window())
+    if "." in key:
+        container, name = key.split(".", 1)
+        return state.get(container, {}).get(name, _empty_window())
     return state.get(key, _empty_window())
 
 
 def _put_window(state, key, win):
-    if key.startswith("tiers."):
-        state.setdefault("tiers", {})[key[6:]] = win
+    if "." in key:
+        container, name = key.split(".", 1)
+        state.setdefault(container, {})[name] = win
     else:
         state[key] = win
 
@@ -487,6 +496,22 @@ def _rejection_reason(agent, state):
     return None
 
 
+def _scoped_access_rejection(agent, state, candidate):
+    if agent != "claude":
+        return None
+    model = str(candidate["model"]).lower()
+    tokens = [token for token in re.split(r"[-_./:]+", model)
+              if len(token) >= 3 and token not in ("claude", "code")]
+    keys_to_check = [model, str(candidate.get("tier", "")).lower(), *tokens]
+    for scope, win in state.get("scope_availability", {}).items():
+        if win.get("status") == "rejected" and any(
+            key and (scope == key or scope.startswith(key + "-")) for key in keys_to_check
+        ):
+            until = f" until {win['reset_at']}" if win["reset_at"] else ""
+            return f"{agent} {scope} access rejected{until}"
+    return None
+
+
 def usage_warnings(agent, state, cfg, now_dt):
     if agent != "claude":
         return []
@@ -528,12 +553,11 @@ def effective_agent_state(agent_state, now_dt, *, project_rejections=True):
     if state["cooldown_until"] is not None and now_dt >= parse_timestamp(state["cooldown_until"]):
         state["cooldown_until"] = None
         state["rate_limited"] = False
-    active_tiers = {}
-    for tier_name, tier_win in state["tiers"].items():
-        if tier_win["reset_at"] is not None and now_dt >= parse_timestamp(tier_win["reset_at"]):
-            continue
-        active_tiers[tier_name] = tier_win
-    state["tiers"] = active_tiers
+    for container in ("tiers", "scope_availability"):
+        state[container] = {
+            name: win for name, win in state.get(container, {}).items()
+            if win["reset_at"] is None or now_dt < parse_timestamp(win["reset_at"])
+        }
     if project_rejections:
         for key in ("session_5h", "weekly_7d", "availability"):
             win = state[key]
@@ -616,9 +640,9 @@ def resolve_model_quota(agent_name, agent_cfg, effective_state, candidate, *, is
         w7 = deepcopy(effective_state["weekly_7d"])
         quota_group = "shared"
 
-    rejection = _rejection_reason(agent_name, effective_state) or _window_rejection_reason(
-        agent_name, quota_group, s5, w7
-    )
+    rejection = (_rejection_reason(agent_name, effective_state)
+                 or _scoped_access_rejection(agent_name, effective_state, candidate)
+                 or _window_rejection_reason(agent_name, quota_group, s5, w7))
     if rejection and agent_cfg["enabled"]:
         return {"model": model_id, "surface": surface, "quota_group": quota_group,
                 "session_5h": s5, "weekly_7d": w7, "eligible": False,
@@ -923,7 +947,8 @@ def _apply_claude_event(obj, patch):
             win = _claude_evidence(rli, timestamp, event_id)
             scope = _claude_scope(rli.get("scope"))
             if scope:
-                patch.setdefault("tiers", {})[scope] = win
+                scoped = patch.setdefault("scope_availability", {})
+                scoped[scope] = _merge_window(scoped.get(scope, _empty_window()), win)
             else:
                 patch["availability"] = _merge_window(patch.get("availability", _empty_window()), win)
             changed = True
