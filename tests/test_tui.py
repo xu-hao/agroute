@@ -288,7 +288,7 @@ def test_dynamic_discovery_and_howhard_correlation(tmp_path):
         encoding="utf-8",
     )
     codex_cands = discover_codex_candidates(codex_home=codex_dir)
-    assert [c["model"] for c in codex_cands] == ["solaris-next-1", "solaris-next-1"]
+    assert [c["model"] for c in codex_cands] == ["solaris-next-1", "solaris-next-1", "solaris-next-1"]
 
     # 2. Claude discovery selects main section models and reads runtime.family dynamically
     claude_dir = tmp_path / "custom-claude"
