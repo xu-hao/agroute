@@ -440,3 +440,43 @@ def test_legacy_unknown_cooldown_is_not_cleared_by_partial_report(tmp_path):
         "claude", json.dumps(event("allowed", kind=None, timestamp=T2)), now=T2
     )
     assert router.usage_show("claude", now=T2)["agents"]["claude"]["eligible_as_target"]
+
+
+def test_scoped_credit_rejection_survives_partial_quota_counter(tmp_path):
+    scope = {"model": {"display_name": "fable"}}
+    router, script = setup(tmp_path, usage([limit("weekly_fable", 0, scope)]))
+    router.usage_ingest("claude", json.dumps(event(scope=scope, kind=None)), now=T1)
+    router.usage_probe("claude", now=T2)
+    result = router.candidates("claude", now=T2)
+    assert not any(
+        c["model"] == "claude/claude-fable-5-2" for c in result["candidates"]
+    )
+    assert any(c["model"] == "claude/claude-opus-5-5" for c in result["candidates"])
+    restored_at = "2026-11-09T12:25:00Z"
+    router.usage_ingest(
+        "claude",
+        json.dumps(event("allowed", scope, None, restored_at)),
+        now=restored_at,
+    )
+    assert any(
+        c["model"] == "claude/claude-fable-5-2"
+        for c in router.candidates("claude", now=restored_at)["candidates"]
+    )
+
+
+def test_unscoped_credit_rejection_survives_partial_quota_counter(tmp_path):
+    router, _ = setup(tmp_path, usage([limit(percent=0)]))
+    router.usage_ingest("claude", json.dumps(event(kind=None)), now=T1)
+    router.usage_probe("claude", now=T2)
+    assert not router.usage_show("claude", now=T2)["agents"]["claude"][
+        "eligible_as_target"
+    ]
+    restored_at = "2026-11-09T12:25:00Z"
+    router.usage_ingest(
+        "claude",
+        json.dumps(event("allowed", kind=None, timestamp=restored_at)),
+        now=restored_at,
+    )
+    assert router.usage_show("claude", now=restored_at)["agents"]["claude"][
+        "eligible_as_target"
+    ]

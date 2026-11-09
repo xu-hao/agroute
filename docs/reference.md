@@ -82,7 +82,10 @@ individually; recognized limits still apply and probe JSON includes `warnings`.
 A `rejected`, `rate_limited`, `exhausted`, or numeric 429 rate-limit status is availability
 evidence even without a percentage. `seven_day` names the weekly quota and `five_hour`
 the session quota; model scopes affect only that model. Unscoped credit/entitlement
-rejections affect the whole agent. `overageStatus: rejected` supplies no overage fallback.
+rejections affect the whole agent. Scoped access/credit evidence is stored separately in
+`scope_availability`, so partial session or weekly counters cannot erase it. A matching
+unwindowed accepted/allowed event can restore that scope. `overageStatus: rejected` supplies
+no overage fallback.
 Active rejections exclude routes with a visible reason and reset time. Unknown usage
 remains `null`; rejection does not manufacture a 100% counter.
 
