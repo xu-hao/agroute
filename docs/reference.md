@@ -99,6 +99,26 @@ capturing the current checkout root. Plain folders use local `.agroute`. `--stat
 (or `AGROUTE_STATE_DIR`) selects an intentional store and enforces `agroute-project-v1` and
 `agroute-store-v1` identity checks so another project's store is refused.
 
+(agent-adapters-and-dynamic-dispatch)=
+## Agent adapters and dynamic dispatch
+
+Agent-specific behaviors are decoupled from routing and usage logic through the `AgentAdapter`
+interface and dynamic dispatch registry (`agroute.adapters`). Each supported agent (`agy`, `claude`,
+`codex`) implements an `AgentAdapter` that encapsulates:
+
+- `name` & `display_name`: canonical identifier and human-readable label.
+- `capture_adapter`: CLI stream output capture protocol name (`agy-print-v1`, `claude-sdk-v1`, `codex-exec-v1`).
+- `validate_native_candidate`: agent-specific constraints on native subagent model parameters (such as the `invoke_subagent` enum in Antigravity).
+- `discover_candidates`: surface-aware local model discovery (`native` vs `cli`).
+- `build_native_invocation`: formats the native tool call directive (`invoke_subagent`, `Agent`, `spawn_agent`).
+- `build_cli_invocation`: constructs the non-interactive CLI argv and prompt delivery mechanism.
+- `discover_live_usage_patch`: discovers rate-limit telemetry from local session files and probe caches.
+- `probe_usage`: performs zero-token or RPC rate-limit probing.
+- `resolve_quota_group`: resolves model-specific or multi-provider quota buckets (such as `3p` and `gemini` pools).
+
+New agent integrations or mock adapters can be registered dynamically via `register_adapter(adapter)`
+and queried with `get_adapter(name)`.
+
 (realtime-route-monitoring)=
 ## Realtime route monitoring (`tui`, `list`, `show`)
 

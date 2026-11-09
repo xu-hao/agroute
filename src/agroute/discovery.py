@@ -317,12 +317,15 @@ def discover_agent_candidates(
     claude_home: Path | None = None,
 ) -> list[dict]:
     """Return dynamically discovered candidates for (agent, surface)."""
-    if agent == "agy":
-        if surface == "native":
-            return deepcopy(AGY_NATIVE_SUBAGENT_CANDIDATES)
-        return discover_agy_cli_candidates(refresh=refresh)
-    if agent == "codex":
-        return discover_codex_candidates(codex_home=codex_home)
-    if agent == "claude":
-        return discover_claude_candidates(claude_home=claude_home)
-    return []
+    from .adapters import get_adapter
+
+    try:
+        adapter = get_adapter(agent)
+    except Exception:
+        return []
+    return adapter.discover_candidates(
+        surface,
+        refresh=refresh,
+        codex_home=codex_home,
+        claude_home=claude_home,
+    )
