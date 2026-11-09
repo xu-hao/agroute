@@ -90,7 +90,7 @@ skills:
 ```
 
 The agent updates or inspects live quota state (`agroute usage`), writes the filtered
-1–32 cell candidate list (`agroute candidates --host HOST --output FILE`), calls
+full eligible candidate list (`agroute candidates --host HOST --output FILE`), calls
 `howhard` to choose a provider-qualified `<agent>/<model>` and `effort`, and resolves
 the decision into an `agroute-execution-plan-v1` payload (`agroute plan --host HOST --decision FILE`):
 

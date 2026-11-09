@@ -56,27 +56,21 @@ def _agy_cache_file() -> Path | None:
     return base / "agy_models_cache.json"
 
 
-def _pick_representative_efforts(supported: list[str], default_effort: str | None = None, *, limit: int = 3) -> list[str]:
+def _ordered_efforts(supported: list[str], default_effort: str | None = None) -> list[str]:
+    """Keep every declared effort, with known levels first and extensions in catalog order."""
     if not supported:
         return [default_effort or "medium"]
-    preferred_order = ["low", "medium", "high", "xhigh", "max"]
-    avail = [e for e in preferred_order if e in supported] or list(supported)
-    if len(avail) <= limit:
-        return avail
-    chosen: list[str] = []
-    if default_effort and default_effort in avail:
-        chosen.append(default_effort)
-    for target in ("high", "xhigh", "medium", "low", "max"):
-        if len(chosen) >= limit:
-            break
-        if target in avail and target not in chosen:
-            chosen.append(target)
-    order_index = {e: idx for idx, e in enumerate(avail)}
-    chosen.sort(key=lambda e: order_index.get(e, 99))
-    return chosen
+    canonical = ["low", "medium", "high", "xhigh", "max"]
+    return list(dict.fromkeys([e for e in canonical if e in supported] + supported))
 
 
-def discover_codex_candidates(*, codex_home: Path | None = None, max_models: int = 4) -> list[dict]:
+def _codex_generation(model: dict) -> int | None:
+    """Read a numeric generation from the slug, without assuming a model family prefix."""
+    match = re.search(r"(?:^|[-_])(\d+)(?:[._-]|$)", model["slug"])
+    return int(match.group(1)) if match else None
+
+
+def discover_codex_candidates(*, codex_home: Path | None = None) -> list[dict]:
     """Discover available Codex models and supported reasoning efforts from models_cache.json."""
     home = codex_home or _codex_home()
     cache_path = home / "models_cache.json"
@@ -101,7 +95,10 @@ def discover_codex_candidates(*, codex_home: Path | None = None, max_models: int
         return []
 
     visible.sort(key=lambda m: (m.get("priority", 9999), str(m.get("slug", ""))))
-    selected_models = visible[:max_models]
+    generations = [_codex_generation(m) for m in visible]
+    newest = max((g for g in generations if g is not None), default=None)
+    # Opaque slugs without a generation cannot be identified as older models.
+    selected_models = [m for m, g in zip(visible, generations) if g is None or g == newest]
 
     candidates: list[dict] = []
     seen: set[tuple[str, str]] = set()
@@ -116,7 +113,7 @@ def discover_codex_candidates(*, codex_home: Path | None = None, max_models: int
                 elif isinstance(entry, str):
                     supported.append(entry)
         default_eff = m.get("default_reasoning_level") if isinstance(m.get("default_reasoning_level"), str) else None
-        for eff in _pick_representative_efforts(supported, default_eff, limit=2):
+        for eff in _ordered_efforts(supported, default_eff):
             pair = (slug, eff)
             if pair not in seen:
                 seen.add(pair)
@@ -140,7 +137,7 @@ def _infer_claude_tier(model_entry: dict) -> str | None:
     return parts[0] if parts else None
 
 
-def discover_claude_candidates(*, claude_home: Path | None = None, max_models: int = 4) -> list[dict]:
+def discover_claude_candidates(*, claude_home: Path | None = None) -> list[dict]:
     """Discover available Claude Code models and effort levels from ~/.claude/cache/model-catalog/."""
     home = claude_home or _claude_home()
     catalog_dir = home / "cache" / "model-catalog"
@@ -174,7 +171,7 @@ def discover_claude_candidates(*, claude_home: Path | None = None, max_models: i
         return []
 
     main_models = [m for m in raw_models if m.get("section") == "main" or m.get("quick_select") is True]
-    selected_models = (main_models or raw_models)[:max_models]
+    selected_models = main_models or raw_models
 
     candidates: list[dict] = []
     seen: set[tuple[str, str]] = set()
@@ -188,7 +185,7 @@ def discover_claude_candidates(*, claude_home: Path | None = None, max_models: i
         ]
         default_eff = runtime.get("default_effort") if isinstance(runtime.get("default_effort"), str) else "medium"
         tier = _infer_claude_tier(m)
-        efforts = _pick_representative_efforts(supported, default_eff, limit=3)
+        efforts = _ordered_efforts(supported, default_eff)
         for eff in efforts:
             pair = (model_id, eff)
             if pair not in seen:
@@ -200,7 +197,7 @@ def discover_claude_candidates(*, claude_home: Path | None = None, max_models: i
     return candidates
 
 
-def parse_agy_models_output(raw_text: str, *, max_models: int = 16) -> list[dict]:
+def parse_agy_models_output(raw_text: str) -> list[dict]:
     """Parse `agy models` output into candidate cells without assuming static model prefixes."""
     cleaned = _ANSI_ESCAPE.sub("\n", raw_text or "")
     entries: list[tuple[str, str]] = []
@@ -221,7 +218,7 @@ def parse_agy_models_output(raw_text: str, *, max_models: int = 16) -> list[dict
 
     candidates: list[dict] = []
     seen: set[tuple[str, str]] = set()
-    for slug, display in entries[:max_models]:
+    for slug, display in entries:
         effort = "medium"
         paren = _PAREN_EFFORT.search(display)
         if paren and paren.group(1).lower() in _EFFORT_SUFFIXES:

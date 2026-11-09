@@ -12,7 +12,7 @@ agroute candidates --host agy --output /tmp/task-candidates.json --json
 
 Unless explicitly overridden in `agroute.toml`, `agroute` automatically discovers the live
 available models and reasoning efforts from the installed `codex`, `claude`, and `agy` clients.
-`--output` writes the raw 1–32-element candidate JSON array expected by `howhard`'s
+`--output` writes the full eligible candidate JSON array consumed by `howhard`'s
 `--candidates` flag, while stdout prints the full `agroute-candidates-v1` envelope including
 any `excluded` agents or model tiers and their quota exclusion reasons.
 
@@ -74,3 +74,8 @@ howhard memory learn-context EXECUTION_ID --json
 When `execution_mode == "cli"` produces an owned JSONL artifact for Codex (`codex-exec-v1`)
 or Claude Code (`claude-sdk-v1`), collect and attach measured token usage through
 `howhard usage collect` and `howhard usage attach` as documented in `howhard`.
+
+There is no model-count or cell-count cap. Every current model and supported effort is
+emitted after quota filtering. Use `--include-agents` to restrict agents by policy. A
+consumer with a smaller supported inventory must report its own validation error;
+agroute never truncates the inventory to satisfy it.

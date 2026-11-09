@@ -21,16 +21,17 @@ defaults and automatically discovers the currently available models and reasonin
 from the locally installed agents at runtime:
 
 - **Codex (`codex`)**: reads `${CODEX_HOME:-~/.codex}/models_cache.json`, keeps visible models
-  from the highest available generation ordered by `priority`, and selects representative
-  supported reasoning levels (`supported_reasoning_levels`).
+  from the highest available numeric generation in model slugs (opaque unversioned IDs
+  are retained), ordered by `priority`, and emits every supported reasoning level
+  (`supported_reasoning_levels`).
 - **Claude Code (`claude`)**: reads the newest catalog in
   `${CLAUDE_CONFIG_DIR:-~/.claude}/cache/model-catalog/*.json`, selects `main` (`quick_select`)
-  models, infers quota tier (`opus`, `fable`, `sonnet`, `haiku`), and selects representative
-  `runtime.effort_levels`.
+  models (falling back to all catalog models only when none are marked), infers quota tier
+  (`opus`, `fable`, `sonnet`, `haiku`), and emits every `runtime.effort_levels` value.
 - **Antigravity (`agy`)**: uses the host `invoke_subagent` schema tiers (`pro`, `flash`,
   `flash_lite` at `standard` effort) for `native_candidates`, and queries `agy models` (cached
   in `${AGROUTE_SPOOL_DIR:-~/.local/share/agroute}/agy_models_cache.json`, refreshable via
-  `agroute models --refresh`) for `cli_candidates`.
+  `agroute models --refresh`) for `cli_candidates`, retaining every listed model.
 
 Inspect discovered or configured models per agent and surface with `agroute models [--refresh] [--json]`.
 Explicit `[[agents.<name>.native_candidates]]` or `[[agents.<name>.cli_candidates]]` entries in
@@ -40,8 +41,13 @@ Explicit `[[agents.<name>.native_candidates]]` or `[[agents.<name>.cli_candidate
 `agent == HOST` and `cli_candidates` for `agent != HOST`, filters out quota-blocked agents
 and model tiers, and prefixes every bare model ID with `<agent>/` (or `<agent>:` when
 `namespace_separator = ":"`). `model_default`, `null`, and empty effort controls are refused.
-The emitted list contains 1–32 distinct cells; if all routes are exhausted, `agroute` fails
-closed with an `AgRouteError` naming each agent's exclusion reason.
+The emitted list is the full eligible inventory with no model-count or cell-count cap.
+Efforts appear in canonical order (`low`, `medium`, `high`, `xhigh`, `max`), followed by
+additional efforts in their declared order. Missing effort catalogs retain the declared
+default effort (or `medium`). Use `--include-agents` to restrict agents by policy.
+Quota exclusions remain visible in `excluded` with their reasons. If all routes are
+exhausted, `agroute` fails closed with an `AgRouteError` naming each exclusion reason.
+Consumer limits are validated by the consumer; agroute never drops cells to fit them.
 
 (native-quota-tracking)=
 ## Native quota and rate-limit tracking
