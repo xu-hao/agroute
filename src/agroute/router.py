@@ -18,6 +18,8 @@ from .usage import (
     probe_usage,
     read_store,
     resolve_model_quota,
+    usage_warnings,
+    visible_agent_state,
 )
 from .validation import (
     AGENTS,
@@ -113,9 +115,11 @@ class Router:
         store = read_store(self.config)
         names = [agent_id(agent, "agent")] if agent is not None else list(AGENTS)
         agents_out = {}
+        warnings = []
         for name in names:
-            eff = effective_agent_state(store["agents"][name], now_dt)
             cfg = self.config.agents[name]
+            warnings.extend(usage_warnings(name, store["agents"][name], cfg, now_dt))
+            eff = visible_agent_state(name, store["agents"][name], cfg, now_dt)
             ok_target, reason_target = evaluate_agent_quota(name, cfg, eff, is_host=False)
             ok_host, reason_host = evaluate_agent_quota(name, cfg, eff, is_host=True)
             agents_out[name] = {
@@ -131,6 +135,7 @@ class Router:
             "format": "agroute-usage-snapshot-v1",
             "evaluated_at": format_timestamp(now_dt),
             "agents": agents_out,
+            "warnings": warnings,
         }
 
     def usage_set(
@@ -176,7 +181,7 @@ class Router:
 
     def usage_probe(self, agent=None, *, now=None):
         probed = probe_usage(self.config, agent, now=now)
-        return {"probed": probed}
+        return {"probed": probed, "warnings": [warning for state in probed.values() for warning in state.get("probe", {}).get("warnings", [])]}
 
     def usage_clear(self, agent=None):
         cleared = clear_usage(self.config, agent)
@@ -199,10 +204,12 @@ class Router:
         admitted = []
         admitted_meta = {}
         excluded = []
+        warnings = []
 
         for name in agent_order:
             cfg = self.config.agents[name]
-            eff = effective_agent_state(store["agents"][name], now_dt)
+            warnings.extend(usage_warnings(name, store["agents"][name], cfg, now_dt))
+            eff = visible_agent_state(name, store["agents"][name], cfg, now_dt)
             is_host = name == host
             ok_agent, reason_agent = evaluate_agent_quota(name, cfg, eff, is_host=is_host)
             if not ok_agent:
@@ -261,11 +268,13 @@ class Router:
 
         if not admitted:
             reasons = "; ".join(f"{e['agent']}: {e['reason']}" for e in excluded) or "none configured"
-            raise AgRouteError(f"candidates: no eligible candidate routes available ({reasons})")
-        return host, now_dt, admitted, admitted_meta, excluded
+            error = AgRouteError(f"candidates: no eligible candidate routes available ({reasons})")
+            error.details = {"format": "agroute-candidates-v1", "host_agent": host, "evaluated_at": format_timestamp(now_dt), "candidates": [], "excluded": excluded, "warnings": warnings}
+            raise error
+        return host, now_dt, admitted, admitted_meta, excluded, warnings
 
     def candidates(self, host=None, *, include_agents=None, now=None):
-        host, now_dt, admitted, _, excluded = self._collect_eligible(
+        host, now_dt, admitted, _, excluded, warnings = self._collect_eligible(
             host, include_agents=include_agents, now=now
         )
         return {
@@ -274,6 +283,7 @@ class Router:
             "evaluated_at": format_timestamp(now_dt),
             "candidates": admitted,
             "excluded": excluded,
+            "warnings": warnings,
         }
 
     def inventory(self, host=None, *, name="router", include_agents=None, now=None):
@@ -284,6 +294,7 @@ class Router:
             "inventory_name": name,
             "inventories": {name: res["candidates"]},
             "excluded": res["excluded"],
+            "warnings": res["warnings"],
         }
 
     def format_inventory_toml(self, host=None, *, name="router", include_agents=None, now=None):
@@ -313,7 +324,7 @@ class Router:
         include_agents=None,
         now=None,
     ):
-        host, now_dt, _, admitted_meta, excluded = self._collect_eligible(
+        host, now_dt, _, admitted_meta, excluded, warnings = self._collect_eligible(
             host, include_agents=include_agents, now=now
         )
         table(decision, "decision")
@@ -510,6 +521,7 @@ class Router:
             "invocation": invocation,
             "fallback": fallback,
             "feedback": feedback,
+            "warnings": warnings,
         }
         result["route_id"] = record_plan_route(self.config, result)
         return result

@@ -47,6 +47,8 @@ additional efforts in their declared order. Missing effort catalogs retain the d
 default effort (or `medium`). Use `--include-agents` to restrict agents by policy.
 Quota exclusions remain visible in `excluded` with their reasons. If all routes are
 exhausted, `agroute` fails closed with an `AgRouteError` naming each exclusion reason.
+With `candidates --json`, the failing command also emits an empty `candidates` list,
+structured `excluded` reasons, and `warnings` before exiting with status 1.
 Consumer limits are validated by the consumer; agroute never drops cells to fit them.
 
 (native-quota-tracking)=
@@ -66,6 +68,58 @@ Window evaluation is time-aware: any window or cooldown with `now >= reset_at` e
 automatically at evaluation time. Unknown windows remain `null` and are never treated as `0.0`.
 Post-execution token and cost accounting belongs to `howhard` (`howhard usage collect` and
 `howhard usage attach`).
+
+### Claude availability evidence and freshness
+
+Claude reports may name a limit with a string scope or a structured
+`scope.model.display_name` (falling back to `id` or `name`). Names are lowercased and
+sanitized to letters, digits, underscores and hyphens. A meaningful `surface` is appended;
+for example Fable on Claude Code becomes `fable-claude-code`. The base tier and its
+`-5h` or `-weekly` variant are retained. Model matching uses the existing model/tier
+tokens, so a Fable limit affects Fable cells. Each malformed or unknown limit is skipped
+individually; recognized limits still apply and probe JSON includes `warnings`.
+
+A `rejected`, `rate_limited`, `exhausted`, or numeric 429 rate-limit status is availability
+evidence even without a percentage. `seven_day` names the weekly quota and `five_hour`
+the session quota; model scopes affect only that model. Unscoped credit/entitlement
+rejections affect the whole agent. `overageStatus: rejected` supplies no overage fallback.
+Active rejections exclude routes with a visible reason and reset time. Unknown usage
+remains `null`; rejection does not manufacture a 100% counter.
+
+Availability is reconciled separately for each model/surface and window. Newer authoritative
+quota reports or accepted/allowed events supersede rejection for the refreshed quota,
+including access restored by a plan upgrade before the old reset. A plan change alone does
+not establish remaining quota. An unrelated successful request or partial report cannot
+clear another rejected model/window. Recovery discards an obsolete rejection-era counter
+when no replacement is measured, while current measured usage and configured quota
+thresholds still apply. Ordinary accepted events preserve genuine measured counters.
+`now >= reset_at` expires the affected evidence. A successful probe command with no
+recognized quota/availability data is a failed probe and cannot restore access.
+
+Window metadata records `status`, `observed_at`, and, for measured percentages,
+`measured_at`. Recent transcript events are compared with persisted evidence even when a
+snapshot already exists. Explicit event timestamps determine ordering; untimestamped
+transcript events use their file time and a hashed source/line identity. A current probe
+supersedes previously observed identities for exactly the quotas it refreshes. Touching an
+old transcript cannot replay a rejection, while a newly recorded identical rejection is
+new evidence and can exclude the route again. Discovery reads the last 256 KiB of the five
+most recently modified transcript files.
+
+The snapshot's `updated_at` describes quota evidence time. `probe.attempted_at`,
+`probe.succeeded_at`, `probe.failed_at`, and `probe.error` track probe operations separately;
+failed probes preserve the data time. Old cached data is never counted as a fresh probe.
+`usage show`, `candidates`, `inventory`, and `plan` include top-level `warnings` when Claude
+evidence or the last successful probe is stale, or the latest probe failed. The configured
+age bound defaults to 1,800 seconds. After a failed probe, stale percentages are displayed
+as `null`; fresh measured counters and active rejection evidence remain effective.
+Older persisted Claude telemetry cooldowns are migrated into recoverable availability
+evidence. An unambiguous matching stored window/reset identifies the old quota; a new
+report may replace both the old rejection and reset after a plan change. Ambiguous old
+cooldowns remain access rejections, cleared by explicit unscoped accepted/allowed evidence
+or expiry, rather than by an unrelated partial quota counter.
+Unknown usage can remain eligible with a warning, subject to configured policy. This
+freshness policy applies to Claude; Codex and Antigravity retain their existing behavior.
+
 
 (execution-plan-resolution)=
 ## Execution plan resolution and host affinity

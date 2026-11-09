@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime, timezone
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -43,6 +44,8 @@ def _empty_agent_state():
         "tiers": {},
         "updated_at": None,
         "source": None,
+        "availability": _empty_window(),
+        "probe": {},
     }
 
 
@@ -61,14 +64,45 @@ def _now_utc(now=None):
 
 def _validate_window(win, where):
     table(win, where)
-    keys(win, ["used_pct", "reset_at"], where=where)
+    keys(win, ["used_pct", "reset_at"], ["status", "observed_at", "measured_at", "event_id", "superseded_events"], where=where)
     used = win["used_pct"]
     if used is not None:
         used = percentage(used, f"{where}.used_pct")
     reset_at = win["reset_at"]
     if reset_at is not None:
         reset_at = format_timestamp(parse_timestamp(reset_at, f"{where}.reset_at"))
-    return {"used_pct": used, "reset_at": reset_at}
+    result = {"used_pct": used, "reset_at": reset_at}
+    if "status" in win:
+        if win["status"] not in ("rejected", "allowed", "reported"):
+            raise AgRouteError(f"{where}.status: unsupported availability status")
+        result["status"] = win["status"]
+    for key in ("observed_at", "measured_at"):
+        if win.get(key) is not None:
+            result[key] = format_timestamp(parse_timestamp(win[key], f"{where}.{key}"))
+    if win.get("event_id") is not None:
+        result["event_id"] = text(win["event_id"], f"{where}.event_id", max_length=64)
+    if "superseded_events" in win:
+        ids = win["superseded_events"]
+        if not isinstance(ids, list) or any(not isinstance(value, str) or len(value) > 64 for value in ids):
+            raise AgRouteError(f"{where}.superseded_events: expected event identities")
+        result["superseded_events"] = list(dict.fromkeys(ids))
+    return result
+
+
+def _validate_probe(raw, where):
+    table(raw, where)
+    keys(raw, [], ["attempted_at", "succeeded_at", "failed_at", "error", "warnings"], where=where)
+    result = {}
+    for key in ("attempted_at", "succeeded_at", "failed_at"):
+        if raw.get(key) is not None:
+            result[key] = format_timestamp(parse_timestamp(raw[key], f"{where}.{key}"))
+    if raw.get("error") is not None:
+        result["error"] = text(raw["error"], f"{where}.error", max_length=4096)
+    warnings = raw.get("warnings", [])
+    if not isinstance(warnings, list) or any(not isinstance(value, str) for value in warnings):
+        raise AgRouteError(f"{where}.warnings: expected warning strings")
+    result["warnings"] = warnings
+    return result
 
 
 def _validate_store_payload(payload):
@@ -85,6 +119,7 @@ def _validate_store_payload(payload):
         keys(
             raw,
             ["session_5h", "weekly_7d", "rate_limited", "cooldown_until", "tiers", "updated_at", "source"],
+            ["availability", "probe"],
             where=where,
         )
         s5 = _validate_window(raw["session_5h"], f"{where}.session_5h")
@@ -112,8 +147,26 @@ def _validate_store_payload(payload):
             "tiers": tiers,
             "updated_at": updated,
             "source": src,
+            "availability": _validate_window(raw.get("availability", _empty_window()), f"{where}.availability"),
+            "probe": _validate_probe(raw.get("probe", {}), f"{where}.probe"),
         }
+        if name == "claude" and "availability" not in raw and "probe" not in raw:
+            _migrate_legacy_claude_state(normalized["agents"][name])
     return normalized
+
+
+def _migrate_legacy_claude_state(state):
+    """Retain old telemetry cooldowns as ordered, recoverable availability evidence."""
+    if not state["rate_limited"] or state["source"] not in ("probe", "ingest", "discovered"):
+        return
+    matches = [key for key in ("session_5h", "weekly_7d")
+               if state["cooldown_until"] and state[key]["reset_at"] == state["cooldown_until"]]
+    key = matches[0] if len(matches) == 1 else "availability"
+    win = {"used_pct": None, "reset_at": state["cooldown_until"], "status": "rejected"}
+    if state["updated_at"]:
+        win["observed_at"] = state["updated_at"]
+    state[key] = win
+    state["rate_limited"], state["cooldown_until"] = False, None
 
 
 @contextmanager
@@ -188,35 +241,43 @@ def _discover_codex_live_patch() -> dict:
 
 
 def _discover_claude_live_patch() -> dict:
-    """Discover latest rate_limit_event from ${CLAUDE_CONFIG_DIR:-~/.claude}/projects JSONL files."""
+    """Reconcile bounded recent transcript evidence by quota and event time."""
     projects_dir = _claude_home() / "projects"
     if not projects_dir.is_dir():
         return {}
     try:
-        files = sorted(
-            projects_dir.rglob("*.jsonl"),
-            key=lambda p: p.stat().st_mtime_ns,
-            reverse=True,
-        )[:5]
+        files = sorted(projects_dir.rglob("*.jsonl"), key=lambda p: p.stat().st_mtime_ns, reverse=True)[:5]
     except OSError:
         return {}
-    for path in files:
+    patch = {}
+    for path in reversed(files):
         try:
-            with path.open("rb") as f:
-                f.seek(0, os.SEEK_END)
-                size = f.tell()
-                read_len = min(size, 256 * 1024)
-                f.seek(size - read_len)
-                tail = f.read().decode("utf-8", errors="replace")
+            with path.open("rb") as handle:
+                handle.seek(0, os.SEEK_END)
+                size = handle.tell()
+                start_offset = max(0, size - 256 * 1024)
+                handle.seek(start_offset)
+                tail = handle.read().decode("utf-8", errors="replace")
+            fallback_time = format_timestamp(datetime.fromtimestamp(path.stat().st_mtime, timezone.utc))
         except OSError:
             continue
-        for line in reversed(tail.splitlines()):
-            if '"rate_limit_event"' not in line and '"rate_limit_info"' not in line:
+        offset = start_offset
+        for raw_line in tail.splitlines(keepends=True):
+            line, line_offset = raw_line.strip(), offset
+            offset += len(raw_line.encode("utf-8"))
+            if not any(token in line for token in ('"rate_limit_event"', '"rate_limit_info"', '"rateLimitInfo"')):
                 continue
-            patch: dict = {}
-            if _parse_json_events(line, patch) and patch:
-                return patch
-    return {}
+            event_patch = {}
+            if _parse_json_events(line, event_patch):
+                for key, win in _patch_windows(event_patch):
+                    win.setdefault("observed_at", fallback_time)
+                    if win.get("used_pct") is not None:
+                        win.setdefault("measured_at", win["observed_at"])
+                    win["event_id"] = hashlib.sha256(f"{path}:{line_offset}:{line}".encode()).hexdigest()
+                    previous = _get_window(patch, key)
+                    _put_window(patch, key, _merge_window(previous, win))
+                patch.setdefault("warnings", []).extend(event_patch.get("warnings", []))
+    return patch
 
 
 def _live_usage_cache_file() -> Path | None:
@@ -299,6 +360,27 @@ def read_store(config):
     store = _read_raw_store(config)
     for name in AGENTS:
         ag = store["agents"][name]
+        if name == "claude":
+            patch = _discover_claude_live_patch()
+            # A cache is fallback data, never a new successful probe.
+            if ag["updated_at"] is None and not patch:
+                cached = _read_shared_probe_cache(name)
+                if cached:
+                    for key, win in _patch_windows(cached):
+                        _put_window(ag, key, _validate_window(win, f"cached.claude.{key}"))
+                    for key in ("updated_at", "source", "rate_limited", "cooldown_until", "probe"):
+                        if key in cached:
+                            ag[key] = deepcopy(cached[key])
+                    if "availability" not in cached and "probe" not in cached:
+                        _migrate_legacy_claude_state(ag)
+            for key, win in _patch_windows(patch):
+                _put_window(ag, key, _merge_window(_get_window(ag, key), win))
+            times = [win["observed_at"] for _, win in _patch_windows(ag) if win.get("observed_at")]
+            if times:
+                ag["updated_at"] = max(times + ([ag["updated_at"]] if ag["updated_at"] else []), key=parse_timestamp)
+            if patch:
+                ag["source"] = "discovered" if ag["updated_at"] is None else ag["source"]
+            continue
         if (
             ag["updated_at"] is None
             and ag["session_5h"]["used_pct"] is None
@@ -332,10 +414,115 @@ def write_store(config, store):
     return validated
 
 
-def effective_agent_state(agent_state, now_dt):
+def _patch_windows(patch):
+    for key in ("session_5h", "weekly_7d", "availability"):
+        if isinstance(patch.get(key), dict):
+            yield key, patch[key]
+    for key, win in patch.get("tiers", {}).items():
+        yield "tiers." + key, win
+
+
+def _get_window(state, key):
+    if key.startswith("tiers."):
+        return state.get("tiers", {}).get(key[6:], _empty_window())
+    return state.get(key, _empty_window())
+
+
+def _put_window(state, key, win):
+    if key.startswith("tiers."):
+        state.setdefault("tiers", {})[key[6:]] = win
+    else:
+        state[key] = win
+
+
+def _merge_window(previous, incoming):
+    """Only newer evidence for this exact quota can supersede its availability."""
+    old_time, new_time = previous.get("observed_at"), incoming.get("observed_at")
+    ignored = previous.get("superseded_events", [])
+    if incoming.get("event_id") in ignored:
+        return deepcopy(previous)
+    if old_time and new_time and parse_timestamp(new_time) < parse_timestamp(old_time):
+        return deepcopy(previous)
+    result = deepcopy(previous)
+    if "status" in incoming:
+        result = deepcopy(incoming)
+        if (incoming["status"] == "allowed" and incoming.get("used_pct") is None
+                and previous.get("status") != "rejected" and previous.get("used_pct") is not None):
+            # Ordinary accepted work does not refresh or erase a real counter.
+            # Recovery from rejection, by contrast, leaves unknown usage null.
+            result["used_pct"] = previous["used_pct"]
+            measured_at = previous.get("measured_at") or previous.get("observed_at")
+            if measured_at:
+                result["measured_at"] = measured_at
+            result["reset_at"] = incoming.get("reset_at") or previous.get("reset_at")
+    else:
+        for key in ("used_pct", "reset_at"):
+            if incoming.get(key) is not None:
+                result[key] = incoming[key]
+    superseded = list(dict.fromkeys(ignored + incoming.get("superseded_events", [])))
+    if previous.get("event_id") and previous.get("event_id") != incoming.get("event_id"):
+        superseded.append(previous["event_id"])
+    if superseded:
+        result["superseded_events"] = list(dict.fromkeys(superseded))[-256:]
+    return result
+
+
+def _window_rejection_reason(agent, group, s5, w7):
+    for label, win in (("session", s5), ("weekly", w7)):
+        if win.get("status") == "rejected":
+            scope = "" if group == "shared" else f" {group}"
+            until = f" until {win['reset_at']}" if win["reset_at"] else ""
+            return f"{agent}{scope} {label} limit rejected{until}"
+    return None
+
+
+def _rejection_reason(agent, state):
+    reason = _window_rejection_reason(agent, "shared", state["session_5h"], state["weekly_7d"])
+    availability = state.get("availability", {})
+    if reason:
+        return reason
+    if availability.get("status") == "rejected":
+        until = f" until {availability['reset_at']}" if availability.get("reset_at") else ""
+        return f"{agent} access rejected{until}"
+    return None
+
+
+def usage_warnings(agent, state, cfg, now_dt):
+    if agent != "claude":
+        return []
+    probe = state.get("probe", {})
+    success = probe.get("succeeded_at")
+    data_time = state.get("updated_at")
+    references = [value for value in (success, data_time) if value]
+    reference = min(references, key=parse_timestamp) if references else None
+    stale = reference is None or (now_dt - parse_timestamp(reference)).total_seconds() > cfg["usage_stale_after_seconds"]
+    failed = probe.get("failed_at") and (not success or parse_timestamp(probe["failed_at"]) >= parse_timestamp(success))
+    warnings = list(probe.get("warnings", []))
+    if stale or failed:
+        message = f"claude usage snapshot stale since {reference or 'unknown'}" if stale else "claude usage snapshot uncertain"
+        if failed:
+            message += f"; last probe failed at {probe['failed_at']}: {probe.get('error', 'unknown error')}"
+        warnings.append(message)
+    return warnings
+
+
+def visible_agent_state(agent, state, cfg, now_dt):
+    result = effective_agent_state(state, now_dt)
+    if agent == "claude":
+        probe = result.get("probe", {})
+        success, failure = probe.get("succeeded_at"), probe.get("failed_at")
+        if failure and (not success or parse_timestamp(failure) >= parse_timestamp(success)):
+            for _, win in _patch_windows(result):
+                measured_at = win.get("measured_at") or win.get("observed_at") or result.get("updated_at")
+                if measured_at is None or (now_dt - parse_timestamp(measured_at)).total_seconds() > cfg["usage_stale_after_seconds"]:
+                    win["used_pct"] = None
+    return result
+
+
+def effective_agent_state(agent_state, now_dt, *, project_rejections=True):
     state = deepcopy(agent_state)
-    for win_key in ("session_5h", "weekly_7d"):
-        win = state[win_key]
+    for win_key in ("session_5h", "weekly_7d", "availability"):
+        win = state.setdefault(win_key, _empty_window())
         if win["reset_at"] is not None and now_dt >= parse_timestamp(win["reset_at"]):
             state[win_key] = _empty_window()
     if state["cooldown_until"] is not None and now_dt >= parse_timestamp(state["cooldown_until"]):
@@ -347,6 +534,13 @@ def effective_agent_state(agent_state, now_dt):
             continue
         active_tiers[tier_name] = tier_win
     state["tiers"] = active_tiers
+    if project_rejections:
+        for key in ("session_5h", "weekly_7d", "availability"):
+            win = state[key]
+            if win.get("status") == "rejected":
+                state["rate_limited"] = True
+                state["cooldown_until"] = win["reset_at"]
+                break
     return state
 
 
@@ -354,6 +548,9 @@ def evaluate_agent_quota(agent_name, agent_cfg, effective_state, *, is_host=Fals
     """Return (eligible: bool, reason: str | None) for the agent as a whole."""
     if not agent_cfg["enabled"]:
         return False, "agent is disabled in configuration"
+    rejection = _rejection_reason(agent_name, effective_state)
+    if rejection:
+        return False, rejection
     if effective_state["rate_limited"]:
         until = effective_state["cooldown_until"]
         suffix = f" until {until}" if until else ""
@@ -419,6 +616,13 @@ def resolve_model_quota(agent_name, agent_cfg, effective_state, candidate, *, is
         w7 = deepcopy(effective_state["weekly_7d"])
         quota_group = "shared"
 
+    rejection = _rejection_reason(agent_name, effective_state) or _window_rejection_reason(
+        agent_name, quota_group, s5, w7
+    )
+    if rejection and agent_cfg["enabled"]:
+        return {"model": model_id, "surface": surface, "quota_group": quota_group,
+                "session_5h": s5, "weekly_7d": w7, "eligible": False,
+                "exclusion_reason": rejection}
     if not agent_cfg["enabled"]:
         return {
             "model": model_id,
@@ -616,44 +820,128 @@ def _apply_agy_usage_command(cmd_data: dict, patch: dict) -> bool:
     return changed
 
 
-def _apply_claude_usage_report(report: dict, patch: dict) -> bool:
+def _claude_scope(scope):
+    if scope is None or scope == "":
+        return None
+    if isinstance(scope, dict):
+        model = scope.get("model")
+        if isinstance(model, dict):
+            model = model.get("display_name") or model.get("id") or model.get("name")
+        surface = scope.get("surface")
+        if isinstance(surface, dict):
+            surface = surface.get("display_name") or surface.get("id") or surface.get("name")
+        if not isinstance(model, str) or not model.strip():
+            raise AgRouteError("claude scope: missing recognized model name")
+        if surface is not None and not isinstance(surface, str):
+            raise AgRouteError("claude scope: unrecognized surface")
+        scope = model + ("-" + surface if surface and surface.strip() else "")
+    if not isinstance(scope, str):
+        raise AgRouteError("claude scope: expected a model name or structured scope")
+    slug = re.sub(r"[^a-z0-9_-]+", "-", scope.lower()).strip("-_")
+    text(slug, "claude scope", label=True, max_length=57)
+    return slug
+
+
+def _claude_window_type(kind, group=""):
+    kind, group = str(kind or "").lower(), str(group or "").lower()
+    if kind in ("session", "five_hour", "session_5h", "5h") or group == "session":
+        return "session_5h", None
+    if kind in ("weekly_all", "weekly", "seven_day", "weekly_7d", "7d") or group == "weekly":
+        return "weekly_7d", None
+    for prefix in ("weekly_", "seven_day_", "five_hour_"):
+        if kind.startswith(prefix):
+            return ("session_5h" if prefix == "five_hour_" else "weekly_7d"), _claude_scope(kind[len(prefix):])
+    raise AgRouteError(f"claude limit: unrecognized window {kind!r}")
+
+
+def _claude_put(patch, kind, scope, win, group=""):
+    slot, inferred_scope = _claude_window_type(kind, group)
+    scope_key = _claude_scope(scope) or inferred_scope
+    if scope_key:
+        suffix = "5h" if slot == "session_5h" else "weekly"
+        tiers = patch.setdefault("tiers", {})
+        # Keep the legacy bare tier alias while reconciling availability by window.
+        for key in (scope_key, f"{scope_key}-{suffix}"):
+            tiers[key] = _merge_window(tiers.get(key, _empty_window()), win)
+    else:
+        patch[slot] = _merge_window(patch.get(slot, _empty_window()), win)
+
+
+def _claude_evidence(item, timestamp=None, event_id=None):
+    win = _extract_window_dict(item, "claude limit")
+    status = item.get("status")
+    if status in ("rejected", "rate_limited", "exhausted", 429) or item.get("rate_limited") is True:
+        win["status"] = "rejected"
+    elif status in ("allowed", "accepted"):
+        win["status"] = "allowed"
+    elif win["used_pct"] is not None:
+        win["status"] = "reported"
+    if timestamp is not None:
+        win["observed_at"] = format_timestamp(parse_timestamp(timestamp, "claude event timestamp"))
+    if event_id:
+        win["event_id"] = event_id
+    return win
+
+
+def _warn(patch, exc):
+    patch.setdefault("warnings", []).append(str(exc))
+
+
+def _apply_claude_usage_report(report, patch, timestamp=None):
     rl = report.get("rate_limits")
-    if not isinstance(rl, dict):
-        return False
-    limits = rl.get("limits")
-    if not isinstance(limits, list):
+    if not isinstance(rl, dict) or not isinstance(rl.get("limits"), list):
         return False
     changed = False
-    tiers = patch.setdefault("tiers", {})
-    for item in limits:
-        if not isinstance(item, dict):
-            continue
-        win = _extract_window_dict(item, "claude.usage_report.limits")
-        if win["used_pct"] is None and win["reset_at"] is None:
-            continue
-        scope = item.get("scope")
-        kind = str(item.get("kind") or "").strip().lower()
-        group = str(item.get("group") or "").strip().lower()
-        if scope:
-            scope_key = str(scope).strip().lower()
-            tiers[scope_key] = win
-            if group == "session" or "5h" in kind or "session" in kind:
-                tiers[f"{scope_key}-5h"] = win
+    for index, item in enumerate(rl["limits"]):
+        try:
+            table(item, f"claude limits[{index}]")
+            win = _claude_evidence(item, timestamp)
+            if "status" not in win:
+                raise AgRouteError(f"claude limits[{index}]: no recognized availability or percentage")
+            _claude_put(patch, item.get("kind"), item.get("scope"), win, item.get("group"))
+            changed = True
+        except (AgRouteError, TypeError, ValueError) as exc:
+            _warn(patch, f"claude limits[{index}] skipped: {exc}")
+    return changed
+
+
+def _apply_claude_event(obj, patch):
+    rli = obj.get("rate_limit_info", obj.get("rateLimitInfo", obj))
+    if not isinstance(rli, dict):
+        _warn(patch, "claude rate-limit event skipped: unrecognized payload")
+        return False
+    timestamp = obj.get("timestamp", rli.get("timestamp"))
+    event_id = hashlib.sha256(json.dumps(obj, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    changed = False
+    entries = []
+    kind = rli.get("rate_limit_type", rli.get("rateLimitType", rli.get("window")))
+    if kind is not None:
+        entries.append((kind, rli))
+    elif rli.get("status") in ("rejected", "rate_limited", "exhausted", "allowed", "accepted", 429):
+        # Credit/entitlement rejection without a quota window is agent-wide.
+        try:
+            win = _claude_evidence(rli, timestamp, event_id)
+            scope = _claude_scope(rli.get("scope"))
+            if scope:
+                patch.setdefault("tiers", {})[scope] = win
             else:
-                tiers[f"{scope_key}-weekly"] = win
+                patch["availability"] = _merge_window(patch.get("availability", _empty_window()), win)
             changed = True
-        elif kind in ("session", "five_hour", "5h") or group == "session":
-            patch["session_5h"] = win
+        except (AgRouteError, TypeError, ValueError) as exc:
+            _warn(patch, f"claude rate-limit event skipped: {exc}")
+    unified = rli.get("unifiedWindows")
+    if isinstance(unified, dict):
+        entries.extend(unified.items())
+    for entry_kind, item in entries:
+        try:
+            table(item, "claude rate-limit window")
+            win = _claude_evidence(item, timestamp, event_id)
+            if "status" not in win:
+                continue
+            _claude_put(patch, entry_kind, item.get("scope", rli.get("scope")), win)
             changed = True
-        elif kind in ("weekly_all", "weekly", "seven_day", "7d") or group == "weekly":
-            patch["weekly_7d"] = win
-            changed = True
-        elif kind.startswith(("weekly_", "seven_day_")):
-            suffix = kind.split("_", 1)[1].replace("day_", "").strip()
-            if suffix and suffix != "all":
-                tiers[suffix] = win
-                tiers[f"{suffix}-weekly"] = win
-                changed = True
+        except (AgRouteError, TypeError, ValueError) as exc:
+            _warn(patch, f"claude rate-limit window skipped: {exc}")
     return changed
 
 
@@ -724,7 +1012,7 @@ def _parse_json_events(raw_text, patch):
                 changed = True
         usage_rep = obj.get("usage_report")
         if isinstance(usage_rep, dict):
-            if _apply_claude_usage_report(usage_rep, patch):
+            if _apply_claude_usage_report(usage_rep, patch, obj.get("timestamp")):
                 changed = True
         payload = obj.get("payload")
         if isinstance(payload, dict):
@@ -735,52 +1023,15 @@ def _parse_json_events(raw_text, patch):
             if isinstance(info, dict) and isinstance(info.get("rate_limits"), dict):
                 if _apply_rate_limits_dict(info["rate_limits"], patch, "payload.info.rate_limits"):
                     changed = True
-        if obj.get("type") == "rate_limit_event" or "rate_limit_info" in obj:
-            rli = obj.get("rate_limit_info", obj)
-            if isinstance(rli, dict):
-                status = rli.get("status")
-                resets_raw = rli.get("resets_at", rli.get("reset_at", rli.get("resetsAt")))
-                reset_iso = (
-                    format_timestamp(parse_timestamp(resets_raw, "rate_limit_info.resets_at"))
-                    if resets_raw is not None
-                    else None
-                )
-                if status in ("rejected", "rate_limited", "exhausted") or rli.get("rate_limited") is True:
-                    patch["rate_limited"] = True
-                    if reset_iso is not None:
-                        patch["cooldown_until"] = reset_iso
-                    changed = True
-                if _apply_rate_limits_dict(rli, patch, "rate_limit_info"):
-                    changed = True
-                unified = rli.get("unifiedWindows")
-                if isinstance(unified, dict):
-                    if isinstance(unified.get("five_hour"), dict):
-                        win5 = _extract_window_dict(unified["five_hour"], "rate_limit_info.unifiedWindows.five_hour")
-                        if win5["used_pct"] is not None or win5["reset_at"] is not None:
-                            patch["session_5h"] = win5
-                            changed = True
-                    if isinstance(unified.get("seven_day"), dict):
-                        win7 = _extract_window_dict(unified["seven_day"], "rate_limit_info.unifiedWindows.seven_day")
-                        if win7["used_pct"] is not None or win7["reset_at"] is not None:
-                            patch["weekly_7d"] = win7
-                            changed = True
-                win_type = rli.get("rate_limit_type", rli.get("rateLimitType", rli.get("window")))
-                if win_type in ("five_hour", "session_5h", "5h") and "session_5h" not in patch:
-                    win = _extract_window_dict(rli, "rate_limit_info")
-                    if win["used_pct"] is not None or win["reset_at"] is not None:
-                        patch["session_5h"] = win
-                        changed = True
-                elif win_type in ("seven_day", "weekly_7d", "7d", "weekly") and "weekly_7d" not in patch:
-                    win = _extract_window_dict(rli, "rate_limit_info")
-                    if win["used_pct"] is not None or win["reset_at"] is not None:
-                        patch["weekly_7d"] = win
-                        changed = True
+        if obj.get("type") == "rate_limit_event" or "rate_limit_info" in obj or "rateLimitInfo" in obj:
+            if _apply_claude_event(obj, patch):
+                changed = True
         if obj.get("type") == "result" and obj.get("is_error") is True:
             err_text = str(obj.get("result") or "").lower()
             if (
                 obj.get("api_error_status") in (401, 403, 429)
                 or obj.get("terminal_reason") in ("api_error", "rate_limit")
-                or any(k in err_text for k in ("rate limit", "quota", "subscription", "usage limit"))
+                or any(k in err_text for k in ("rate limit", "quota", "subscription", "usage limit", "hit your weekly limit"))
             ):
                 patch["rate_limited"] = True
                 changed = True
@@ -880,10 +1131,19 @@ def parse_native_usage(agent, raw_text):
     if not isinstance(raw_text, str) or not raw_text.strip():
         raise AgRouteError("usage ingest: input text is empty")
     patch = {}
-    if not _parse_json_events(raw_text, patch):
-        _parse_text_usage(raw_text, patch)
-    if not patch:
+    recognized = _parse_json_events(raw_text, patch)
+    if not recognized:
+        recognized = _parse_text_usage(raw_text, patch)
+    if not recognized:
         raise AgRouteError(f"usage ingest: no recognizable native usage or rate-limit data found for '{agent}'")
+    if agent == "claude" and patch.get("rate_limited") is True:
+        slot = "weekly_7d" if "weekly limit" in raw_text.lower() else "availability"
+        win = patch.get(slot, _empty_window())
+        win["status"] = "rejected"
+        win["reset_at"] = patch.get("cooldown_until") or win["reset_at"]
+        patch[slot] = win
+        patch.pop("rate_limited", None)
+        patch.pop("cooldown_until", None)
     return patch
 
 
@@ -892,55 +1152,45 @@ def apply_usage_patch(config, agent, patch, *, source="ingest", now=None):
     now_dt = _now_utc(now)
     with _usage_locked(config):
         store = _read_raw_store(config)
-        current = effective_agent_state(store["agents"][agent], now_dt)
-        if "session_5h" in patch:
-            s5 = patch["session_5h"]
-            if s5.get("used_pct") is not None:
-                current["session_5h"]["used_pct"] = percentage(s5["used_pct"], "session_5h.used_pct")
-            if s5.get("reset_at") is not None:
-                current["session_5h"]["reset_at"] = format_timestamp(
-                    parse_timestamp(s5["reset_at"], "session_5h.reset_at")
-                )
-        if "weekly_7d" in patch:
-            w7 = patch["weekly_7d"]
-            if w7.get("used_pct") is not None:
-                current["weekly_7d"]["used_pct"] = percentage(w7["used_pct"], "weekly_7d.used_pct")
-            if w7.get("reset_at") is not None:
-                current["weekly_7d"]["reset_at"] = format_timestamp(
-                    parse_timestamp(w7["reset_at"], "weekly_7d.reset_at")
-                )
+        current = effective_agent_state(store["agents"][agent], now_dt, project_rejections=False)
+        for key, win in _patch_windows(patch):
+            incoming = _validate_window(win, key)
+            if agent == "claude" and source in ("ingest", "probe"):
+                if incoming.get("used_pct") is not None:
+                    incoming.setdefault("status", "reported")
+                incoming.setdefault("observed_at", format_timestamp(now_dt))
+                if incoming.get("used_pct") is not None:
+                    incoming.setdefault("measured_at", incoming["observed_at"])
+            _put_window(current, key, _merge_window(_get_window(current, key), incoming))
         if "rate_limited" in patch and patch["rate_limited"] is not None:
             current["rate_limited"] = boolean(patch["rate_limited"], "rate_limited")
             if not current["rate_limited"] and "cooldown_until" not in patch:
                 current["cooldown_until"] = None
         if "cooldown_until" in patch:
             cd = patch["cooldown_until"]
-            current["cooldown_until"] = (
-                format_timestamp(parse_timestamp(cd, "cooldown_until")) if cd is not None else None
-            )
-            if current["cooldown_until"] is not None and "rate_limited" not in patch:
+            current["cooldown_until"] = format_timestamp(parse_timestamp(cd, "cooldown_until")) if cd is not None else None
+            if cd is not None and "rate_limited" not in patch:
                 current["rate_limited"] = True
-        if "tiers" in patch and isinstance(patch["tiers"], dict):
-            for tier_name, tier_win in patch["tiers"].items():
-                text(tier_name, f"tiers.{tier_name}", label=True, max_length=64)
-                existing_tier = current["tiers"].get(tier_name, _empty_window())
-                if tier_win.get("used_pct") is not None:
-                    existing_tier["used_pct"] = percentage(
-                        tier_win["used_pct"], f"tiers.{tier_name}.used_pct"
-                    )
-                if tier_win.get("reset_at") is not None:
-                    existing_tier["reset_at"] = format_timestamp(
-                        parse_timestamp(tier_win["reset_at"], f"tiers.{tier_name}.reset_at")
-                    )
-                current["tiers"][tier_name] = existing_tier
-        current = effective_agent_state(current, now_dt)
-        current["updated_at"] = format_timestamp(now_dt)
+        current = effective_agent_state(current, now_dt, project_rejections=False)
+        # Snapshot time describes quota evidence; failures never refresh it.
+        if agent == "claude" and source in ("ingest", "probe"):
+            times = [win["observed_at"] for _, win in _patch_windows(current) if win.get("observed_at")]
+            if current["updated_at"]:
+                times.append(current["updated_at"])
+            current["updated_at"] = max(times, key=parse_timestamp) if times else format_timestamp(now_dt)
+        else:
+            current["updated_at"] = format_timestamp(now_dt)
         current["source"] = source
+        if source == "probe" and agent == "claude":
+            current["probe"].update(attempted_at=format_timestamp(now_dt), succeeded_at=format_timestamp(now_dt),
+                                    warnings=patch.get("warnings", []))
+            current["probe"].pop("error", None)
+            current["probe"].pop("failed_at", None)
         store["agents"][agent] = current
         write_store(config, store)
         if source in ("probe", "ingest"):
             _write_shared_probe_cache(agent, current)
-        return current
+        return effective_agent_state(current, now_dt)
 
 
 def clear_usage(config, agent=None):
@@ -1012,7 +1262,20 @@ def _builtin_probe_patch(name: str, cwd: Path) -> dict | None:
     try:
         return get_adapter(name).probe_usage(cwd)
     except Exception:
+        if name == "claude":
+            raise
         return None
+
+
+def _record_probe_failure(config, name, exc, now):
+    if name != "claude":
+        return
+    with _usage_locked(config):
+        store = _read_raw_store(config)
+        probe = store["agents"][name].setdefault("probe", {})
+        probe.update(attempted_at=format_timestamp(_now_utc(now)), failed_at=format_timestamp(_now_utc(now)),
+                     error=str(exc)[:4096])
+        write_store(config, store)
 
 
 def probe_usage(config, agent=None, *, now=None):
@@ -1021,30 +1284,33 @@ def probe_usage(config, agent=None, *, now=None):
     ]
     results = {}
     for name in targets:
-        cmd = config.agents[name]["usage_probe_cmd"]
-        if not cmd:
-            patch = _builtin_probe_patch(name, config.capture_root)
-            if patch is not None:
-                results[name] = apply_usage_patch(config, name, patch, source="probe", now=now)
-            elif agent is not None:
-                raise AgRouteError(f"usage probe: agents.{name}.usage_probe_cmd is not configured and no live telemetry found")
-            continue
         try:
-            proc = subprocess.run(
-                cmd,
-                cwd=config.capture_root,
-                capture_output=True,
-                text=True,
-                timeout=15,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise AgRouteError(f"usage probe: failed to run probe command for '{name}': {exc}") from exc
-        combined = "\n".join(part for part in (proc.stdout, proc.stderr) if part).strip()
-        if proc.returncode != 0 and not combined:
-            raise AgRouteError(
-                f"usage probe: command for '{name}' exited with status {proc.returncode} and no output"
-            )
-        patch = parse_native_usage(name, combined)
-        results[name] = apply_usage_patch(config, name, patch, source="probe", now=now)
+            # Capture already-visible event identities before the current report.
+            # Untimestamped old transcript lines cannot regain authority if their
+            # file is touched after a plan upgrade.
+            observed = _discover_claude_live_patch() if name == "claude" else {}
+            cmd = config.agents[name]["usage_probe_cmd"]
+            if not cmd:
+                patch = _builtin_probe_patch(name, config.capture_root)
+                if not patch:
+                    raise AgRouteError(f"usage probe: agents.{name}.usage_probe_cmd is not configured and no live telemetry found")
+            else:
+                try:
+                    proc = subprocess.run(cmd, cwd=config.capture_root, capture_output=True, text=True, timeout=15, check=False)
+                except (OSError, subprocess.TimeoutExpired) as exc:
+                    raise AgRouteError(f"usage probe: failed to run probe command for '{name}': {exc}") from exc
+                combined = "\n".join(part for part in (proc.stdout, proc.stderr) if part).strip()
+                if proc.returncode != 0 and not combined:
+                    raise AgRouteError(f"usage probe: command for '{name}' exited with status {proc.returncode} and no output")
+                patch = parse_native_usage(name, combined)
+            if name == "claude":
+                for key, win in _patch_windows(patch):
+                    old = _get_window(observed, key)
+                    if old.get("event_id") and win.get("event_id") != old["event_id"]:
+                        win.setdefault("superseded_events", []).extend(old.get("superseded_events", []) + [old["event_id"]])
+            results[name] = apply_usage_patch(config, name, patch, source="probe", now=now)
+        except AgRouteError as exc:
+            _record_probe_failure(config, name, exc, now)
+            if agent is not None or config.agents[name]["usage_probe_cmd"]:
+                raise
     return results
