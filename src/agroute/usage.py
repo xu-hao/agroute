@@ -974,7 +974,7 @@ def _probe_codex_app_server(cwd: Path) -> dict | None:
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "initialize",
-                "params": {"clientInfo": {"name": "agroute", "version": "0.1.0"}},
+                "params": {"clientInfo": {"name": "agroute", "version": "0.2.0"}},
             },
             {"jsonrpc": "2.0", "method": "initialized", "params": {}},
             {"jsonrpc": "2.0", "id": 2, "method": "account/rateLimits/read", "params": {}},
