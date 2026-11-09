@@ -17,7 +17,7 @@ Packaged defaults in `agroute/data/default_config.toml` set `native_candidates =
 supported reasoning efforts dynamically at runtime from its local installation (`agroute models`),
 so configuration files do not need static model lists as providers release new models and
 retire older ones. Discovery retains every current model and supported effort, without
-numeric caps; see the [selection rules](reference.md#candidate-qualification).
+numeric caps; see the {ref}`selection rules <candidate-qualification>`.
 Explicit candidate lists override discovery for their respective surface. `candidates`
 and `inventory` emit the full eligible inventory; `--include-agents` restricts agents
 by policy, and never serves as an automatic size limit.
