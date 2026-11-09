@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.2 — 2026-11-09
+
+- Fix structured Claude model/surface scopes and skip malformed limit entries with
+  warnings while applying recognized entries. Honor scoped and shared rejected limits,
+  including events without percentages, with visible exclusion/reset reasons (#21).
+- Reconcile newer quota/accepted evidence so restored plan access works before an old
+  reset, preserve genuine measured counters, and distinguish old transcript replay from
+  a new identical rejection. Expose probe failure times and configurable Claude usage
+  staleness warnings; unknown percentages remain null (#21).
+
 ## 0.2.1 — 2026-11-09
 
 - Emit every supported effort for every current model, in canonical effort order, and
