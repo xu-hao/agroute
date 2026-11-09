@@ -51,7 +51,9 @@ closed with an `AgRouteError` naming each agent's exclusion reason.
 - `session_5h`: 5-hour rolling session window (`used_pct` in `0.0..100.0`, `reset_at` ISO-8601 UTC).
 - `weekly_7d`: 7-day rolling weekly window (`used_pct` in `0.0..100.0`, `reset_at` ISO-8601 UTC).
 - `tiers`: optional per-model or per-tier windows (such as `opus`, `sonnet`, `pro`, `flash`,
-  `flash_lite`) with `used_pct` and `reset_at`.
+  `flash_lite`, `argon`, `3p-5h`, `3p-weekly`) with `used_pct` and `reset_at`.
+- `models`: resolved per-model quota windows and eligibility (`session_5h`, `weekly_7d`,
+  `quota_group`, `eligible`, `exclusion_reason`) for every available native and CLI model.
 - `rate_limited` and `cooldown_until`: active rate-limit state and expiry timestamp.
 
 Window evaluation is time-aware: any window or cooldown with `now >= reset_at` expires
@@ -78,7 +80,7 @@ eligible candidate pool and emits an `agroute-execution-plan-v1` object:
     `output_capture_adapter = "codex-exec-v1"`.
   - `claude`: `claude -p --verbose --output-format stream-json --model <model> --effort <effort>`,
     `output_capture_adapter = "claude-sdk-v1"`.
-  - `agy`: `agy -p --output-format stream-json --model <model> --effort <effort>`,
+  - `agy`: `agy --output-format stream-json --model <model> --effort <effort> -p <prompt>`,
     `output_capture_adapter = "agy-print-v1"`.
 
 When `routing.host_affinity_epsilon > 0.0` and `howhard` chose a cross-agent route, `agroute plan`
