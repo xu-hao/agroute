@@ -1,7 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 — 2026-11-09
 
+- Provide pre-rendered non-interactive CLI fallback in `agroute plan` execution plans and skill
+  instructions (`skills/agroute/SKILL.md`) for immediate recovery when native subagent delegation
+  fails at launch due to client concurrency or slot limits, with raw native attribution (#17).
 - Refactor agent-specific candidate discovery, tool invocation planning, live quota telemetry
   discovery, zero-token probing, and quota bucket resolution into an extensible `AgentAdapter`
   interface with dynamic dispatch via `AgentRegistry` (`agroute.adapters`, `get_adapter`,
@@ -9,10 +12,10 @@
 - Discover available models and supported reasoning efforts dynamically at runtime from locally
   installed agents (`~/.codex/models_cache.json` for Codex, `~/.claude/cache/model-catalog/`
   for Claude Code, and `agy models` for Antigravity) instead of shipping hardcoded model lists
-  in `default_config.toml`, and expose `agroute models [--refresh] [--json]` (`Router.models()`).
+  in `default_config.toml`, and expose `agroute models [--refresh] [--json]` (`Router.models()`) (#11).
 - Add `agroute tui`, `agroute list`, and `agroute show <id>` to inspect realtime and historical
   model routes across repositories, correlating `<state_root>/routes.jsonl` with `.git/howhard/`
-  decisions and outcomes alongside live agent quota and eligibility state.
+  decisions and outcomes alongside live agent quota and eligibility state (#13).
 - Resolve per-model quota windows (`session_5h`, `weekly_7d`, `quota_group`, `eligible`, and
   `exclusion_reason` under `agents.<name>.models` in `agroute usage show`, `agroute models`,
   `agroute candidates`, and `agroute tui`) using zero-token built-in probes (`agy --output-format

@@ -83,6 +83,12 @@ eligible candidate pool and emits an `agroute-execution-plan-v1` object:
   - `agy`: `agy --output-format stream-json --model <model> --effort <effort> -p <prompt>`,
     `output_capture_adapter = "agy-print-v1"`.
 
+When `execution_mode = "native"`, `agroute plan` also attaches a `fallback` CLI command object
+(`argv`, `output_capture_adapter`, `prompt_delivery`) for the target model and effort. If native
+tool delegation fails at launch (for example, if a host client reaches its local concurrent subagent
+limit), the host agent can immediately execute `fallback` via CLI and record the outcome as raw native
+feedback (`howhard observe ... --native`).
+
 When `routing.host_affinity_epsilon > 0.0` and `howhard` chose a cross-agent route, `agroute plan`
 checks whether an eligible native host route in the decision's scored panel (`candidates`,
 `cells`, or `ranking`) has `cap_met != false` and expected cost `J_native <= J_chosen + epsilon`.
