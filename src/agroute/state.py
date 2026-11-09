@@ -2,12 +2,14 @@
 
 from contextlib import contextmanager
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import secrets
 import subprocess
+import tempfile
 
 from .files import atomic_write
 from .validation import AgRouteError
@@ -66,6 +68,13 @@ def read_identity(path):
     return value["id"]
 
 
+def _is_writable_dir(path: Path) -> bool:
+    cur = path
+    while not cur.exists() and cur.parent != cur:
+        cur = cur.parent
+    return os.access(cur, os.W_OK)
+
+
 def roots(project, *, explicit=False, state_directory=None):
     project = Path(project).resolve()
     common = git_path(project, "--git-common-dir")
@@ -83,6 +92,20 @@ def roots(project, *, explicit=False, state_directory=None):
     else:
         store = common / "agroute" if common else project / ".agroute"
     store = store.resolve()
+    if chosen_state is None and common is not None and not _is_writable_dir(common):
+        digest = hashlib.sha256(str(common).encode("utf-8")).hexdigest()[:16]
+        sandbox_base = Path(tempfile.gettempdir()) / f"agroute-sandbox-{os.getuid()}" / digest
+        existing_id = read_identity(identity_path) if identity_path.exists() else ""
+        identity_path = sandbox_base / "agroute-project.json"
+        store = (sandbox_base / "agroute").resolve()
+        if existing_id and not identity_path.exists():
+            try:
+                atomic_write(
+                    identity_path,
+                    json.dumps({"format": "agroute-project-v1", "id": existing_id}, sort_keys=True) + "\n",
+                )
+            except OSError:
+                pass
     if project.is_relative_to(store):
         raise AgRouteError("state: directory must not equal or contain the project capture root")
     if (not explicit or chosen_state is not None) and store.exists():

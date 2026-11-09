@@ -16,6 +16,7 @@ from .usage import (
     parse_native_usage,
     probe_usage,
     read_store,
+    resolve_model_quota,
 )
 from .validation import (
     AGENTS,
@@ -83,6 +84,29 @@ class Router:
             "user_config_path": str(self.config.user_config_path) if self.config.user_config_path else None,
         }
 
+    def _agent_model_quotas(self, name, cfg, eff):
+        nat_cands = deepcopy(cfg["native_candidates"]) if cfg["native_candidates"] else discover_agent_candidates(name, "native")
+        cli_cands = deepcopy(cfg["cli_candidates"]) if cfg["cli_candidates"] else discover_agent_candidates(name, "cli")
+        models_map = {}
+        for surface, cands, is_host in (("cli", cli_cands, False), ("native", nat_cands, True)):
+            for cand in cands:
+                mid = cand["model"]
+                q = resolve_model_quota(name, cfg, eff, cand, is_host=is_host, surface=surface)
+                if mid not in models_map:
+                    models_map[mid] = {
+                        "surface": surface,
+                        "efforts": [cand["effort"]],
+                        "quota_group": q["quota_group"],
+                        "session_5h": q["session_5h"],
+                        "weekly_7d": q["weekly_7d"],
+                        "eligible": q["eligible"],
+                        "exclusion_reason": q["exclusion_reason"],
+                    }
+                else:
+                    if cand["effort"] not in models_map[mid]["efforts"]:
+                        models_map[mid]["efforts"].append(cand["effort"])
+        return models_map
+
     def usage_show(self, agent=None, *, now=None):
         now_dt = _now_utc(now)
         store = read_store(self.config)
@@ -100,6 +124,7 @@ class Router:
                 "target_exclusion_reason": reason_target,
                 "eligible_as_host_native": ok_host,
                 "host_native_exclusion_reason": reason_host,
+                "models": self._agent_model_quotas(name, cfg, eff),
             }
         return {
             "format": "agroute-usage-snapshot-v1",
@@ -208,15 +233,15 @@ class Router:
                 continue
 
             for cand in source_list:
-                ok_tier, reason_tier = evaluate_candidate_tier(cfg, eff, cand)
-                if not ok_tier:
+                mq = resolve_model_quota(name, cfg, eff, cand, is_host=is_host, surface=surface_name)
+                if not mq["eligible"]:
                     excluded.append(
                         {
                             "agent": name,
                             "surface": surface_name,
                             "model": cand["model"],
                             "effort": cand["effort"],
-                            "reason": reason_tier,
+                            "reason": mq["exclusion_reason"],
                         }
                     )
                     continue
@@ -236,10 +261,16 @@ class Router:
         if not admitted:
             reasons = "; ".join(f"{e['agent']}: {e['reason']}" for e in excluded) or "none configured"
             raise AgRouteError(f"candidates: no eligible candidate routes available ({reasons})")
+        has_explicit = any(
+            bool(self.config.agents[n]["native_candidates" if n == host else "cli_candidates"])
+            for n in agent_order
+        )
         if len(admitted) > 32:
-            raise AgRouteError(
-                f"candidates: {len(admitted)} eligible cells exceed howhard's 32-cell maximum"
-            )
+            if has_explicit:
+                raise AgRouteError(
+                    f"candidates: {len(admitted)} eligible cells exceed howhard's 32-cell maximum"
+                )
+            admitted = admitted[:32]
         return host, now_dt, admitted, admitted_meta, excluded
 
     def candidates(self, host=None, *, include_agents=None, now=None):
@@ -447,20 +478,24 @@ class Router:
                     "--effort",
                     target_effort,
                 ]
+                if prompt is not None:
+                    argv.extend(["--", prompt])
                 adapter = "claude-sdk-v1"
             else:  # agy
                 argv = [
                     "agy",
-                    "-p",
                     "--output-format",
                     "stream-json",
                     "--model",
                     target_model,
                     "--effort",
                     target_effort,
+                    "-p",
                 ]
+                if prompt is not None:
+                    argv.append(prompt)
                 adapter = "agy-print-v1"
-            if prompt is not None:
+            if target_agent == "codex" and prompt is not None:
                 argv.extend(["--", prompt])
             invocation = {
                 "kind": "cli_command",
@@ -585,10 +620,13 @@ class Router:
         snap = self.snapshot(all_repos=all_repos, now=now)
         return find_route(snap, identifier)
 
-    def models(self, *, refresh=False):
+    def models(self, *, refresh=False, now=None):
+        now_dt = _now_utc(now)
+        store = read_store(self.config)
         out = {}
         for name in AGENTS:
             cfg = self.config.agents[name]
+            eff = effective_agent_state(store["agents"][name], now_dt)
             nat_cfg = cfg["native_candidates"]
             cli_cfg = cfg["cli_candidates"]
             out[name] = {
@@ -597,6 +635,7 @@ class Router:
                 "native_candidates": deepcopy(nat_cfg) if nat_cfg else discover_agent_candidates(name, "native", refresh=refresh),
                 "cli_source": "configured" if cli_cfg else "discovered",
                 "cli_candidates": deepcopy(cli_cfg) if cli_cfg else discover_agent_candidates(name, "cli", refresh=refresh),
+                "models": self._agent_model_quotas(name, cfg, eff),
             }
         return {
             "format": "agroute-models-v1",

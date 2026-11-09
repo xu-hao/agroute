@@ -200,7 +200,7 @@ def discover_claude_candidates(*, claude_home: Path | None = None, max_models: i
     return candidates
 
 
-def parse_agy_models_output(raw_text: str, *, max_models: int = 8) -> list[dict]:
+def parse_agy_models_output(raw_text: str, *, max_models: int = 16) -> list[dict]:
     """Parse `agy models` output into candidate cells without assuming static model prefixes."""
     cleaned = _ANSI_ESCAPE.sub("\n", raw_text or "")
     entries: list[tuple[str, str]] = []

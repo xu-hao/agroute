@@ -40,9 +40,11 @@ agroute usage set --agent agy --tier pro --tier-used-pct 96 --tier-reset-at 2026
 agroute usage clear --agent codex --json
 ```
 
-## Run configured read-only probes
+## Run live usage probes
 
-If `agents.<name>.usage_probe_cmd` is configured in `agroute.toml`, refresh quota state with:
+Refresh quota state across enabled agents using zero-token built-in live probes (`agy -p /usage`,
+`claude -p /usage`, and `codex app-server` `account/rateLimits/read`), local session logs, or
+custom `agents.<name>.usage_probe_cmd` commands:
 
 ```sh
 agroute usage probe --json
