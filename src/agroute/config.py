@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import tomllib
 
+from .adapters import get_adapter
 from .state import roots
 from .validation import (
     AGENTS,
@@ -80,15 +81,8 @@ def _validate_candidate_list(items, where, *, agent):
                 f"{entry_where}.model: configure bare native model ID '{model}' without agent prefix"
             )
         effort = effort_id(raw["effort"], f"{entry_where}.effort")
-        if agent == "agy" and where.endswith("native_candidates") and model not in (
-            "inherit",
-            "flash_lite",
-            "flash",
-            "pro",
-        ):
-            raise AgRouteError(
-                f"{entry_where}.model: Antigravity native subagent model must be one of inherit, flash_lite, flash, pro"
-            )
+        if where.endswith("native_candidates"):
+            get_adapter(agent).validate_native_candidate(model, f"{entry_where}.model")
         pair = (model, effort)
         if pair in seen:
             raise AgRouteError(f"{entry_where}: duplicate candidate cell ({model!r}, {effort!r})")

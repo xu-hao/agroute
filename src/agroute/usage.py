@@ -275,15 +275,12 @@ def _write_shared_probe_cache(agent_name: str, state: dict) -> None:
 
 
 def discover_live_usage_patch(agent_name: str) -> dict:
-    if agent_name == "codex":
-        patch = _discover_codex_live_patch()
-        if patch:
-            return patch
-    if agent_name == "claude":
-        patch = _discover_claude_live_patch()
-        if patch:
-            return patch
-    return _read_shared_probe_cache(agent_name)
+    from .adapters import get_adapter
+
+    try:
+        return get_adapter(agent_name).discover_live_usage_patch()
+    except Exception:
+        return _read_shared_probe_cache(agent_name)
 
 
 def _read_raw_store(config):
@@ -412,56 +409,15 @@ def evaluate_candidate_tier(agent_cfg, effective_state, candidate):
 def resolve_model_quota(agent_name, agent_cfg, effective_state, candidate, *, is_host=False, surface="cli"):
     """Resolve effective 5h/7d quota windows and eligibility for a specific model."""
     model_id = str(candidate["model"])
-    lower_id = model_id.lower()
-    tokens = [tok for tok in re.split(r"[-_./:]+", lower_id) if tok]
-    tiers = effective_state.get("tiers") or {}
+    from .adapters import get_adapter
 
-    s5 = deepcopy(effective_state["session_5h"])
-    w7 = deepcopy(effective_state["weekly_7d"])
-    quota_group = "shared"
-
-    # Multi-provider buckets hosted inside Antigravity (e.g. Claude / GPT-OSS vs Gemini)
-    if agent_name == "agy" and any(t in ("claude", "gpt", "opus", "sonnet", "haiku", "oss") for t in tokens):
-        if "3p-5h" in tiers:
-            s5 = deepcopy(tiers["3p-5h"])
-            quota_group = "3p"
-        if "3p-weekly" in tiers:
-            w7 = deepcopy(tiers["3p-weekly"])
-            quota_group = "3p"
-    elif agent_name == "agy" and any(t in ("gemini", "flash", "flash_lite", "pro", "argon") for t in tokens):
-        if "gemini-5h" in tiers:
-            s5 = deepcopy(tiers["gemini-5h"])
-            quota_group = "gemini"
-        if "gemini-weekly" in tiers:
-            w7 = deepcopy(tiers["gemini-weekly"])
-            quota_group = "gemini"
-
-    # Specific model or family overrides (e.g. argon, opus, sonnet, pro, flash)
-    specific_keys = [lower_id]
-    if "tier" in candidate and str(candidate["tier"]).lower() not in specific_keys:
-        specific_keys.append(str(candidate["tier"]).lower())
-    for tok in tokens:
-        if (
-            len(tok) >= 3
-            and tok not in ("gemini", "claude", "gpt", "low", "medium", "high", "xhigh", "max", "standard")
-            and tok not in specific_keys
-        ):
-            specific_keys.append(tok)
-
-    for key in specific_keys:
-        if f"{key}-5h" in tiers:
-            s5 = deepcopy(tiers[f"{key}-5h"])
-            quota_group = key
-        if f"{key}-weekly" in tiers:
-            w7 = deepcopy(tiers[f"{key}-weekly"])
-            quota_group = key
-        elif key in tiers:
-            w7 = deepcopy(tiers[key])
-            quota_group = key
-
-    if agent_name == "agy" and lower_id == "pro" and "pro" not in tiers and "argon" in tiers:
-        w7 = deepcopy(tiers["argon"])
-        quota_group = "argon"
+    try:
+        adapter = get_adapter(agent_name)
+        quota_group, s5, w7 = adapter.resolve_quota_group(model_id, candidate, effective_state)
+    except Exception:
+        s5 = deepcopy(effective_state["session_5h"])
+        w7 = deepcopy(effective_state["weekly_7d"])
+        quota_group = "shared"
 
     if not agent_cfg["enabled"]:
         return {
@@ -1051,54 +1007,12 @@ def _probe_codex_app_server(cwd: Path) -> dict | None:
 
 
 def _builtin_probe_patch(name: str, cwd: Path) -> dict | None:
-    if name == "agy" and shutil.which("agy"):
-        try:
-            proc = subprocess.run(
-                ["agy", "--output-format", "json", "-p", "/usage"],
-                cwd=cwd,
-                capture_output=True,
-                text=True,
-                timeout=15,
-                check=False,
-            )
-            combined = "\n".join(part for part in (proc.stdout, proc.stderr) if part).strip()
-            if combined:
-                return parse_native_usage("agy", combined)
-        except (OSError, subprocess.TimeoutExpired, AgRouteError):
-            pass
-        return {"rate_limited": False}
-    if name == "claude" and shutil.which("claude"):
-        try:
-            proc = subprocess.run(
-                [
-                    "claude",
-                    "-p",
-                    "/usage",
-                    "--output-format",
-                    "stream-json",
-                    "--verbose",
-                    "--no-session-persistence",
-                ],
-                cwd=cwd,
-                capture_output=True,
-                text=True,
-                timeout=15,
-                check=False,
-            )
-            combined = "\n".join(part for part in (proc.stdout, proc.stderr) if part).strip()
-            if combined:
-                return parse_native_usage("claude", combined)
-        except (OSError, subprocess.TimeoutExpired, AgRouteError):
-            pass
-        return discover_live_usage_patch("claude") or None
-    if name == "codex":
-        rpc_patch = _probe_codex_app_server(cwd)
-        if rpc_patch:
-            return rpc_patch
-        patch = discover_live_usage_patch("codex")
-        if patch:
-            return patch
-    return None
+    from .adapters import get_adapter
+
+    try:
+        return get_adapter(name).probe_usage(cwd)
+    except Exception:
+        return None
 
 
 def probe_usage(config, agent=None, *, now=None):
