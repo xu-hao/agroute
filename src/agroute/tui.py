@@ -320,6 +320,18 @@ def _usage_modal_body(snapshot: dict) -> str:
         tiers = info.get("tiers") or {}
         if tiers:
             lines.append(f"  Tiers: {json.dumps(tiers, sort_keys=True)}")
+        models = info.get("models") or {}
+        if models:
+            lines.append("  Per-model quota:")
+            for mid, mq in models.items():
+                ms5 = (mq.get("session_5h") or {}).get("used_pct")
+                mw7 = (mq.get("weekly_7d") or {}).get("used_pct")
+                s_str = f"{ms5:.1f}%" if type(ms5) in (int, float) else "—"
+                w_str = f"{mw7:.1f}%" if type(mw7) in (int, float) else "—"
+                elig_str = "eligible" if mq.get("eligible", True) else f"blocked ({mq.get('exclusion_reason')})"
+                lines.append(
+                    f"    {name}/{mid} [{mq.get('quota_group', 'shared')}]: 5h={s_str} 7d={w_str} -> {elig_str}"
+                )
         lines.append("")
     return "\n".join(lines).rstrip()
 

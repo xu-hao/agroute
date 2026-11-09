@@ -272,7 +272,7 @@ def main(argv=None):
             return 0
 
         if args.command == "models":
-            _emit(router.models(refresh=args.refresh), as_json=True)
+            _emit(router.models(refresh=args.refresh, now=args.now), as_json=True)
             return 0
 
         if args.command == "list":

@@ -135,14 +135,16 @@ def test_plan_resolution_native_and_cross_agent_across_all_hosts(tmp_path):
         prompt="audit",
     )
     assert plan_claude_to_agy["execution_mode"] == "cli"
-    assert plan_claude_to_agy["invocation"]["argv"][:7] == [
+    assert plan_claude_to_agy["invocation"]["argv"] == [
         "agy",
-        "-p",
         "--output-format",
         "stream-json",
         "--model",
         "gemini-2.5-pro",
         "--effort",
+        "high",
+        "-p",
+        "audit",
     ]
 
     # 4. Host codex -> native codex/gpt-5.4
