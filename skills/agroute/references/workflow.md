@@ -51,6 +51,10 @@ The returned `agroute-execution-plan-v1` object includes:
 - `invocation`:
   - For `"native"`: `{"kind": "native_tool", "tool_name": "...", "parameters": {...}}`.
   - For `"cli"`: `{"kind": "cli_command", "argv": [...], "output_capture_adapter": "..."}`.
+- `fallback`: when `execution_mode == "native"`, provides the pre-rendered non-interactive CLI command
+  object (`argv`, `output_capture_adapter`, `prompt_delivery`) for the target model and effort so the
+  host agent can recover immediately if native delegation fails at launch (e.g. subagent slot exhaustion);
+  `null` when `execution_mode == "cli"`.
 - `host_affinity_applied`: `true` if `routing.host_affinity_epsilon > 0.0` overrode a cross-agent
   choice in favor of an admissible native host cell within `epsilon` of the chosen cell's
   objective `J`.

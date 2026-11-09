@@ -26,11 +26,15 @@ while `howhard` owns model/effort selection, execution accounting, and writable 
      to `/tmp/TASK-decision.json`.
    - Run `agroute plan --host HOST --decision /tmp/TASK-decision.json --json` to resolve the
      decision into an `agroute-execution-plan-v1` payload.
-4. Inspect `execution_mode`, `needs_review`, and `invocation` in the returned plan:
+4. Inspect `execution_mode`, `needs_review`, `invocation`, and `fallback` in the returned plan:
    - Honor `needs_review` before delegating or accepting silent-risk work.
    - When `execution_mode == "native"` (`target_agent == host_agent`), invoke the host's own
      native delegation tool (`invoke_subagent` in Antigravity, `Agent` in Claude Code, or
      `spawn_agent` in Codex) using the exact `invocation.parameters`.
+     - **Native launch failure recovery**: If native delegation fails at launch (for example,
+       host subagent concurrency or slot limit reached), execute the non-interactive CLI command
+       in `fallback.argv` instead. When recording feedback after fallback execution, record raw
+       native feedback (`howhard observe ... --native`) without attaching the unexecuted receipt.
    - When `execution_mode == "cli"` (`target_agent != host_agent`), run the non-interactive
      CLI command in `invocation.argv` (`codex exec --json`, `claude -p --verbose --output-format stream-json`,
      or `agy -p --output-format stream-json`), capturing its output in a task-owned temporary file.
