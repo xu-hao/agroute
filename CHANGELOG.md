@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Refactor agent-specific candidate discovery, tool invocation planning, live quota telemetry
+  discovery, zero-token probing, and quota bucket resolution into an extensible `AgentAdapter`
+  interface with dynamic dispatch via `AgentRegistry` (`agroute.adapters`, `get_adapter`,
+  `register_adapter`), replacing procedural branching across router, discovery, and usage modules (#15).
 - Discover available models and supported reasoning efforts dynamically at runtime from locally
   installed agents (`~/.codex/models_cache.json` for Codex, `~/.claude/cache/model-catalog/`
   for Claude Code, and `agy models` for Antigravity) instead of shipping hardcoded model lists

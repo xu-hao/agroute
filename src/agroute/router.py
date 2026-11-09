@@ -3,6 +3,7 @@
 from copy import deepcopy
 import json
 
+from .adapters import get_adapter
 from .config import load_config
 from .discovery import discover_agent_candidates
 from .routes import build_snapshot, find_route, record_plan_route, register_repository
@@ -412,96 +413,27 @@ class Router:
         execution_mode = "native" if is_native else "cli"
 
         if is_native:
-            if host == "agy":
-                params = {
-                    "TypeName": subagent_type or "self",
-                    "Model": target_model,
-                    "Role": role,
-                    "Workspace": workspace,
-                }
-                if prompt is not None:
-                    params["Prompt"] = prompt
-                invocation = {
-                    "kind": "native_tool",
-                    "tool_name": "invoke_subagent",
-                    "parameters": params,
-                }
-            elif host == "claude":
-                params = {
-                    "subagent_type": subagent_type or "general-purpose",
-                    "description": role,
-                    "model": target_model,
-                    "effort": target_effort,
-                }
-                if prompt is not None:
-                    params["prompt"] = prompt
-                invocation = {
-                    "kind": "native_tool",
-                    "tool_name": "Agent",
-                    "parameters": params,
-                }
-            else:  # codex
-                params = {
-                    "model": target_model,
-                    "reasoning_effort": target_effort,
-                }
-                if subagent_type is not None:
-                    params["agent_type"] = subagent_type
-                if prompt is not None:
-                    params["prompt"] = prompt
-                invocation = {
-                    "kind": "native_tool",
-                    "tool_name": "spawn_agent",
-                    "parameters": params,
-                }
+            adapter = get_adapter(host)
+            invocation = adapter.build_native_invocation(
+                target_model,
+                target_effort,
+                prompt=prompt,
+                role=role,
+                subagent_type=subagent_type,
+                workspace=workspace,
+            )
         else:
-            if target_agent == "codex":
-                argv = [
-                    "codex",
-                    "exec",
-                    "--json",
-                    "--model",
-                    target_model,
-                    "-c",
-                    f"model_reasoning_effort={target_effort}",
-                ]
-                adapter = "codex-exec-v1"
-            elif target_agent == "claude":
-                argv = [
-                    "claude",
-                    "-p",
-                    "--verbose",
-                    "--output-format",
-                    "stream-json",
-                    "--model",
-                    target_model,
-                    "--effort",
-                    target_effort,
-                ]
-                if prompt is not None:
-                    argv.extend(["--", prompt])
-                adapter = "claude-sdk-v1"
-            else:  # agy
-                argv = [
-                    "agy",
-                    "--output-format",
-                    "stream-json",
-                    "--model",
-                    target_model,
-                    "--effort",
-                    target_effort,
-                    "-p",
-                ]
-                if prompt is not None:
-                    argv.append(prompt)
-                adapter = "agy-print-v1"
-            if target_agent == "codex" and prompt is not None:
-                argv.extend(["--", prompt])
+            adapter = get_adapter(target_agent)
+            cli_res = adapter.build_cli_invocation(
+                target_model,
+                target_effort,
+                prompt=prompt,
+            )
             invocation = {
                 "kind": "cli_command",
-                "argv": argv,
-                "prompt_delivery": "argv" if prompt is not None else "append_arg_or_stdin",
-                "output_capture_adapter": adapter,
+                "argv": cli_res["argv"],
+                "prompt_delivery": cli_res["prompt_delivery"],
+                "output_capture_adapter": cli_res["capture_adapter"],
             }
 
         if not host_affinity_applied:

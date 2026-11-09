@@ -2,8 +2,18 @@
 
 __version__ = "0.1.0"
 
+from .adapters import AgentAdapter, get_adapter, list_adapters, register_adapter
 from .config import load_config
 from .router import Router
 from .validation import AgRouteError
 
-__all__ = ["AgRouteError", "Router", "load_config", "__version__"]
+__all__ = [
+    "AgRouteError",
+    "AgentAdapter",
+    "Router",
+    "get_adapter",
+    "list_adapters",
+    "load_config",
+    "register_adapter",
+    "__version__",
+]
