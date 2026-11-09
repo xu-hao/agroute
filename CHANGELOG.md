@@ -9,6 +9,12 @@
 - Add `agroute tui`, `agroute list`, and `agroute show <id>` to inspect realtime and historical
   model routes across repositories, correlating `<state_root>/routes.jsonl` with `.git/howhard/`
   decisions and outcomes alongside live agent quota and eligibility state.
+- Resolve per-model quota windows (`session_5h`, `weekly_7d`, `quota_group`, `eligible`, and
+  `exclusion_reason` under `agents.<name>.models` in `agroute usage show`, `agroute models`,
+  `agroute candidates`, and `agroute tui`) using zero-token built-in probes (`agy --output-format
+  json -p /usage`, `claude -p /usage --output-format stream-json --verbose`, and `codex app-server`
+  `account/rateLimits/read`), local session log discovery, `-p <prompt>` argument ordering for
+  `agy`, and a writable sandbox state-root fallback when `.git/` is mounted read-only.
 
 ## 0.1.0 — 2026-11-08
 
