@@ -48,12 +48,19 @@ usage_probe_cmd = []
 
 [agents.claude]
 enabled = true
+usage_stale_after_seconds = 1800
 max_session_used_pct = 90.0
 max_weekly_used_pct = 95.0
 max_tier_used_pct = 95.0
 host_reserve_pct = 0.0
 usage_probe_cmd = []
 ```
+
+`agents.claude.usage_stale_after_seconds` is a positive number of seconds (default
+`1800`). It controls the freshness warnings in usage and routing output. A recent failed
+probe is also reported even within this age bound. Unknown percentages stay `null`, and
+active rejections continue to exclude the affected scopes. The setting is accepted for
+all agents, but the freshness policy currently applies only to Claude.
 
 (howhard-inventories)=
 ## Generating `[inventories]` for `howhard.toml`
