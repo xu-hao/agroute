@@ -18,7 +18,7 @@ while `howhard` owns model/effort selection, execution accounting, and writable 
    `agroute usage probe`). Expired windows clear automatically when `now >= reset_at`.
 3. Follow [the routing and decision workflow](references/workflow.md):
    - Run `agroute candidates --host HOST --output /tmp/TASK-candidates.json --json` to emit
-     the filtered 1–32 cell inventory (`<agent>/<model>`, `<effort>`). When `target == host`,
+     the full eligible inventory (`<agent>/<model>`, `<effort>`). When `target == host`,
      `agroute` emits `native_candidates` supported by the host's native delegation tool; when
      `target != host`, `agroute` emits `cli_candidates` supported by the target's non-interactive CLI.
    - Pass `--candidates /tmp/TASK-candidates.json` to `howhard context` (followed by independent

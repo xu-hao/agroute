@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.1 — 2026-11-09
+
+- Emit every supported effort for every current model, in canonical effort order, and
+  remove numeric model and inventory caps. Claude main/quick-select models, visible
+  newest-generation Codex models, and all Antigravity CLI models remain eligible,
+  subject to existing quota filters and explicit surface overrides. Low/max cells
+  can now be resolved by `plan`; quota exclusions retain their reasons (#19).
+
 ## 0.2.0 — 2026-11-09
 
 - Provide pre-rendered non-interactive CLI fallback in `agroute plan` execution plans and skill

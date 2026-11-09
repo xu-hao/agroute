@@ -262,16 +262,6 @@ class Router:
         if not admitted:
             reasons = "; ".join(f"{e['agent']}: {e['reason']}" for e in excluded) or "none configured"
             raise AgRouteError(f"candidates: no eligible candidate routes available ({reasons})")
-        has_explicit = any(
-            bool(self.config.agents[n]["native_candidates" if n == host else "cli_candidates"])
-            for n in agent_order
-        )
-        if len(admitted) > 32:
-            if has_explicit:
-                raise AgRouteError(
-                    f"candidates: {len(admitted)} eligible cells exceed howhard's 32-cell maximum"
-                )
-            admitted = admitted[:32]
         return host, now_dt, admitted, admitted_meta, excluded
 
     def candidates(self, host=None, *, include_agents=None, now=None):
