@@ -329,6 +329,8 @@ def main(argv=None):
             )
 
     except AgRouteError as exc:
+        if getattr(args, "json", False) and hasattr(exc, "details"):
+            _emit({**exc.details, "error": str(exc)}, as_json=True)
         print(f"agroute: error: {exc}", file=sys.stderr)
         return 1
 

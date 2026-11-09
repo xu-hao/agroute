@@ -126,6 +126,7 @@ def _merge_config(base, override, where):
                 "max_tier_used_pct",
                 "host_reserve_pct",
                 "usage_probe_cmd",
+                "usage_stale_after_seconds",
                 "native_candidates",
                 "cli_candidates",
             }
@@ -159,6 +160,7 @@ def _validate_merged(raw):
                 "max_tier_used_pct",
                 "host_reserve_pct",
                 "usage_probe_cmd",
+                "usage_stale_after_seconds",
                 "native_candidates",
                 "cli_candidates",
             ],
@@ -187,6 +189,7 @@ def _validate_merged(raw):
             "max_tier_used_pct": max_tier,
             "host_reserve_pct": reserve,
             "usage_probe_cmd": list(probe_cmd),
+            "usage_stale_after_seconds": number(spec["usage_stale_after_seconds"], f"{where}.usage_stale_after_seconds", positive=True),
             "native_candidates": native_cands,
             "cli_candidates": cli_cands,
         }

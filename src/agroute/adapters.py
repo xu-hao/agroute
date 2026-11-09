@@ -373,32 +373,35 @@ class ClaudeAdapter(AgentAdapter):
             return patch
         return _read_shared_probe_cache(self.name)
 
+    def resolve_quota_group(self, model_id, candidate, effective_state):
+        group, s5, w7 = super().resolve_quota_group(model_id, candidate, effective_state)
+        # Claude Code reports may qualify the model's bucket by surface.
+        tokens = [token for token in re.split(r"[-_./:]+", model_id.lower())
+                  if token not in ("claude", "code") and len(token) >= 3]
+        tokens.append(str(candidate.get("tier", "")).lower())
+        for key, win in effective_state.get("tiers", {}).items():
+            if any(token and key.startswith(token + "-") for token in tokens):
+                if key.endswith("-5h"):
+                    s5, group = deepcopy(win), key[:-3]
+                elif key.endswith("-weekly"):
+                    w7, group = deepcopy(win), key[:-7]
+        return group, s5, w7
+
     def probe_usage(self, cwd: Path) -> dict | None:
-        if shutil.which("claude"):
-            try:
-                proc = subprocess.run(
-                    [
-                        "claude",
-                        "-p",
-                        "/usage",
-                        "--output-format",
-                        "stream-json",
-                        "--verbose",
-                        "--no-session-persistence",
-                    ],
-                    cwd=cwd,
-                    capture_output=True,
-                    text=True,
-                    timeout=15,
-                    check=False,
-                )
-                combined = "\n".join(part for part in (proc.stdout, proc.stderr) if part).strip()
-                if combined:
-                    from .usage import parse_native_usage
-                    return parse_native_usage("claude", combined)
-            except (OSError, subprocess.TimeoutExpired, AgRouteError):
-                pass
-        return self.discover_live_usage_patch() or None
+        if not shutil.which("claude"):
+            raise AgRouteError("usage probe: Claude CLI is not installed")
+        try:
+            proc = subprocess.run(
+                ["claude", "-p", "/usage", "--output-format", "stream-json", "--verbose", "--no-session-persistence"],
+                cwd=cwd, capture_output=True, text=True, timeout=15, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise AgRouteError(f"usage probe: Claude command failed: {exc}") from exc
+        from .usage import parse_native_usage
+        combined = "\n".join(part for part in (proc.stdout, proc.stderr) if part).strip()
+        # Cached transcripts are useful evidence, but cannot turn a failed
+        # current probe into a fresh successful availability report.
+        return parse_native_usage("claude", combined)
 
 
 class CodexAdapter(AgentAdapter):
