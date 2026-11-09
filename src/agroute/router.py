@@ -422,6 +422,17 @@ class Router:
                 subagent_type=subagent_type,
                 workspace=workspace,
             )
+            cli_res = adapter.build_cli_invocation(
+                target_model,
+                target_effort,
+                prompt=prompt,
+            )
+            fallback = {
+                "kind": "cli_command",
+                "argv": cli_res["argv"],
+                "prompt_delivery": cli_res["prompt_delivery"],
+                "output_capture_adapter": cli_res["capture_adapter"],
+            }
         else:
             adapter = get_adapter(target_agent)
             cli_res = adapter.build_cli_invocation(
@@ -435,6 +446,7 @@ class Router:
                 "prompt_delivery": cli_res["prompt_delivery"],
                 "output_capture_adapter": cli_res["capture_adapter"],
             }
+            fallback = None
 
         if not host_affinity_applied:
             feedback = {
@@ -506,6 +518,7 @@ class Router:
             "host_affinity_applied": host_affinity_applied,
             "host_affinity_detail": affinity_detail,
             "invocation": invocation,
+            "fallback": fallback,
             "feedback": feedback,
         }
         result["route_id"] = record_plan_route(self.config, result)

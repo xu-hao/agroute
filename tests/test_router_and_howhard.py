@@ -85,6 +85,22 @@ def test_plan_resolution_native_and_cross_agent_across_all_hosts(tmp_path):
         "Workspace": "inherit",
         "Prompt": "implement parser",
     }
+    assert plan_agy_native["fallback"] == {
+        "kind": "cli_command",
+        "argv": [
+            "agy",
+            "--output-format",
+            "stream-json",
+            "--model",
+            "pro",
+            "--effort",
+            "standard",
+            "-p",
+            "implement parser",
+        ],
+        "prompt_delivery": "argv",
+        "output_capture_adapter": "agy-print-v1",
+    }
     assert plan_agy_native["feedback"]["mode"] == "matched_receipt"
 
     # 2. Host agy -> cross-agent codex/gpt-5.4
@@ -99,6 +115,7 @@ def test_plan_resolution_native_and_cross_agent_across_all_hosts(tmp_path):
         prompt="fix bug",
     )
     assert plan_agy_to_codex["execution_mode"] == "cli"
+    assert plan_agy_to_codex["fallback"] is None
     assert plan_agy_to_codex["needs_review"] is True
     assert plan_agy_to_codex["invocation"]["argv"] == [
         "codex",
@@ -159,6 +176,22 @@ def test_plan_resolution_native_and_cross_agent_across_all_hosts(tmp_path):
     assert plan_codex_native["execution_mode"] == "native"
     assert plan_codex_native["invocation"]["tool_name"] == "spawn_agent"
     assert plan_codex_native["invocation"]["parameters"]["reasoning_effort"] == "high"
+    assert plan_codex_native["fallback"] == {
+        "kind": "cli_command",
+        "argv": [
+            "codex",
+            "exec",
+            "--json",
+            "--model",
+            "gpt-5.4",
+            "-c",
+            "model_reasoning_effort=high",
+            "--",
+            "refactor",
+        ],
+        "prompt_delivery": "argv_after_double_dash",
+        "output_capture_adapter": "codex-exec-v1",
+    }
 
 
 def test_host_affinity_epsilon_override_switches_feedback_to_raw_native(tmp_path):
