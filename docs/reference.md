@@ -88,7 +88,9 @@ A refresh has at most two attempts, each bounded to 15 seconds for a command or 
 refresh cannot establish current evidence for known nonexpired stale scopes, the provider is excluded
 as infrastructure unavailable, with an actionable reason to retry; other independently fresh
 providers remain eligible. If none remain, routing fails with structured exclusions. Probe
-failure metadata is persisted without advancing quota evidence time. `usage show` and
+failure metadata is persisted without advancing quota evidence time. Command success without
+recognized current quota or availability evidence is not a successful probe; old cached
+evidence cannot become a fresh probe result. `usage show` and
 history remain inspectable without starting a probe. Expiry and supersession of individual
 rejections continue to follow the rules below.
 
