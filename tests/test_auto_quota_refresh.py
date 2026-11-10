@@ -373,3 +373,33 @@ def test_malformed_codex_rpc_does_not_abort_healthy_provider(tmp_path, monkeypat
     assert any(c["model"].startswith("claude/") for c in result["candidates"])
     assert not any(c["model"].startswith("codex/") for c in result["candidates"])
     assert any("retry" in e["reason"] for e in result["excluded"] if e["agent"] == "codex")
+
+
+def test_expiring_refreshes_share_two_attempt_budget(tmp_path, monkeypatch):
+    from datetime import datetime
+    import importlib
+    from agroute import usage
+
+    clock = [datetime.fromisoformat("2026-11-09T12:09:58+00:00")]
+    def now(value=None):
+        return datetime.fromisoformat(value.replace("Z", "+00:00")) if value else clock[0]
+    monkeypatch.setattr(usage, "_now_utc", now)
+    monkeypatch.setattr(importlib.import_module("agroute.router"), "_now_utc", now)
+    router = Router(project=tmp_path)
+    calls = []
+    def codex_probe(cwd):
+        calls.append(cwd)
+        if len(calls) == 1:
+            return session(10, "2026-11-09T12:09:59Z")
+        clock[0] = datetime.fromisoformat("2026-11-09T12:10:00+00:00")
+        return session(10, T1)
+    def claude_probe(cwd):
+        clock[0] = datetime.fromisoformat("2026-11-09T12:09:59+00:00")
+        return session()
+    monkeypatch.setattr(get_adapter("codex"), "probe_usage", codex_probe)
+    monkeypatch.setattr(get_adapter("claude"), "probe_usage", claude_probe)
+    result = router.candidates("codex", include_agents=["codex", "claude"])
+    assert len(calls) == 2
+    assert not any(c["model"].startswith("codex/") for c in result["candidates"])
+    assert any(c["model"].startswith("claude/") for c in result["candidates"])
+    assert any("incident" in e["reason"] and "retry" in e["reason"] for e in result["excluded"] if e["agent"] == "codex")
