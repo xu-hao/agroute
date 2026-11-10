@@ -335,7 +335,7 @@ def test_provider_expiring_during_other_refresh_is_rechecked(tmp_path, monkeypat
 
     router = Router(project=tmp_path)
     router.usage_set("codex", session_used_pct=99, session_reset_at=T1, now=T0)
-    clock = [datetime.fromisoformat(T0.replace("Z", "+00:00"))]
+    clock = [datetime.fromisoformat("2026-11-09T12:09:59+00:00")]
     def now(value=None):
         return datetime.fromisoformat(value.replace("Z", "+00:00")) if value else clock[0]
     monkeypatch.setattr(usage, "_now_utc", now)
