@@ -76,11 +76,16 @@ evidence for each enabled provider in scope before admitting it, including provi
 currently blocked by quota. Evidence is fresh for the configured per-agent age bound.
 Freshness is evaluated separately for each known window or availability scope: a report
 updates only the scopes it covers, and cannot refresh an older retained scope. A first-ever
-unreported window remains unknown (`null`); no required counter is invented. Existing
-legacy evidence without scope timestamps uses its genuine stored evidence timestamp.
+unreported window remains unknown (`null`); no required counter is invented. An expired
+scope triggers a refresh, and a recognized current report may retire scopes already expired
+before that report, leaving them `null`. Failed refresh cannot admit a provider through
+expiry alone. Omitted, nonexpired stale scopes remain freshness obligations. A fresh
+whole-provider quota block remains a quota exclusion even when another scope is stale or
+expired. Existing legacy evidence without scope timestamps uses its genuine stored
+evidence timestamp, including when another scope later receives a partial report.
 
 A refresh has at most two attempts, each bounded to 15 seconds for a command or RPC. If
-refresh cannot establish current evidence for known stale scopes, the provider is excluded
+refresh cannot establish current evidence for known nonexpired stale scopes, the provider is excluded
 as infrastructure unavailable, with an actionable reason to retry; other independently fresh
 providers remain eligible. If none remain, routing fails with structured exclusions. Probe
 failure metadata is persisted without advancing quota evidence time. `usage show` and

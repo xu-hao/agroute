@@ -231,3 +231,43 @@ def test_agy_failed_builtin_probe_never_fabricates_available_quota(tmp_path, mon
     assert calls == [15, 15]
     assert "retry" in exc.value.details["excluded"][0]["reason"]
     assert router.usage_show("agy", now=T0)["agents"]["agy"]["updated_at"] is None
+
+
+def test_current_partial_report_retires_already_expired_scope(tmp_path, monkeypatch):
+    router = Router(project=tmp_path)
+    router.usage_set("codex", session_used_pct=97, session_reset_at=T1, now=T0)
+    calls = patch_probe(monkeypatch, "codex", [{"weekly_7d": {"used_pct": 5, "reset_at": RESET}}])
+    result = router.candidates("codex", include_agents=["codex"], now=T1)
+    assert len(calls) == 1 and result["candidates"]
+    state = router.usage_show("codex", now=T1)["agents"]["codex"]
+    assert state["session_5h"]["used_pct"] is None
+    assert state["weekly_7d"]["used_pct"] == 5
+
+
+def test_current_whole_provider_block_is_a_quota_exclusion(tmp_path, monkeypatch):
+    router = Router(project=tmp_path)
+    router.usage_set("codex", session_used_pct=97, session_reset_at=T1, now=T0)
+    calls = patch_probe(monkeypatch, "codex", [{"weekly_7d": {"used_pct": 100, "reset_at": RESET}}])
+    with pytest.raises(AgRouteError) as exc:
+        router.candidates("codex", include_agents=["codex"], now=T1)
+    assert len(calls) == 1
+    reason = exc.value.details["excluded"][0]["reason"]
+    assert "weekly_7d" in reason and "incident" not in reason
+
+
+def test_partial_report_does_not_freshen_legacy_window_timestamp(tmp_path, monkeypatch):
+    import json
+    from pathlib import Path
+
+    router = Router(project=tmp_path)
+    router.usage_set("codex", weekly_used_pct=20, weekly_reset_at=RESET, now=T0)
+    path = Path(router.paths()["state_root"]) / "usage.json"
+    data = json.loads(path.read_text())
+    legacy = data["agents"]["codex"]["weekly_7d"]
+    legacy.pop("measured_at", None)
+    legacy.pop("observed_at", None)
+    path.write_text(json.dumps(data))
+    calls = patch_probe(monkeypatch, "codex", [session(5)])
+    with pytest.raises(AgRouteError) as exc:
+        router.candidates("codex", include_agents=["codex"], now=STALE)
+    assert len(calls) == 2 and "retry" in str(exc.value)
