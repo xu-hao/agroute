@@ -12,12 +12,14 @@ from .usage import (
     apply_usage_patch,
     clear_usage,
     effective_agent_state,
+    ensure_fresh_usage,
     evaluate_agent_quota,
     evaluate_candidate_tier,
     parse_native_usage,
     probe_usage,
     read_store,
     resolve_model_quota,
+    routing_freshness_reason,
     usage_warnings,
     visible_agent_state,
 )
@@ -190,7 +192,6 @@ class Router:
     def _collect_eligible(self, host, *, include_agents=None, now=None):
         host = agent_id(host or self.config.default_host, "host")
         now_dt = _now_utc(now)
-        store = read_store(self.config)
         sep = self.config.namespace_separator
 
         if include_agents is not None:
@@ -200,6 +201,9 @@ class Router:
         else:
             # Put host agent first so native candidates appear first in deterministic order
             agent_order = [host] + [a for a in AGENTS if a != host]
+
+        store, refresh_failures = ensure_fresh_usage(self.config, agent_order, now=now)
+        now_dt = _now_utc(now)
 
         admitted = []
         admitted_meta = {}
@@ -212,6 +216,13 @@ class Router:
             eff = visible_agent_state(name, store["agents"][name], cfg, now_dt)
             is_host = name == host
             ok_agent, reason_agent = evaluate_agent_quota(name, cfg, eff, is_host=is_host)
+            freshness = routing_freshness_reason(store["agents"][name], cfg, now_dt)
+            if cfg["enabled"] and freshness and name not in refresh_failures:
+                refresh_failures[name] = (f"{name} quota refresh infrastructure incident at admission: {freshness}; "
+                                          f"retry with agroute usage probe --agent {name}")
+            if name in refresh_failures:
+                ok_agent, reason_agent = False, refresh_failures[name]
+                warnings.append(reason_agent)
             if not ok_agent:
                 excluded.append(
                     {

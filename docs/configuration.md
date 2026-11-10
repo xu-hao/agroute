@@ -36,6 +36,7 @@ max_session_used_pct = 90.0
 max_weekly_used_pct = 95.0
 max_tier_used_pct = 95.0
 host_reserve_pct = 5.0
+usage_stale_after_seconds = 1800
 usage_probe_cmd = []
 
 [agents.codex]
@@ -44,6 +45,7 @@ max_session_used_pct = 90.0
 max_weekly_used_pct = 95.0
 max_tier_used_pct = 95.0
 host_reserve_pct = 0.0
+usage_stale_after_seconds = 1800
 usage_probe_cmd = []
 
 [agents.claude]
@@ -56,11 +58,12 @@ host_reserve_pct = 0.0
 usage_probe_cmd = []
 ```
 
-`agents.claude.usage_stale_after_seconds` is a positive number of seconds (default
-`1800`). It controls the freshness warnings in usage and routing output. A recent failed
-probe is also reported even within this age bound. Unknown percentages stay `null`, and
-active rejections continue to exclude the affected scopes. The setting is accepted for
-all agents, but the freshness policy currently applies only to Claude.
+`agents.<name>.usage_stale_after_seconds` is a positive number of seconds (default
+`1800`) for each provider. Before routing, known stale or expired scopes and missing
+evidence trigger a bounded refresh; a failed refresh excludes that provider with a retry
+reason. Unknown unreported windows stay `null`. See the
+{ref}`quota freshness contract <native-quota-tracking>` for partial reports, retries,
+and offline inspection.
 
 (howhard-inventories)=
 ## Generating `[inventories]` for `howhard.toml`

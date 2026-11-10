@@ -14,7 +14,10 @@ Unless explicitly overridden in `agroute.toml`, `agroute` automatically discover
 available models and reasoning efforts from the installed `codex`, `claude`, and `agy` clients.
 `--output` writes the full eligible candidate JSON array consumed by `howhard`'s
 `--candidates` flag, while stdout prints the full `agroute-candidates-v1` envelope including
-any `excluded` agents or model tiers and their quota exclusion reasons.
+any `excluded` agents or model tiers and their quota exclusion reasons. Routing refreshes
+missing, stale, or expired known quota evidence; a provider whose refresh fails after two
+bounded attempts is excluded with a retry reason. Inspect or retry the provider before
+using it; independently fresh providers remain available.
 
 To generate a named `[inventories]` section for `howhard.toml` (`howhard` 2.1+ `--inventory`):
 
