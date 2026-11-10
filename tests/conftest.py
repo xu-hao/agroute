@@ -6,8 +6,22 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def isolated_env(monkeypatch, tmp_path):
+def isolated_env(monkeypatch, tmp_path, request):
     """Prevent ambient user configuration, state, or live host model caches from leaking into tests."""
+    from agroute.adapters import get_adapter
+
+    # Routing tests outside the refresh contract use a synthetic provider response;
+    # refresh tests supply their own doubles and must never call an ambient backend.
+    def synthetic_probe(cwd):
+        return {"session_5h": {"used_pct": 0, "reset_at": None}}
+
+    def unexpected_probe(cwd):
+        raise AssertionError("test did not install a provider double")
+
+    probe = unexpected_probe if request.path.name == "test_auto_quota_refresh.py" else synthetic_probe
+    for agent in ("codex", "claude", "agy"):
+        monkeypatch.setattr(get_adapter(agent), "probe_usage", probe)
+
     work_cwd = tmp_path / "cwd"
     work_cwd.mkdir(parents=True, exist_ok=True)
     monkeypatch.chdir(work_cwd)
