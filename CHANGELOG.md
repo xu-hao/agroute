@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Refresh missing, stale, and expired known quota evidence before routing, with bounded
+  attempts and provider-specific failure exclusions. Partial reports cannot refresh other
+  scopes; unreported windows stay unknown (#25).
+
 ## 0.2.2 — 2026-11-09
 
 - Fix structured Claude model/surface scopes and skip malformed limit entries with
