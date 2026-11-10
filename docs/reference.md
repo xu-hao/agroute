@@ -69,6 +69,24 @@ automatically at evaluation time. Unknown windows remain `null` and are never tr
 Post-execution token and cost accounting belongs to `howhard` (`howhard usage collect` and
 `howhard usage attach`).
 
+### Freshness before routing
+
+`candidates`, `inventory`, and `plan` refresh missing, stale, or expired known quota
+evidence for each enabled provider in scope before admitting it, including providers
+currently blocked by quota. Evidence is fresh for the configured per-agent age bound.
+Freshness is evaluated separately for each known window or availability scope: a report
+updates only the scopes it covers, and cannot refresh an older retained scope. A first-ever
+unreported window remains unknown (`null`); no required counter is invented. Existing
+legacy evidence without scope timestamps uses its genuine stored evidence timestamp.
+
+A refresh has at most two attempts, each bounded to 15 seconds for a command or RPC. If
+refresh cannot establish current evidence for known stale scopes, the provider is excluded
+as infrastructure unavailable, with an actionable reason to retry; other independently fresh
+providers remain eligible. If none remain, routing fails with structured exclusions. Probe
+failure metadata is persisted without advancing quota evidence time. `usage show` and
+history remain inspectable without starting a probe. Expiry and supersession of individual
+rejections continue to follow the rules below.
+
 ### Claude availability evidence and freshness
 
 Claude reports may name a limit with a string scope or a structured
@@ -120,8 +138,7 @@ evidence. An unambiguous matching stored window/reset identifies the old quota; 
 report may replace both the old rejection and reset after a plan change. Ambiguous old
 cooldowns remain access rejections, cleared by explicit unscoped accepted/allowed evidence
 or expiry, rather than by an unrelated partial quota counter.
-Unknown usage can remain eligible with a warning, subject to configured policy. This
-freshness policy applies to Claude; Codex and Antigravity retain their existing behavior.
+Unknown windows remain null; admission follows the refresh contract above for all providers.
 
 
 (execution-plan-resolution)=
