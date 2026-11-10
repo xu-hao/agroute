@@ -569,6 +569,23 @@ def _window_has_evidence(win):
     return win.get("used_pct") is not None or win.get("status") is not None or win.get("reset_at") is not None
 
 
+def _current_probe_evidence(patch, cfg, now_dt):
+    """Operation success alone cannot refresh a cached or empty report."""
+    reference = patch.get("updated_at") or format_timestamp(now_dt)
+    for _, win in _patch_windows(patch):
+        if not _window_has_evidence(win):
+            continue
+        if win.get("reset_at") and now_dt >= parse_timestamp(win["reset_at"]):
+            continue
+        observed = win.get("measured_at") if win.get("used_pct") is not None else None
+        observed = observed or win.get("observed_at") or reference
+        if 0 <= (now_dt - parse_timestamp(observed)).total_seconds() <= cfg["usage_stale_after_seconds"]:
+            return True
+    if "rate_limited" in patch or patch.get("cooldown_until"):
+        return 0 <= (now_dt - parse_timestamp(reference)).total_seconds() <= cfg["usage_stale_after_seconds"]
+    return False
+
+
 def _freshness_reason(state, cfg, now_dt):
     """Check each known scope; a recent sibling never renews its clock."""
     probe = state.get("probe", {})
@@ -1162,10 +1179,7 @@ def _parse_json_events(raw_text, patch):
                 changed = True
         if obj.get("event") == "result" and isinstance(obj.get("result"), dict):
             res_obj = obj["result"]
-            if res_obj.get("status") == "SUCCESS":
-                patch.setdefault("rate_limited", False)
-                changed = True
-            elif res_obj.get("status") in ("ERROR", "FAILED", "RATE_LIMITED"):
+            if res_obj.get("status") == "RATE_LIMITED":
                 patch["rate_limited"] = True
                 changed = True
     return changed
@@ -1455,10 +1469,8 @@ def probe_usage(config, agent=None, *, now=None):
                 if proc.returncode != 0 and not combined:
                     raise AgRouteError(f"usage probe: command for '{name}' exited with status {proc.returncode} and no output")
                 patch = parse_native_usage(name, combined)
-            if not any(_window_has_evidence(win) for _, win in _patch_windows(patch)) and not any(
-                key in patch for key in ("rate_limited", "cooldown_until")
-            ):
-                raise AgRouteError(f"usage probe: no recognized quota or availability evidence for '{name}'")
+            if not _current_probe_evidence(patch, config.agents[name], _now_utc(now)):
+                raise AgRouteError(f"usage probe: no current recognized quota or availability evidence for '{name}'")
             if name == "claude":
                 for key, win in _patch_windows(patch):
                     old = _get_window(observed, key)
