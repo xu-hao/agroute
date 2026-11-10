@@ -282,6 +282,10 @@ def test_untimestamped_old_rejection_does_not_replay_but_new_occurrence_does(tmp
     rejected = event()
     rejected.pop("timestamp")
     path = transcript(rejected)
+    # Match the fixture's untimestamped event to its intended historical order.
+    from datetime import datetime
+    event_time = datetime.fromisoformat(T1.replace("Z", "+00:00")).timestamp()
+    os.utime(path, (event_time, event_time))
     router.usage_probe("claude", now=T2)
     assert router.usage_show("claude", now=T2)["agents"]["claude"]["eligible_as_target"]
     path.write_text(path.read_text() + json.dumps({"type": "assistant"}) + "\n")
