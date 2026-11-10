@@ -19,6 +19,7 @@ from .usage import (
     probe_usage,
     read_store,
     resolve_model_quota,
+    routing_freshness_reason,
     usage_warnings,
     visible_agent_state,
 )
@@ -215,6 +216,10 @@ class Router:
             eff = visible_agent_state(name, store["agents"][name], cfg, now_dt)
             is_host = name == host
             ok_agent, reason_agent = evaluate_agent_quota(name, cfg, eff, is_host=is_host)
+            freshness = routing_freshness_reason(store["agents"][name], cfg, now_dt)
+            if cfg["enabled"] and freshness and name not in refresh_failures:
+                refresh_failures[name] = (f"{name} quota refresh infrastructure incident at admission: {freshness}; "
+                                          f"retry with agroute usage probe --agent {name}")
             if name in refresh_failures:
                 ok_agent, reason_agent = False, refresh_failures[name]
                 warnings.append(reason_agent)

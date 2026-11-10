@@ -24,6 +24,7 @@ from .validation import (
     boolean,
     format_timestamp,
     keys,
+    number,
      percentage,
     parse_timestamp,
     table,
@@ -630,18 +631,40 @@ def _fresh_global_block(state, cfg, now_dt):
     return False
 
 
+def routing_freshness_reason(state, cfg, now_dt):
+    """Availability requires current scopes; current denial can safely block."""
+    return None if _fresh_global_block(state, cfg, now_dt) else _freshness_reason(state, cfg, now_dt)
+
+
 def ensure_fresh_usage(config, targets, *, now=None):
     """Refresh routing inputs with one retry, isolating infrastructure failures."""
-    now_dt = _now_utc(now)
     store = read_store(config)
+    names = list(dict.fromkeys(targets))
+    attempts = dict.fromkeys(names, 0)
     failures = {}
-    for name in dict.fromkeys(targets):
+    while True:
         now_dt = _now_utc(now)
-        cfg = config.agents[name]
-        state = store["agents"][name]
-        if not cfg["enabled"] or _fresh_global_block(state, cfg, now_dt) or _freshness_reason(state, cfg, now_dt) is None:
-            continue
-        for _ in range(REFRESH_ATTEMPTS):
+        pending = []
+        for name in names:
+            cfg, state = config.agents[name], store["agents"][name]
+            if not cfg["enabled"] or _fresh_global_block(state, cfg, now_dt) or _freshness_reason(state, cfg, now_dt) is None:
+                failures.pop(name, None)
+            else:
+                pending.append(name)
+        if not any(attempts[name] < REFRESH_ATTEMPTS for name in pending):
+            for name in pending:
+                if name not in failures:
+                    reason = _freshness_reason(store["agents"][name], config.agents[name], now_dt)
+                    exc = AgRouteError(f"usage probe: refresh budget exhausted with {reason}")
+                    _record_probe_failure(config, name, exc, now)
+                    failures[name] = (f"{name} quota refresh infrastructure incident after {REFRESH_ATTEMPTS} attempts: "
+                                      f"{exc}; retry with agroute usage probe --agent {name}")
+            break
+        for name in pending:
+            if attempts[name] >= REFRESH_ATTEMPTS:
+                continue
+            attempts[name] += 1
+            cfg = config.agents[name]
             try:
                 probe_usage(config, name, now=now)
                 store = read_store(config)
@@ -656,9 +679,10 @@ def ensure_fresh_usage(config, targets, *, now=None):
                                   f"{exc}; retry with agroute usage probe --agent {name}")
             else:
                 failures.pop(name, None)
-                break
+        # Another provider's probe may cross this provider's reset or age
+        # boundary. Recheck everyone without renewing any attempt budget.
         store = read_store(config)
-    return store, failures
+    return read_store(config), failures
 
 
 def effective_agent_state(agent_state, now_dt, *, project_rejections=True):
@@ -869,7 +893,11 @@ def _extract_window_dict(obj, where):
         used = percentage(used, f"{where}.used_pct")
     reset_raw = obj.get("reset_at", obj.get("resets_at", obj.get("resetsAt", obj.get("reset_time"))))
     reset_at = format_timestamp(parse_timestamp(reset_raw, f"{where}.reset_at")) if reset_raw is not None else None
-    return {"used_pct": used, "reset_at": reset_at}
+    result = {"used_pct": used, "reset_at": reset_at}
+    for key in ("observed_at", "measured_at"):
+        if obj.get(key) is not None:
+            result[key] = format_timestamp(parse_timestamp(obj[key], f"{where}.{key}"))
+    return result
 
 
 def _apply_rate_limits_dict(rl_obj, patch, where="rate_limits"):
@@ -880,6 +908,8 @@ def _apply_rate_limits_dict(rl_obj, patch, where="rate_limits"):
             sub = rl_obj[slot]
             win = _extract_window_dict(sub, f"{where}.{slot}")
             win_mins = sub.get("window_minutes", sub.get("windowDurationMins"))
+            if win_mins is not None:
+                win_mins = number(win_mins, f"{where}.{slot}.window_minutes", positive=True)
             if slot == "session_5h" or (slot == "primary" and (win_mins is None or win_mins <= 360)):
                 patch["session_5h"] = win
                 changed = True
@@ -1115,6 +1145,7 @@ def _parse_json_events(raw_text, patch):
 
     changed = False
     for obj in parsed_objects:
+        previous_windows = {key: id(win) for key, win in _patch_windows(patch)}
         if _apply_rate_limits_dict(obj, patch, "usage object"):
             changed = True
         if "rate_limits" in obj and isinstance(obj["rate_limits"], dict):
@@ -1182,6 +1213,14 @@ def _parse_json_events(raw_text, patch):
             if res_obj.get("status") == "RATE_LIMITED":
                 patch["rate_limited"] = True
                 changed = True
+        if obj.get("timestamp") is not None:
+            observed = format_timestamp(parse_timestamp(obj["timestamp"], "usage event timestamp"))
+            for key, win in _patch_windows(patch):
+                if id(win) != previous_windows.get(key):
+                    win.setdefault("observed_at", observed)
+                    if win.get("used_pct") is not None:
+                        win.setdefault("measured_at", win["observed_at"])
+            patch["updated_at"] = observed
     return changed
 
 
@@ -1290,7 +1329,7 @@ def apply_usage_patch(config, agent, patch, *, source="ingest", now=None):
     agent_id(agent, "agent")
     now_dt = _now_utc(now)
     with _usage_locked(config):
-        store = _read_raw_store(config)
+        store = read_store(config)
         # Retain expired raw scopes as refresh obligations. Evaluation alone
         # clears them; a partial report must not forget an unrefreshed scope.
         current = deepcopy(store["agents"][agent])
@@ -1331,6 +1370,8 @@ def apply_usage_patch(config, agent, patch, *, source="ingest", now=None):
             times = [win["observed_at"] for _, win in _patch_windows(current) if win.get("observed_at")]
             if current["updated_at"]:
                 times.append(current["updated_at"])
+            if "rate_limited" in patch or "cooldown_until" in patch:
+                times.append(patch.get("updated_at") or format_timestamp(now_dt))
             current["updated_at"] = max(times, key=parse_timestamp) if times else format_timestamp(now_dt)
         else:
             current["updated_at"] = format_timestamp(now_dt)
@@ -1437,7 +1478,7 @@ def _builtin_probe_patch(name: str, cwd: Path) -> dict | None:
 
 def _record_probe_failure(config, name, exc, now):
     with _usage_locked(config):
-        store = _read_raw_store(config)
+        store = read_store(config)
         probe = store["agents"][name].setdefault("probe", {})
         probe.update(attempted_at=format_timestamp(_now_utc(now)), failed_at=format_timestamp(_now_utc(now)),
                      error=str(exc)[:4096])
