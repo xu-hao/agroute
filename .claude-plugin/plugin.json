@@ -1,6 +1,6 @@
 {
   "name": "agroute",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Route delegated tasks across Codex, Claude Code, and Antigravity within live usage limits using howhard.",
   "author": {"name": "agroute contributors"},
   "repository": "https://github.com/xu-hao/agroute"
