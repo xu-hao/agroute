@@ -14,7 +14,9 @@ agroute usage show --agent claude --json
 Windows whose `reset_at` (or `cooldown_until`) timestamp has passed (`now >= reset_at`) clear
 automatically during evaluation. `candidates`, `inventory`, and `plan` refresh missing,
 stale, or expired known evidence before routing; fresh reports cover only their reported
-scopes. A failed refresh after two bounded attempts excludes that provider with a retry
+scopes. A recognized current report can retire already expired scopes, leaving them null;
+omitted nonexpired stale scopes still need current evidence. A failed refresh after two
+bounded attempts excludes that provider with a retry
 reason, while independently fresh providers remain available. Unknown unreported windows
 remain null. `usage show` inspects state without probing.
 
