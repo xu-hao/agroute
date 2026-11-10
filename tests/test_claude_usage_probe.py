@@ -132,7 +132,7 @@ def test_surface_scope_is_sanitized_but_matches_only_its_model(tmp_path):
 
 
 def test_new_rejected_transcript_overrides_an_old_zero_snapshot_and_expires(tmp_path):
-    router, _ = setup(tmp_path, usage([limit()]))
+    router, script = setup(tmp_path, usage([limit()]))
     router.usage_probe("claude", now=T0)
     transcript(event())
     snapshot = router.usage_show("claude", now=T2)["agents"]["claude"]
@@ -142,6 +142,8 @@ def test_new_rejected_transcript_overrides_an_old_zero_snapshot_and_expires(tmp_
     excluded = [c for c in result["excluded"] if c["agent"] == "claude"]
     assert excluded and "weekly limit rejected until " + RESET in excluded[0]["reason"]
     assert not any(c["model"].startswith("claude/") for c in result["candidates"])
+    # Expiry requires a current report before routes are admitted again.
+    script.write_text("print(" + repr(json.dumps(usage([limit(resets_at="2026-11-17T21:00:00Z")]))) + ")\n")
     restored = router.candidates("claude", now="2026-11-10T21:00:01Z")
     assert sum(c["model"].startswith("claude/") for c in restored["candidates"]) == 2
 
