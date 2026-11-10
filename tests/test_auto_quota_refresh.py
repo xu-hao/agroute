@@ -213,9 +213,13 @@ def test_agy_failed_builtin_probe_never_fabricates_available_quota(tmp_path, mon
 
     adapter = get_adapter("agy")
     monkeypatch.setattr(adapter, "probe_usage", MethodType(AgyAdapter.probe_usage, adapter))
-    monkeypatch.setattr(adapters.shutil, "which", lambda executable: "/fixture/agy")
+    real_which = adapters.shutil.which
+    real_run = subprocess.run
+    monkeypatch.setattr(adapters.shutil, "which", lambda executable: "/fixture/agy" if executable == "agy" else real_which(executable))
     calls = []
     def run(cmd, **kwargs):
+        if cmd[0] != "agy":
+            return real_run(cmd, **kwargs)
         calls.append(kwargs["timeout"])
         if failure == "timeout":
             raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
