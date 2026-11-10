@@ -103,3 +103,75 @@ def test_partial_report_cannot_refresh_another_stale_window(tmp_path, monkeypatc
         router.candidates("codex", include_agents=["codex"], now=STALE)
     assert len(calls) == 2
     assert "retry" in str(exc.value)
+
+
+def test_command_timeout_is_bounded_and_structured_then_recovers(tmp_path, monkeypatch):
+    import subprocess
+
+    config = tmp_path / "agroute.toml"
+    config.write_text('[agents.codex]\nusage_probe_cmd = ["fixture-probe"]\n')
+    router = Router(config, project=tmp_path)
+    calls = []
+    def timeout(cmd, **kwargs):
+        calls.append((cmd, kwargs["timeout"]))
+        raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+    monkeypatch.setattr(subprocess, "run", timeout)
+    with pytest.raises(AgRouteError) as exc:
+        router.candidates("codex", include_agents=["codex"], now=T0)
+    assert len(calls) == 2 and all(call[1] == 15 for call in calls)
+    assert exc.value.details["candidates"] == []
+    assert "retry" in exc.value.details["excluded"][0]["reason"]
+    state = router.usage_show("codex", now=T0)["agents"]["codex"]
+    assert state["probe"]["failed_at"] == T0 and state["updated_at"] is None
+
+    def succeed(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, '5h limit: 10% used (resets 2026-11-09T14:00:00Z)', '')
+    monkeypatch.setattr(subprocess, "run", succeed)
+    assert router.candidates("codex", include_agents=["codex"], now=T0)["candidates"]
+
+
+@pytest.mark.parametrize("agent", ["codex", "claude", "agy"])
+def test_each_provider_refreshes_missing_evidence(tmp_path, monkeypatch, agent):
+    router = Router(project=tmp_path)
+    calls = patch_probe(monkeypatch, agent, [session()])
+    assert router.candidates(agent, include_agents=[agent], now=T0)["candidates"]
+    assert len(calls) == 1
+
+
+def test_offline_usage_show_never_probes(tmp_path, monkeypatch):
+    router = Router(project=tmp_path)
+    calls = patch_probe(monkeypatch, "codex", [AgRouteError("unexpected probe")])
+    router.usage_show("codex", now=T0)
+    assert not calls
+
+
+def test_automatic_refresh_retries_once_after_transient_failure(tmp_path, monkeypatch):
+    router = Router(project=tmp_path)
+    calls = patch_probe(monkeypatch, "codex", [AgRouteError("temporary"), session()])
+    result = router.candidates("codex", include_agents=["codex"], now=T0)
+    assert len(calls) == 2 and result["candidates"]
+
+
+@pytest.mark.parametrize("agent", ["codex", "claude", "agy"])
+def test_each_provider_uses_configured_freshness_bound(tmp_path, monkeypatch, agent):
+    config = tmp_path / "agroute.toml"
+    config.write_text(f'[agents.{agent}]\nusage_stale_after_seconds = 60\n')
+    router = Router(config, project=tmp_path)
+    router.usage_set(agent, session_used_pct=10, session_reset_at=RESET, now=T0)
+    calls = patch_probe(monkeypatch, agent, [session(20)])
+    router.candidates(agent, include_agents=[agent], now="2026-11-09T12:00:30Z")
+    assert not calls
+    router.candidates(agent, include_agents=[agent], now="2026-11-09T12:02:00Z")
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("agent", ["codex", "claude", "agy"])
+def test_each_provider_records_final_failure(tmp_path, monkeypatch, agent):
+    router = Router(project=tmp_path)
+    calls = patch_probe(monkeypatch, agent, [AgRouteError("synthetic failure")])
+    with pytest.raises(AgRouteError) as exc:
+        router.candidates(agent, include_agents=[agent], now=T0)
+    assert len(calls) == 2
+    assert "retry" in exc.value.details["excluded"][0]["reason"]
+    state = router.usage_show(agent, now=T0)["agents"][agent]
+    assert state["probe"]["failed_at"] == T0 and state["updated_at"] is None
