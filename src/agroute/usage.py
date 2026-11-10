@@ -1145,82 +1145,103 @@ def _parse_json_events(raw_text, patch):
 
     changed = False
     for obj in parsed_objects:
-        previous_windows = {key: id(win) for key, win in _patch_windows(patch)}
-        if _apply_rate_limits_dict(obj, patch, "usage object"):
+        event_patch = {}
+        recognized = _parse_json_object(obj, event_patch)
+        changed = recognized or changed
+        observed = obj.get("timestamp", obj.get("updated_at"))
+        if recognized and observed is not None:
+            observed = format_timestamp(parse_timestamp(observed, "usage event timestamp"))
+            for _, win in _patch_windows(event_patch):
+                win.setdefault("observed_at", observed)
+                if win.get("used_pct") is not None:
+                    win.setdefault("measured_at", win["observed_at"])
+        for key, win in _patch_windows(event_patch):
+            _put_window(patch, key, _merge_window(_get_window(patch, key), win))
+        if "rate_limited" in event_patch or "cooldown_until" in event_patch:
+            # Only the object supplying global availability owns its clock.
+            # A later unrelated result cannot renew the earlier observation.
+            for key in ("rate_limited", "cooldown_until"):
+                if key in event_patch:
+                    patch[key] = event_patch[key]
+            if observed is not None:
+                patch["updated_at"] = observed
+            else:
+                patch.pop("updated_at", None)
+        if event_patch.get("warnings"):
+            patch.setdefault("warnings", []).extend(event_patch["warnings"])
+    return changed
+
+
+def _parse_json_object(obj, patch):
+    """Normalize one external event before combining independent observations."""
+    changed = False
+    if _apply_rate_limits_dict(obj, patch, "usage object"):
+        changed = True
+    if "rate_limits" in obj and isinstance(obj["rate_limits"], dict):
+        if _apply_rate_limits_dict(obj["rate_limits"], patch, "rate_limits"):
             changed = True
-        if "rate_limits" in obj and isinstance(obj["rate_limits"], dict):
-            if _apply_rate_limits_dict(obj["rate_limits"], patch, "rate_limits"):
+    if "rateLimits" in obj and isinstance(obj["rateLimits"], dict):
+        if _apply_rate_limits_dict(obj["rateLimits"], patch, "rateLimits"):
+            changed = True
+    rpc_res = obj.get("result")
+    if isinstance(rpc_res, dict):
+        if "rateLimits" in rpc_res and isinstance(rpc_res["rateLimits"], dict):
+            if _apply_rate_limits_dict(rpc_res["rateLimits"], patch, "result.rateLimits"):
                 changed = True
-        if "rateLimits" in obj and isinstance(obj["rateLimits"], dict):
-            if _apply_rate_limits_dict(obj["rateLimits"], patch, "rateLimits"):
-                changed = True
-        rpc_res = obj.get("result")
-        if isinstance(rpc_res, dict):
-            if "rateLimits" in rpc_res and isinstance(rpc_res["rateLimits"], dict):
-                if _apply_rate_limits_dict(rpc_res["rateLimits"], patch, "result.rateLimits"):
-                    changed = True
-            by_id = rpc_res.get("rateLimitsByLimitId")
-            if isinstance(by_id, dict):
-                tiers = patch.setdefault("tiers", {})
-                for lid, lobj in by_id.items():
-                    if not isinstance(lobj, dict):
-                        continue
-                    if lid == "codex":
-                        if _apply_rate_limits_dict(lobj, patch, "result.rateLimitsByLimitId.codex"):
-                            changed = True
-                        continue
-                    sub_patch: dict = {}
-                    if _apply_rate_limits_dict(lobj, sub_patch, f"result.rateLimitsByLimitId.{lid}"):
-                        slug = str(lobj.get("normalModelSlug") or lobj.get("limitName") or lid).strip().lower()
-                        if "session_5h" in sub_patch:
-                            tiers[f"{slug}-5h"] = sub_patch["session_5h"]
-                            tiers.setdefault(slug, sub_patch["session_5h"])
-                        if "weekly_7d" in sub_patch:
-                            tiers[f"{slug}-weekly"] = sub_patch["weekly_7d"]
-                            tiers[slug] = sub_patch["weekly_7d"]
+        by_id = rpc_res.get("rateLimitsByLimitId")
+        if isinstance(by_id, dict):
+            tiers = patch.setdefault("tiers", {})
+            for lid, lobj in by_id.items():
+                if not isinstance(lobj, dict):
+                    continue
+                if lid == "codex":
+                    if _apply_rate_limits_dict(lobj, patch, "result.rateLimitsByLimitId.codex"):
                         changed = True
-        cmd_obj = obj.get("command")
-        if isinstance(cmd_obj, dict) and cmd_obj.get("name") == "usage" and isinstance(cmd_obj.get("data"), dict):
-            if _apply_agy_usage_command(cmd_obj["data"], patch):
-                changed = True
-        usage_rep = obj.get("usage_report")
-        if isinstance(usage_rep, dict):
-            if _apply_claude_usage_report(usage_rep, patch, obj.get("timestamp")):
-                changed = True
-        payload = obj.get("payload")
-        if isinstance(payload, dict):
-            if "rate_limits" in payload and isinstance(payload["rate_limits"], dict):
-                if _apply_rate_limits_dict(payload["rate_limits"], patch, "payload.rate_limits"):
+                    continue
+                sub_patch: dict = {}
+                if _apply_rate_limits_dict(lobj, sub_patch, f"result.rateLimitsByLimitId.{lid}"):
+                    slug = str(lobj.get("normalModelSlug") or lobj.get("limitName") or lid).strip().lower()
+                    if "session_5h" in sub_patch:
+                        tiers[f"{slug}-5h"] = sub_patch["session_5h"]
+                        tiers.setdefault(slug, sub_patch["session_5h"])
+                    if "weekly_7d" in sub_patch:
+                        tiers[f"{slug}-weekly"] = sub_patch["weekly_7d"]
+                        tiers[slug] = sub_patch["weekly_7d"]
                     changed = True
-            info = payload.get("info")
-            if isinstance(info, dict) and isinstance(info.get("rate_limits"), dict):
-                if _apply_rate_limits_dict(info["rate_limits"], patch, "payload.info.rate_limits"):
-                    changed = True
-        if obj.get("type") == "rate_limit_event" or "rate_limit_info" in obj or "rateLimitInfo" in obj:
-            if _apply_claude_event(obj, patch):
+    cmd_obj = obj.get("command")
+    if isinstance(cmd_obj, dict) and cmd_obj.get("name") == "usage" and isinstance(cmd_obj.get("data"), dict):
+        if _apply_agy_usage_command(cmd_obj["data"], patch):
+            changed = True
+    usage_rep = obj.get("usage_report")
+    if isinstance(usage_rep, dict):
+        if _apply_claude_usage_report(usage_rep, patch, obj.get("timestamp")):
+            changed = True
+    payload = obj.get("payload")
+    if isinstance(payload, dict):
+        if "rate_limits" in payload and isinstance(payload["rate_limits"], dict):
+            if _apply_rate_limits_dict(payload["rate_limits"], patch, "payload.rate_limits"):
                 changed = True
-        if obj.get("type") == "result" and obj.get("is_error") is True:
-            err_text = str(obj.get("result") or "").lower()
-            if (
-                obj.get("api_error_status") in (401, 403, 429)
-                or obj.get("terminal_reason") in ("api_error", "rate_limit")
-                or any(k in err_text for k in ("rate limit", "quota", "subscription", "usage limit", "hit your weekly limit"))
-            ):
-                patch["rate_limited"] = True
+        info = payload.get("info")
+        if isinstance(info, dict) and isinstance(info.get("rate_limits"), dict):
+            if _apply_rate_limits_dict(info["rate_limits"], patch, "payload.info.rate_limits"):
                 changed = True
-        if obj.get("event") == "result" and isinstance(obj.get("result"), dict):
-            res_obj = obj["result"]
-            if res_obj.get("status") == "RATE_LIMITED":
-                patch["rate_limited"] = True
-                changed = True
-        if obj.get("timestamp") is not None:
-            observed = format_timestamp(parse_timestamp(obj["timestamp"], "usage event timestamp"))
-            for key, win in _patch_windows(patch):
-                if id(win) != previous_windows.get(key):
-                    win.setdefault("observed_at", observed)
-                    if win.get("used_pct") is not None:
-                        win.setdefault("measured_at", win["observed_at"])
-            patch["updated_at"] = observed
+    if obj.get("type") == "rate_limit_event" or "rate_limit_info" in obj or "rateLimitInfo" in obj:
+        if _apply_claude_event(obj, patch):
+            changed = True
+    if obj.get("type") == "result" and obj.get("is_error") is True:
+        err_text = str(obj.get("result") or "").lower()
+        if (
+            obj.get("api_error_status") in (401, 403, 429)
+            or obj.get("terminal_reason") in ("api_error", "rate_limit")
+            or any(k in err_text for k in ("rate limit", "quota", "subscription", "usage limit", "hit your weekly limit"))
+        ):
+            patch["rate_limited"] = True
+            changed = True
+    if obj.get("event") == "result" and isinstance(obj.get("result"), dict):
+        res_obj = obj["result"]
+        if res_obj.get("status") == "RATE_LIMITED":
+            patch["rate_limited"] = True
+            changed = True
     return changed
 
 
