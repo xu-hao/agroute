@@ -286,3 +286,90 @@ def test_old_cached_probe_evidence_is_not_recorded_as_current_success(tmp_path, 
     assert state["probe"].get("succeeded_at") is None
     assert state["probe"]["failed_at"] == STALE
     assert state["updated_at"] in (None, T0)
+
+
+def test_discovered_stale_window_survives_partial_refresh(tmp_path, monkeypatch):
+    router = Router(project=tmp_path)
+    discovered = {"session_5h": {"used_pct": 10, "reset_at": RESET, "observed_at": T0, "measured_at": T0},
+                  "weekly_7d": {"used_pct": 20, "reset_at": RESET, "observed_at": T0, "measured_at": T0},
+                  "updated_at": T0}
+    monkeypatch.setattr(get_adapter("codex"), "discover_live_usage_patch", lambda: discovered)
+    calls = patch_probe(monkeypatch, "codex", [session(5)])
+    assert router.usage_show("codex", now=STALE)["agents"]["codex"]["weekly_7d"]["used_pct"] == 20
+    with pytest.raises(AgRouteError) as exc:
+        router.candidates("codex", include_agents=["codex"], now=STALE)
+    assert len(calls) == 2 and "retry" in str(exc.value)
+
+
+def test_timestamped_old_command_report_is_not_current_evidence(tmp_path):
+    import json
+    import sys
+
+    report = {"timestamp": T0, "payload": {"rate_limits": {"primary": {"used_percent": 10, "reset_at": RESET}}}}
+    script = tmp_path / "old-report.py"
+    script.write_text("print(" + repr(json.dumps(report)) + ")\n")
+    config = tmp_path / "agroute.toml"
+    config.write_text("[agents.codex]\nusage_probe_cmd = " + json.dumps([sys.executable, str(script)]) + "\n")
+    router = Router(config, project=tmp_path)
+    with pytest.raises(AgRouteError) as exc:
+        router.candidates("codex", include_agents=["codex"], now=STALE)
+    assert "retry" in str(exc.value)
+    state = router.usage_show("codex", now=STALE)["agents"]["codex"]
+    assert state["probe"].get("succeeded_at") is None
+
+
+def test_current_global_availability_restores_provider(tmp_path, monkeypatch):
+    router = Router(project=tmp_path)
+    router.usage_set("codex", rate_limited=True, now=T0)
+    calls = patch_probe(monkeypatch, "codex", [{"rate_limited": False}])
+    result = router.candidates("codex", include_agents=["codex"], now=STALE)
+    assert len(calls) == 1 and result["candidates"]
+    state = router.usage_show("codex", now=STALE)["agents"]["codex"]
+    assert not state["rate_limited"] and state["updated_at"] == STALE
+
+
+def test_provider_expiring_during_other_refresh_is_rechecked(tmp_path, monkeypatch):
+    from datetime import datetime
+    import importlib
+    from agroute import usage
+
+    router = Router(project=tmp_path)
+    router.usage_set("codex", session_used_pct=99, session_reset_at=T1, now=T0)
+    clock = [datetime.fromisoformat(T0.replace("Z", "+00:00"))]
+    def now(value=None):
+        return datetime.fromisoformat(value.replace("Z", "+00:00")) if value else clock[0]
+    monkeypatch.setattr(usage, "_now_utc", now)
+    monkeypatch.setattr(importlib.import_module("agroute.router"), "_now_utc", now)
+    codex_calls = patch_probe(monkeypatch, "codex", [session(99)])
+    def claude_probe(cwd):
+        clock[0] = datetime.fromisoformat(T1.replace("Z", "+00:00"))
+        return session()
+    monkeypatch.setattr(get_adapter("claude"), "probe_usage", claude_probe)
+    result = router.candidates("codex", include_agents=["codex", "claude"])
+    assert len(codex_calls) == 1
+    assert not any(c["model"].startswith("codex/") for c in result["candidates"])
+    assert any(c["model"].startswith("claude/") for c in result["candidates"])
+
+
+def test_malformed_codex_rpc_does_not_abort_healthy_provider(tmp_path, monkeypatch):
+    import json
+    import os
+    import sys
+    from types import MethodType
+    from agroute.adapters import CodexAdapter
+
+    router = Router(project=tmp_path)
+    router.usage_set("claude", session_used_pct=10, session_reset_at=RESET, now=STALE)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    executable = bindir / "codex"
+    malformed = {"id": 2, "result": {"rateLimits": {"primary": {"usedPercent": 10, "windowDurationMins": "invalid"}}}}
+    executable.write_text(f"#!{sys.executable}\nimport sys\nfor _ in range(3): sys.stdin.readline()\nprint({json.dumps(malformed)!r}, flush=True)\n")
+    executable.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bindir) + os.pathsep + os.environ["PATH"])
+    adapter = get_adapter("codex")
+    monkeypatch.setattr(adapter, "probe_usage", MethodType(CodexAdapter.probe_usage, adapter))
+    result = router.candidates("codex", include_agents=["codex", "claude"], now=STALE)
+    assert any(c["model"].startswith("claude/") for c in result["candidates"])
+    assert not any(c["model"].startswith("codex/") for c in result["candidates"])
+    assert any("retry" in e["reason"] for e in result["excluded"] if e["agent"] == "codex")
