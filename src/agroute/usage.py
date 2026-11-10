@@ -596,6 +596,23 @@ def _freshness_reason(state, cfg, now_dt):
     return None
 
 
+def _fresh_global_block(state, cfg, now_dt):
+    """Current whole-provider denial needs no claim about remaining scopes."""
+    for key in ("session_5h", "weekly_7d", "availability"):
+        win = state.get(key, {})
+        if win.get("reset_at") and now_dt >= parse_timestamp(win["reset_at"]):
+            continue
+        observed = win.get("observed_at") or state.get("updated_at")
+        if win.get("status") == "rejected" and observed and 0 <= (now_dt - parse_timestamp(observed)).total_seconds() <= cfg["usage_stale_after_seconds"]:
+            return True
+        measured = win.get("measured_at") or win.get("observed_at") or state.get("updated_at")
+        if win.get("used_pct") is not None and measured and 0 <= (now_dt - parse_timestamp(measured)).total_seconds() <= cfg["usage_stale_after_seconds"]:
+            threshold = cfg.get("max_session_used_pct" if key == "session_5h" else "max_weekly_used_pct")
+            if key != "availability" and win["used_pct"] >= threshold:
+                return True
+    return False
+
+
 def ensure_fresh_usage(config, targets, *, now=None):
     """Refresh routing inputs with one retry, isolating infrastructure failures."""
     now_dt = _now_utc(now)
@@ -604,14 +621,16 @@ def ensure_fresh_usage(config, targets, *, now=None):
     for name in dict.fromkeys(targets):
         now_dt = _now_utc(now)
         cfg = config.agents[name]
-        if not cfg["enabled"] or _freshness_reason(store["agents"][name], cfg, now_dt) is None:
+        state = store["agents"][name]
+        if not cfg["enabled"] or _fresh_global_block(state, cfg, now_dt) or _freshness_reason(state, cfg, now_dt) is None:
             continue
         for _ in range(REFRESH_ATTEMPTS):
             try:
                 probe_usage(config, name, now=now)
                 store = read_store(config)
                 now_dt = _now_utc(now)
-                reason = _freshness_reason(store["agents"][name], cfg, now_dt)
+                state = store["agents"][name]
+                reason = None if _fresh_global_block(state, cfg, now_dt) else _freshness_reason(state, cfg, now_dt)
                 if reason is not None:
                     raise AgRouteError(f"usage probe: {reason} after partial report")
             except AgRouteError as exc:
@@ -1261,6 +1280,17 @@ def apply_usage_patch(config, agent, patch, *, source="ingest", now=None):
         # Retain expired raw scopes as refresh obligations. Evaluation alone
         # clears them; a partial report must not forget an unrefreshed scope.
         current = deepcopy(store["agents"][agent])
+        # Freeze genuine legacy clocks before a partial report advances the
+        # snapshot timestamp. Old sibling scopes must keep their original age.
+        for _, win in _patch_windows(current):
+            if _window_has_evidence(win) and current["updated_at"]:
+                win.setdefault("observed_at", current["updated_at"])
+                if win.get("used_pct") is not None:
+                    win.setdefault("measured_at", win["observed_at"])
+        if source == "probe":
+            # Successful current provider observation can retire already-ended
+            # scopes. Unexpired stale scopes still require matching evidence.
+            current = effective_agent_state(current, now_dt, project_rejections=False)
         if current["cooldown_until"] and now_dt >= parse_timestamp(current["cooldown_until"]):
             current["rate_limited"], current["cooldown_until"] = False, None
         for key, win in _patch_windows(patch):
