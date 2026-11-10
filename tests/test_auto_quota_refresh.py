@@ -204,7 +204,7 @@ def test_codex_rpc_timeout_does_not_reuse_cached_quota(tmp_path, monkeypatch):
     assert router.usage_show("codex", now=T0)["agents"]["codex"]["updated_at"] is None
 
 
-@pytest.mark.parametrize("failure", ["timeout", "malformed"])
+@pytest.mark.parametrize("failure", ["timeout", "malformed", "success_without_quota"])
 def test_agy_failed_builtin_probe_never_fabricates_available_quota(tmp_path, monkeypatch, failure):
     import subprocess
     from types import MethodType
@@ -223,7 +223,8 @@ def test_agy_failed_builtin_probe_never_fabricates_available_quota(tmp_path, mon
         calls.append(kwargs["timeout"])
         if failure == "timeout":
             raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
-        return subprocess.CompletedProcess(cmd, 0, "not a quota report", "")
+        output = '{"event":"result","result":{"status":"SUCCESS"}}' if failure == "success_without_quota" else "not a quota report"
+        return subprocess.CompletedProcess(cmd, 0, output, "")
     monkeypatch.setattr(subprocess, "run", run)
     router = Router(project=tmp_path)
     with pytest.raises(AgRouteError) as exc:
@@ -271,3 +272,17 @@ def test_partial_report_does_not_freshen_legacy_window_timestamp(tmp_path, monke
     with pytest.raises(AgRouteError) as exc:
         router.candidates("codex", include_agents=["codex"], now=STALE)
     assert len(calls) == 2 and "retry" in str(exc.value)
+
+
+def test_old_cached_probe_evidence_is_not_recorded_as_current_success(tmp_path, monkeypatch):
+    router = Router(project=tmp_path)
+    old = {"session_5h": {"used_pct": 10, "reset_at": RESET,
+                           "observed_at": T0, "measured_at": T0}}
+    calls = patch_probe(monkeypatch, "codex", [old])
+    with pytest.raises(AgRouteError):
+        router.candidates("codex", include_agents=["codex"], now=STALE)
+    assert len(calls) == 2
+    state = router.usage_show("codex", now=STALE)["agents"]["codex"]
+    assert state["probe"].get("succeeded_at") is None
+    assert state["probe"]["failed_at"] == STALE
+    assert state["updated_at"] in (None, T0)
