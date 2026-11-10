@@ -9,8 +9,10 @@ import json
 import os
 from pathlib import Path
 import re
+import selectors
 import shutil
 import subprocess
+import time
 
 from .discovery import _claude_home, _codex_home
 from .files import atomic_write
@@ -29,6 +31,8 @@ from .validation import (
 )
 
 USAGE_STORE_FORMAT = "agroute-usage-store-v1"
+PROBE_TIMEOUT_SECONDS = 15
+REFRESH_ATTEMPTS = 2
 
 
 def _empty_window():
@@ -242,6 +246,17 @@ def _discover_codex_live_patch() -> dict:
                 continue
             patch: dict = {}
             if _parse_json_events(line, patch) and patch:
+                # File touches do not refresh an old quota measurement.
+                try:
+                    observed = json.loads(line).get("timestamp")
+                    if observed is not None:
+                        observed = format_timestamp(parse_timestamp(observed, "codex event timestamp"))
+                        for _, win in _patch_windows(patch):
+                            win.setdefault("observed_at", observed)
+                            if win.get("used_pct") is not None:
+                                win.setdefault("measured_at", observed)
+                except (ValueError, AgRouteError):
+                    pass
                 return patch
     return {}
 
@@ -408,6 +423,12 @@ def read_store(config):
                     for tk, tv in patch["tiers"].items():
                         if isinstance(tv, dict):
                             ag["tiers"][tk] = _validate_window(tv, f"discovered.{name}.tiers.{tk}")
+                for key in ("updated_at", "probe"):
+                    if key in patch:
+                        ag[key] = deepcopy(patch[key])
+                times = [win["observed_at"] for _, win in _patch_windows(ag) if win.get("observed_at")]
+                if times:
+                    ag["updated_at"] = max(times + ([ag["updated_at"]] if ag["updated_at"] else []), key=parse_timestamp)
                 ag["source"] = "discovered"
     return store
 
@@ -468,6 +489,9 @@ def _merge_window(previous, incoming):
         for key in ("used_pct", "reset_at"):
             if incoming.get(key) is not None:
                 result[key] = incoming[key]
+        for key in ("observed_at", "measured_at"):
+            if incoming.get(key) is not None:
+                result[key] = incoming[key]
     superseded = list(dict.fromkeys(ignored + incoming.get("superseded_events", [])))
     if previous.get("event_id") and previous.get("event_id") != incoming.get("event_id"):
         superseded.append(previous["event_id"])
@@ -513,8 +537,6 @@ def _scoped_access_rejection(agent, state, candidate):
 
 
 def usage_warnings(agent, state, cfg, now_dt):
-    if agent != "claude":
-        return []
     probe = state.get("probe", {})
     success = probe.get("succeeded_at")
     data_time = state.get("updated_at")
@@ -524,7 +546,7 @@ def usage_warnings(agent, state, cfg, now_dt):
     failed = probe.get("failed_at") and (not success or parse_timestamp(probe["failed_at"]) >= parse_timestamp(success))
     warnings = list(probe.get("warnings", []))
     if stale or failed:
-        message = f"claude usage snapshot stale since {reference or 'unknown'}" if stale else "claude usage snapshot uncertain"
+        message = f"{agent} usage snapshot stale since {reference or 'unknown'}" if stale else f"{agent} usage snapshot uncertain"
         if failed:
             message += f"; last probe failed at {probe['failed_at']}: {probe.get('error', 'unknown error')}"
         warnings.append(message)
@@ -533,15 +555,74 @@ def usage_warnings(agent, state, cfg, now_dt):
 
 def visible_agent_state(agent, state, cfg, now_dt):
     result = effective_agent_state(state, now_dt)
-    if agent == "claude":
-        probe = result.get("probe", {})
-        success, failure = probe.get("succeeded_at"), probe.get("failed_at")
-        if failure and (not success or parse_timestamp(failure) >= parse_timestamp(success)):
-            for _, win in _patch_windows(result):
-                measured_at = win.get("measured_at") or win.get("observed_at") or result.get("updated_at")
-                if measured_at is None or (now_dt - parse_timestamp(measured_at)).total_seconds() > cfg["usage_stale_after_seconds"]:
-                    win["used_pct"] = None
+    probe = result.get("probe", {})
+    success, failure = probe.get("succeeded_at"), probe.get("failed_at")
+    if failure and (not success or parse_timestamp(failure) >= parse_timestamp(success)):
+        for _, win in _patch_windows(result):
+            measured_at = win.get("measured_at") or win.get("observed_at") or result.get("updated_at")
+            if measured_at is None or (now_dt - parse_timestamp(measured_at)).total_seconds() > cfg["usage_stale_after_seconds"]:
+                win["used_pct"] = None
     return result
+
+
+def _window_has_evidence(win):
+    return win.get("used_pct") is not None or win.get("status") is not None or win.get("reset_at") is not None
+
+
+def _freshness_reason(state, cfg, now_dt):
+    """Check each known scope; a recent sibling never renews its clock."""
+    probe = state.get("probe", {})
+    failed, succeeded = probe.get("failed_at"), probe.get("succeeded_at")
+    if failed and (not succeeded or parse_timestamp(failed) >= parse_timestamp(succeeded)):
+        return f"last probe failed at {failed}: {probe.get('error', 'unknown error')}"
+    found = False
+    for key, win in _patch_windows(state):
+        if not _window_has_evidence(win):
+            continue
+        found = True
+        if win.get("reset_at") and now_dt >= parse_timestamp(win["reset_at"]):
+            return f"{key} evidence expired at {win['reset_at']}"
+        observed = win.get("measured_at") if win.get("used_pct") is not None else None
+        observed = observed or win.get("observed_at") or state.get("updated_at")
+        if observed is None or not 0 <= (now_dt - parse_timestamp(observed)).total_seconds() <= cfg["usage_stale_after_seconds"]:
+            return f"{key} evidence stale since {observed or 'unknown'}"
+    # Explicit global availability/cooldown evidence has the snapshot's clock.
+    if state.get("rate_limited") or state.get("cooldown_until") or not found:
+        observed = state.get("updated_at")
+        if state.get("cooldown_until") and now_dt >= parse_timestamp(state["cooldown_until"]):
+            return "rate-limit evidence expired"
+        if observed is None or not 0 <= (now_dt - parse_timestamp(observed)).total_seconds() <= cfg["usage_stale_after_seconds"]:
+            return f"quota evidence stale since {observed or 'unknown'}"
+    return None
+
+
+def ensure_fresh_usage(config, targets, *, now=None):
+    """Refresh routing inputs with one retry, isolating infrastructure failures."""
+    now_dt = _now_utc(now)
+    store = read_store(config)
+    failures = {}
+    for name in dict.fromkeys(targets):
+        now_dt = _now_utc(now)
+        cfg = config.agents[name]
+        if not cfg["enabled"] or _freshness_reason(store["agents"][name], cfg, now_dt) is None:
+            continue
+        for _ in range(REFRESH_ATTEMPTS):
+            try:
+                probe_usage(config, name, now=now)
+                store = read_store(config)
+                now_dt = _now_utc(now)
+                reason = _freshness_reason(store["agents"][name], cfg, now_dt)
+                if reason is not None:
+                    raise AgRouteError(f"usage probe: {reason} after partial report")
+            except AgRouteError as exc:
+                _record_probe_failure(config, name, exc, now)
+                failures[name] = (f"{name} quota refresh infrastructure incident after {REFRESH_ATTEMPTS} attempts: "
+                                  f"{exc}; retry with agroute usage probe --agent {name}")
+            else:
+                failures.pop(name, None)
+                break
+        store = read_store(config)
+    return store, failures
 
 
 def effective_agent_state(agent_state, now_dt, *, project_rejections=True):
@@ -1177,12 +1258,17 @@ def apply_usage_patch(config, agent, patch, *, source="ingest", now=None):
     now_dt = _now_utc(now)
     with _usage_locked(config):
         store = _read_raw_store(config)
-        current = effective_agent_state(store["agents"][agent], now_dt, project_rejections=False)
+        # Retain expired raw scopes as refresh obligations. Evaluation alone
+        # clears them; a partial report must not forget an unrefreshed scope.
+        current = deepcopy(store["agents"][agent])
+        if current["cooldown_until"] and now_dt >= parse_timestamp(current["cooldown_until"]):
+            current["rate_limited"], current["cooldown_until"] = False, None
         for key, win in _patch_windows(patch):
             incoming = _validate_window(win, key)
-            if agent == "claude" and source in ("ingest", "probe"):
+            if source in ("ingest", "probe", "set"):
                 if incoming.get("used_pct") is not None:
-                    incoming.setdefault("status", "reported")
+                    if source != "set":
+                        incoming.setdefault("status", "reported")
                 incoming.setdefault("observed_at", format_timestamp(now_dt))
                 if incoming.get("used_pct") is not None:
                     incoming.setdefault("measured_at", incoming["observed_at"])
@@ -1196,9 +1282,8 @@ def apply_usage_patch(config, agent, patch, *, source="ingest", now=None):
             current["cooldown_until"] = format_timestamp(parse_timestamp(cd, "cooldown_until")) if cd is not None else None
             if cd is not None and "rate_limited" not in patch:
                 current["rate_limited"] = True
-        current = effective_agent_state(current, now_dt, project_rejections=False)
         # Snapshot time describes quota evidence; failures never refresh it.
-        if agent == "claude" and source in ("ingest", "probe"):
+        if source in ("ingest", "probe", "set"):
             times = [win["observed_at"] for _, win in _patch_windows(current) if win.get("observed_at")]
             if current["updated_at"]:
                 times.append(current["updated_at"])
@@ -1206,7 +1291,7 @@ def apply_usage_patch(config, agent, patch, *, source="ingest", now=None):
         else:
             current["updated_at"] = format_timestamp(now_dt)
         current["source"] = source
-        if source == "probe" and agent == "claude":
+        if source == "probe":
             current["probe"].update(attempted_at=format_timestamp(now_dt), succeeded_at=format_timestamp(now_dt),
                                     warnings=patch.get("warnings", []))
             current["probe"].pop("error", None)
@@ -1240,7 +1325,7 @@ def _probe_codex_app_server(cwd: Path) -> dict | None:
             cwd=cwd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
             text=True,
         )
         assert proc.stdin is not None and proc.stdout is not None
@@ -1256,18 +1341,32 @@ def _probe_codex_app_server(cwd: Path) -> dict | None:
         ):
             proc.stdin.write(json.dumps(msg) + "\n")
             proc.stdin.flush()
-        for _ in range(16):
-            line = proc.stdout.readline()
-            if not line:
-                break
-            try:
-                obj = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(obj, dict) and obj.get("id") == 2:
-                return parse_native_usage("codex", line)
-    except (OSError, AgRouteError):
-        return None
+        deadline = time.monotonic() + PROBE_TIMEOUT_SECONDS
+        pending = b""
+        with selectors.DefaultSelector() as selector:
+            selector.register(proc.stdout, selectors.EVENT_READ)
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not selector.select(remaining):
+                    raise AgRouteError("usage probe: Codex RPC timed out after 15 seconds")
+                chunk = os.read(proc.stdout.fileno(), 65536)
+                if not chunk:
+                    break
+                pending += chunk
+                if len(pending) > 1024 * 1024:
+                    raise AgRouteError("usage probe: Codex RPC response exceeded 1 MiB")
+                while b"\n" in pending:
+                    raw_line, pending = pending.split(b"\n", 1)
+                    line = raw_line.decode("utf-8", errors="replace")
+                    try:
+                        obj = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(obj, dict) and obj.get("id") == 2:
+                        return parse_native_usage("codex", line)
+        raise AgRouteError("usage probe: Codex RPC ended without a quota response")
+    except OSError as exc:
+        raise AgRouteError(f"usage probe: Codex RPC failed: {exc}") from exc
     finally:
         if proc is not None:
             try:
@@ -1276,25 +1375,23 @@ def _probe_codex_app_server(cwd: Path) -> dict | None:
             except (OSError, subprocess.TimeoutExpired):
                 try:
                     proc.kill()
+                    proc.wait(timeout=2)
                 except OSError:
                     pass
+            finally:
+                for handle in (proc.stdin, proc.stdout):
+                    if handle is not None:
+                        handle.close()
     return None
 
 
 def _builtin_probe_patch(name: str, cwd: Path) -> dict | None:
     from .adapters import get_adapter
 
-    try:
-        return get_adapter(name).probe_usage(cwd)
-    except Exception:
-        if name == "claude":
-            raise
-        return None
+    return get_adapter(name).probe_usage(cwd)
 
 
 def _record_probe_failure(config, name, exc, now):
-    if name != "claude":
-        return
     with _usage_locked(config):
         store = _read_raw_store(config)
         probe = store["agents"][name].setdefault("probe", {})
@@ -1321,21 +1418,27 @@ def probe_usage(config, agent=None, *, now=None):
                     raise AgRouteError(f"usage probe: agents.{name}.usage_probe_cmd is not configured and no live telemetry found")
             else:
                 try:
-                    proc = subprocess.run(cmd, cwd=config.capture_root, capture_output=True, text=True, timeout=15, check=False)
+                    proc = subprocess.run(cmd, cwd=config.capture_root, capture_output=True, text=True, timeout=PROBE_TIMEOUT_SECONDS, check=False)
                 except (OSError, subprocess.TimeoutExpired) as exc:
                     raise AgRouteError(f"usage probe: failed to run probe command for '{name}': {exc}") from exc
                 combined = "\n".join(part for part in (proc.stdout, proc.stderr) if part).strip()
                 if proc.returncode != 0 and not combined:
                     raise AgRouteError(f"usage probe: command for '{name}' exited with status {proc.returncode} and no output")
                 patch = parse_native_usage(name, combined)
+            if not any(_window_has_evidence(win) for _, win in _patch_windows(patch)) and not any(
+                key in patch for key in ("rate_limited", "cooldown_until")
+            ):
+                raise AgRouteError(f"usage probe: no recognized quota or availability evidence for '{name}'")
             if name == "claude":
                 for key, win in _patch_windows(patch):
                     old = _get_window(observed, key)
                     if old.get("event_id") and win.get("event_id") != old["event_id"]:
                         win.setdefault("superseded_events", []).extend(old.get("superseded_events", []) + [old["event_id"]])
             results[name] = apply_usage_patch(config, name, patch, source="probe", now=now)
-        except AgRouteError as exc:
+        except (AgRouteError, OSError, subprocess.TimeoutExpired) as exc:
+            if not isinstance(exc, AgRouteError):
+                exc = AgRouteError(f"usage probe: provider '{name}' failed: {exc}")
             _record_probe_failure(config, name, exc, now)
             if agent is not None or config.agents[name]["usage_probe_cmd"]:
-                raise
+                raise exc
     return results
