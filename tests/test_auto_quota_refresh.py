@@ -403,3 +403,25 @@ def test_expiring_refreshes_share_two_attempt_budget(tmp_path, monkeypatch):
     assert not any(c["model"].startswith("codex/") for c in result["candidates"])
     assert any(c["model"].startswith("claude/") for c in result["candidates"])
     assert any("incident" in e["reason"] and "retry" in e["reason"] for e in result["excluded"] if e["agent"] == "codex")
+
+
+def test_unrelated_success_does_not_refresh_old_availability(tmp_path):
+    import json
+    import sys
+
+    report = [
+        {"timestamp": T0, "rate_limited": False},
+        {"timestamp": STALE, "event": "result", "result": {"status": "SUCCESS"}},
+    ]
+    script = tmp_path / "stale-with-success.py"
+    script.write_text("\n".join("print(" + repr(json.dumps(event)) + ")" for event in report) + "\n")
+    config = tmp_path / "agroute.toml"
+    config.write_text("[agents.codex]\nusage_probe_cmd = " + json.dumps([sys.executable, str(script)]) + "\n")
+    router = Router(config, project=tmp_path)
+    router.usage_set("codex", rate_limited=True, now=T0)
+    with pytest.raises(AgRouteError) as exc:
+        router.candidates("codex", include_agents=["codex"], now=STALE)
+    assert "retry" in str(exc.value)
+    state = router.usage_show("codex", now=STALE)["agents"]["codex"]
+    assert state["probe"].get("succeeded_at") is None
+    assert state["updated_at"] == T0
