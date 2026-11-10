@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.3 — 2026-11-10
 
 - Refresh missing, stale, and expired known quota evidence before routing, with bounded
   attempts and provider-specific failure exclusions. Partial reports cannot refresh other
