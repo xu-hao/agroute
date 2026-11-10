@@ -175,3 +175,55 @@ def test_each_provider_records_final_failure(tmp_path, monkeypatch, agent):
     assert "retry" in exc.value.details["excluded"][0]["reason"]
     state = router.usage_show(agent, now=T0)["agents"][agent]
     assert state["probe"]["failed_at"] == T0 and state["updated_at"] is None
+
+
+def test_codex_rpc_timeout_does_not_reuse_cached_quota(tmp_path, monkeypatch):
+    import os
+    import sys
+    import time
+    from types import MethodType
+    from agroute.adapters import CodexAdapter
+    from agroute import usage
+
+    bindir = tmp_path / "fixture-bin"
+    bindir.mkdir()
+    command = bindir / "codex"
+    command.write_text(f'#!{sys.executable}\nimport time\ntime.sleep(10)\n')
+    command.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bindir) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setattr(usage, "PROBE_TIMEOUT_SECONDS", 0.2, raising=False)
+    adapter = get_adapter("codex")
+    monkeypatch.setattr(adapter, "probe_usage", MethodType(CodexAdapter.probe_usage, adapter))
+    monkeypatch.setattr(adapter, "discover_live_usage_patch", lambda: session())
+    router = Router(project=tmp_path)
+    start = time.monotonic()
+    with pytest.raises(AgRouteError) as exc:
+        router.candidates("codex", include_agents=["codex"], now=T0)
+    assert time.monotonic() - start < 4
+    assert "retry" in exc.value.details["excluded"][0]["reason"]
+    assert router.usage_show("codex", now=T0)["agents"]["codex"]["updated_at"] is None
+
+
+@pytest.mark.parametrize("failure", ["timeout", "malformed"])
+def test_agy_failed_builtin_probe_never_fabricates_available_quota(tmp_path, monkeypatch, failure):
+    import subprocess
+    from types import MethodType
+    from agroute.adapters import AgyAdapter
+    import agroute.adapters as adapters
+
+    adapter = get_adapter("agy")
+    monkeypatch.setattr(adapter, "probe_usage", MethodType(AgyAdapter.probe_usage, adapter))
+    monkeypatch.setattr(adapters.shutil, "which", lambda executable: "/fixture/agy")
+    calls = []
+    def run(cmd, **kwargs):
+        calls.append(kwargs["timeout"])
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+        return subprocess.CompletedProcess(cmd, 0, "not a quota report", "")
+    monkeypatch.setattr(subprocess, "run", run)
+    router = Router(project=tmp_path)
+    with pytest.raises(AgRouteError) as exc:
+        router.candidates("agy", include_agents=["agy"], now=T0)
+    assert calls == [15, 15]
+    assert "retry" in exc.value.details["excluded"][0]["reason"]
+    assert router.usage_show("agy", now=T0)["agents"]["agy"]["updated_at"] is None
