@@ -226,9 +226,9 @@ class AgyAdapter(AgentAdapter):
                 if combined:
                     from .usage import parse_native_usage
                     return parse_native_usage("agy", combined)
-            except (OSError, subprocess.TimeoutExpired, AgRouteError):
-                pass
-            return {"rate_limited": False}
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise AgRouteError(f"usage probe: Antigravity command failed: {exc}") from exc
+            raise AgRouteError("usage probe: Antigravity command returned no quota evidence")
         return None
 
     def resolve_quota_group(
@@ -489,9 +489,6 @@ class CodexAdapter(AgentAdapter):
         rpc_patch = _probe_codex_app_server(cwd)
         if rpc_patch:
             return rpc_patch
-        patch = self.discover_live_usage_patch()
-        if patch:
-            return patch
         return None
 
 

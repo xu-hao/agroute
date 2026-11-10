@@ -138,6 +138,25 @@ with tempfile.TemporaryDirectory(prefix="agroute-wheel-") as directory:
     )
     assert Path(paths["capture_root"]) == root.resolve()
 
+    # Keep automatic quota refresh inside this owned fixture, including when an
+    # installed provider CLI exists on the host. The marker files demonstrate that
+    # the installed wheel really probed the missing AGY and Claude evidence.
+    probe = root / "quota-probe.py"
+    probe.write_text(
+        "from pathlib import Path\n"
+        "import sys\n"
+        "Path(__file__).with_name('probe-' + sys.argv[1]).write_text('called')\n"
+        "print('5h limit: 10% used (resets 2099-01-01T00:00:00Z)')\n"
+    )
+    (root / "agroute.toml").write_text(
+        "\n".join(
+            f"[agents.{agent}]\nusage_probe_cmd = "
+            + json.dumps([str(python), str(probe), agent])
+            for agent in ("agy", "claude", "codex")
+        )
+        + "\n"
+    )
+
     # Ingest Codex rate_limits JSONL and verify candidate filtering + plan resolution
     codex_event = root / "codex.jsonl"
     codex_event.write_text(
@@ -197,6 +216,9 @@ with tempfile.TemporaryDirectory(prefix="agroute-wheel-") as directory:
     assert "agy/pro" in models
     assert "claude/claude-sonnet-4-6" in models
     assert not any(m.startswith("codex/") for m in models)
+    assert (root / "probe-agy").read_text() == "called"
+    assert (root / "probe-claude").read_text() == "called"
+    assert not (root / "probe-codex").exists()  # Fresh, exhausted evidence is reused.
 
     # Resolve both a native plan (agy/pro) and a cross-agent CLI plan (claude/claude-sonnet-4-6)
     decision_native = root / "decision-native.json"

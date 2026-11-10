@@ -13,9 +13,10 @@ while `howhard` owns model/effort selection, execution accounting, and writable 
 
 1. Read the actual task and current project instructions/context. Identify the current host
    agent (`codex`, `claude`, or `agy`) and read [host execution surfaces](references/hosts.md).
-2. Refresh or inspect live native quota state using [native usage tracking](references/usage.md)
+2. Inspect native quota state using [native usage tracking](references/usage.md)
    (`agroute usage show --json`, `agroute usage ingest`, `agroute usage set`, or
-   `agroute usage probe`). Expired windows clear automatically when `now >= reset_at`.
+   `agroute usage probe`). Routing automatically refreshes missing, stale, or expired
+   known evidence and excludes a provider when bounded refresh fails.
 3. Follow [the routing and decision workflow](references/workflow.md):
    - Run `agroute candidates --host HOST --output /tmp/TASK-candidates.json --json` to emit
      the full eligible inventory (`<agent>/<model>`, `<effort>`). When `target == host`,
