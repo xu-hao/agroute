@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.1 — 2026-11-12
 
 - Delegate Antigravity native routes through the `swarm` tool at the selected model and
   effort (#33). With `--host agy`, `candidates` now offers every `agy models` cell natively
@@ -9,9 +9,18 @@
   `swarm{action: "add", name, model, workspace, brief}` for a concrete slug. A tier listed
   explicitly in `native_candidates` still plans `invoke_subagent`, which has no effort
   control. Explicit Antigravity `native_candidates` may now be concrete model slugs.
-- Add a built-in Google Cloud rate card for `gemini-4-carbon` (#33): $2.00 input, $10.00
-  output and $0.10 cached input per million tokens, doubling on 2026-12-01. It prices
-  `agy/gemini-4-carbon-{low,medium,high}`.
+- Replace an Antigravity agent's stored quota-window set when a complete `/usage` report
+  arrives (`status: "SUCCESS"` with quota evidence on every group and bucket), dropping
+  removed plan tiers such as `argon`, `argon-weekly`, and `gemini-argon-wtu-weekly` across a
+  plan change so Argon models resolve against the combined Gemini quota (`gemini-weekly` /
+  `gemini-5h`) when no separate Argon bucket is reported, while partial or failed reports
+  preserve existing valid tiers (#35).
+- Clear the shared live usage cache (`$XDG_DATA_HOME/agroute/live_usage_cache.json`) for the
+  cleared agent(s) on `agroute usage clear [--agent X]` so cleared tiers cannot repopulate on
+  subsequent reads (#35).
+- Add built-in catalog rate cards for `gemini-4-carbon` (#33) and for `claude-opus-4-5`,
+  `claude-sonnet-4-5`, `gemini-3.7-flash`, `gemini-3.6-flash`, and `gemini-3.1-pro` (#35),
+  verified against official Anthropic and Google Cloud pricing.
 - Document how to read a native `swarm` worker's actual token usage from its conversation
   transcript (#33).
 
