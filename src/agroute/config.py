@@ -24,6 +24,94 @@ from .validation import (
     text,
 )
 
+PLAN_PRESETS = {
+    "agy": {
+        "pro-20": {
+            "tiers": {
+                "gemini": {"session_5h_usd": 32.0, "weekly_7d_usd": 135.0},
+                "3p": {"session_5h_usd": 5.0, "weekly_7d_usd": 10.0},
+            },
+        },
+        "ultra-200": {
+            "tiers": {
+                "gemini": {"session_5h_usd": 320.0, "weekly_7d_usd": 1350.0},
+                "3p": {"session_5h_usd": 25.0, "weekly_7d_usd": 50.0},
+            },
+        },
+    },
+    "claude": {
+        "pro-20": {
+            "session_5h_usd": 18.0,
+            "weekly_7d_usd": 45.0,
+            "tiers": {},
+        },
+        "max-5x": {
+            "session_5h_usd": 90.0,
+            "weekly_7d_usd": 225.0,
+            "tiers": {
+                "fable": {"weekly_7d_usd": 75.0},
+            },
+        },
+        "max-20x": {
+            "session_5h_usd": 360.0,
+            "weekly_7d_usd": 900.0,
+            "tiers": {
+                "fable": {"weekly_7d_usd": 300.0},
+            },
+        },
+    },
+    "codex": {
+        "plus-20": {
+            "session_5h_usd": 20.0,
+            "weekly_7d_usd": 50.0,
+            "tiers": {},
+        },
+        "pro-200": {
+            "session_5h_usd": 200.0,
+            "weekly_7d_usd": 500.0,
+            "tiers": {},
+        },
+    },
+}
+
+PLAN_ALIASES = {
+    "agy": {
+        "pro": "pro-20",
+        "google-ai-pro": "pro-20",
+        "ultra": "ultra-200",
+        "google-ai-ultra": "ultra-200",
+    },
+    "claude": {
+        "pro": "pro-20",
+        "claude-pro": "pro-20",
+        "claude-max-5x": "max-5x",
+        "claude-max-20x": "max-20x",
+    },
+    "codex": {
+        "plus": "plus-20",
+        "chatgpt-plus": "plus-20",
+        "pro": "pro-200",
+        "chatgpt-pro": "pro-200",
+    },
+}
+
+_AGENT_KEYS = (
+    "enabled",
+    "max_session_used_pct",
+    "max_weekly_used_pct",
+    "max_tier_used_pct",
+    "host_reserve_pct",
+    "usage_probe_cmd",
+    "usage_stale_after_seconds",
+    "native_candidates",
+    "cli_candidates",
+    "prices",
+    "plan",
+    "credit",
+    "exclude_quota_groups",
+)
+
+
 @dataclass
 class Config:
     capture_root: Path
@@ -120,6 +208,69 @@ def _validate_prices(raw, where):
     return prices
 
 
+def _validate_plan(raw, where, *, agent):
+    if not isinstance(raw, str):
+        raise AgRouteError(f"{where}: expected a string")
+    norm = raw.strip().lower()
+    if norm == "":
+        return "", {"tiers": {}}
+    presets = PLAN_PRESETS[agent]
+    aliases = PLAN_ALIASES[agent]
+    canonical = norm if norm in presets else aliases.get(norm)
+    if canonical is None:
+        valid = sorted(set(presets) | set(aliases))
+        raise AgRouteError(
+            f"{where}: unknown plan {raw!r} for agent '{agent}' (expected one of {valid})"
+        )
+    return canonical, deepcopy(presets[canonical])
+
+
+def _validate_credit(raw, where):
+    table(raw, where)
+    keys(raw, [], ["session_5h_usd", "weekly_7d_usd", "tiers"], where=where)
+    validated = {"tiers": {}}
+    if "session_5h_usd" in raw:
+        validated["session_5h_usd"] = number(
+            raw["session_5h_usd"], f"{where}.session_5h_usd", positive=True
+        )
+    if "weekly_7d_usd" in raw:
+        validated["weekly_7d_usd"] = number(
+            raw["weekly_7d_usd"], f"{where}.weekly_7d_usd", positive=True
+        )
+    if "tiers" in raw:
+        tiers_raw = table(raw["tiers"], f"{where}.tiers")
+        for group, tier_raw in tiers_raw.items():
+            text(group, f"{where}.tiers.{group}", label=True, max_length=64)
+            tier_where = f"{where}.tiers.{group}"
+            table(tier_raw, tier_where)
+            keys(tier_raw, [], ["session_5h_usd", "weekly_7d_usd"], where=tier_where)
+            if not tier_raw:
+                raise AgRouteError(
+                    f"{tier_where}: expected at least one of session_5h_usd or weekly_7d_usd"
+                )
+            t_entry = {}
+            if "session_5h_usd" in tier_raw:
+                t_entry["session_5h_usd"] = number(
+                    tier_raw["session_5h_usd"], f"{tier_where}.session_5h_usd", positive=True
+                )
+            if "weekly_7d_usd" in tier_raw:
+                t_entry["weekly_7d_usd"] = number(
+                    tier_raw["weekly_7d_usd"], f"{tier_where}.weekly_7d_usd", positive=True
+                )
+            validated["tiers"][group.lower()] = t_entry
+    return validated
+
+
+def _validate_exclude_quota_groups(raw, where):
+    if not isinstance(raw, list):
+        raise AgRouteError(f"{where}: expected a list of quota-group labels")
+    return list(
+        dict.fromkeys(
+            text(item, where, label=True, max_length=64).lower() for item in raw
+        )
+    )
+
+
 def _merge_config(base, override, where):
     table(override, where)
     unknown_top = set(override) - {"routing", "agents", "state_dir"}
@@ -139,18 +290,7 @@ def _merge_config(base, override, where):
         for name, spec in a_override.items():
             agent_id(name, f"{where}.agents.{name}")
             table(spec, f"{where}.agents.{name}")
-            unknown_a = set(spec) - {
-                "enabled",
-                "max_session_used_pct",
-                "max_weekly_used_pct",
-                "max_tier_used_pct",
-                "host_reserve_pct",
-                "usage_probe_cmd",
-                "usage_stale_after_seconds",
-                "native_candidates",
-                "cli_candidates",
-                "prices",
-            }
+            unknown_a = set(spec) - set(_AGENT_KEYS)
             if unknown_a:
                 raise AgRouteError(f"{where}.agents.{name}: unknown keys {sorted(unknown_a)}")
             spec = deepcopy(spec)
@@ -158,6 +298,20 @@ def _merge_config(base, override, where):
                 # A later layer replaces an earlier layer's entry for the same model only.
                 spec["prices"] = {**merged["agents"][name]["prices"],
                                   **table(spec["prices"], f"{where}.agents.{name}.prices")}
+            if "credit" in spec:
+                c_override = table(spec["credit"], f"{where}.agents.{name}.credit")
+                merged_credit = deepcopy(merged["agents"][name].get("credit", {}))
+                for ck, cv in c_override.items():
+                    if ck == "tiers":
+                        t_override = table(cv, f"{where}.agents.{name}.credit.tiers")
+                        merged_tiers = deepcopy(merged_credit.get("tiers", {}))
+                        for tk, tv in t_override.items():
+                            t_spec = table(tv, f"{where}.agents.{name}.credit.tiers.{tk}")
+                            merged_tiers[tk] = {**merged_tiers.get(tk, {}), **deepcopy(t_spec)}
+                        merged_credit["tiers"] = merged_tiers
+                    else:
+                        merged_credit[ck] = deepcopy(cv)
+                spec["credit"] = merged_credit
             merged["agents"][name].update(spec)
     return merged
 
@@ -177,22 +331,7 @@ def _validate_merged(raw):
     for name in AGENTS:
         where = f"agents.{name}"
         spec = table(agents_raw[name], where)
-        keys(
-            spec,
-            [
-                "enabled",
-                "max_session_used_pct",
-                "max_weekly_used_pct",
-                "max_tier_used_pct",
-                "host_reserve_pct",
-                "usage_probe_cmd",
-                "usage_stale_after_seconds",
-                "native_candidates",
-                "cli_candidates",
-                "prices",
-            ],
-            where=where,
-        )
+        keys(spec, _AGENT_KEYS, where=where)
         enabled = boolean(spec["enabled"], f"{where}.enabled")
         max_session = percentage(spec["max_session_used_pct"], f"{where}.max_session_used_pct")
         max_weekly = percentage(spec["max_weekly_used_pct"], f"{where}.max_weekly_used_pct")
@@ -209,6 +348,20 @@ def _validate_merged(raw):
         cli_cands = _validate_candidate_list(
             spec["cli_candidates"], f"{where}.cli_candidates", agent=name
         )
+        plan_id, preset_credit = _validate_plan(spec["plan"], f"{where}.plan", agent=name)
+        override_credit = _validate_credit(spec["credit"], f"{where}.credit")
+        effective_credit = deepcopy(preset_credit)
+        for ck in ("session_5h_usd", "weekly_7d_usd"):
+            if ck in override_credit:
+                effective_credit[ck] = override_credit[ck]
+        for tk, tv in override_credit.get("tiers", {}).items():
+            effective_credit.setdefault("tiers", {})[tk] = {
+                **effective_credit.get("tiers", {}).get(tk, {}),
+                **tv,
+            }
+        exclude_quota_groups = _validate_exclude_quota_groups(
+            spec["exclude_quota_groups"], f"{where}.exclude_quota_groups"
+        )
         agents[name] = {
             "enabled": enabled,
             "max_session_used_pct": max_session,
@@ -220,6 +373,9 @@ def _validate_merged(raw):
             "native_candidates": native_cands,
             "cli_candidates": cli_cands,
             "prices": _validate_prices(spec["prices"], f"{where}.prices"),
+            "plan": plan_id,
+            "credit": effective_credit,
+            "exclude_quota_groups": exclude_quota_groups,
         }
     return default_host, epsilon, separator, agents
 
