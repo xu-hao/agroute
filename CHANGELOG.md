@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Add subscription plan presets (`plan = "pro-20" | "ultra-200"` on `agy`,
+  `"pro-20" | "max-5x" | "max-20x"` on `claude`, and `"plus-20" | "pro-200"` on `codex`,
+  with aliases), optional `[agents.<name>.credit]` overrides, and `exclude_quota_groups`
+  (such as `["3p"]`) to `[agents.<name>]` configuration (#37).
+- Compute remaining schedulable credit across both 5-hour (`session_5h`) and weekly
+  (`weekly_7d`) quota windows (`available_usd = min(rem_5h, rem_7d)` after `host_reserve_pct`),
+  attach `credit_budget` to `resolve_model_quota`, `usage show`, `models`, `candidates`, and
+  `inventory`, exclude exhausted (`available_usd <= 0`) or unpriced models when `credit_budget`
+  is active, and verify `needed_credit_usd <= available_usd` against live quota state in
+  `agroute plan` (#37).
+
 ## 0.3.1 — 2026-11-12
 
 - Delegate Antigravity native routes through the `swarm` tool at the selected model and

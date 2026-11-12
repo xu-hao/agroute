@@ -341,7 +341,44 @@ cells instead, use one of these:
 
 - restrict routing with `--include-agents`;
 - list the surface's candidates without those cells;
-- disable the agent with `[agents.agy] enabled = false`.
+- disable the agent with `[agents.agy] enabled = false`;
+- configure a subscription `plan` or `credit` table on the agent: when a candidate cell carries
+  an active `credit_budget`, `agroute` automatically excludes any model that has no known price
+  (`"model has no known price required for credit_budget evaluation"`).
+
+(remaining-credit-budgets)=
+### Subscription plan presets, quota-group exclusions, and remaining credit budgets
+
+When an agent configures a subscription `plan` preset (such as `plan = "ultra-200"` on `agy`,
+`plan = "max-20x"` on `claude`, or `plan = "pro-200"` on `codex`) or a `[agents.<name>.credit]`
+override table (see {ref}`subscription-plan-presets`), `resolve_model_quota` computes the
+remaining schedulable USD credit across both 5-hour (`session_5h`) and weekly (`weekly_7d`)
+windows for the model's resolved `quota_group`:
+
+1. **Quota-group exclusion.** Before evaluating usage percentages, if `quota_group` is listed
+   in `agents.<name>.exclude_quota_groups` (for example `exclude_quota_groups = ["3p"]`), the
+   model is excluded with `reason = "quota_group '<group>' is excluded in configuration"`.
+2. **Total window credit.** `total_5h_usd` and `total_7d_usd` resolve from
+   `effective_credit["tiers"][quota_group]`, falling back to agent-level
+   `effective_credit["session_5h_usd"]` and `effective_credit["weekly_7d_usd"]`.
+3. **Remaining credit across 5-hour and weekly windows.** With `reserve = host_reserve_pct`
+   when `agent == host` and `0.0` otherwise:
+   - When `total_5h_usd` and `session_5h.used_pct` are known:
+     `rem_5h = round((max(0.0, 100.0 - reserve - session_5h.used_pct) / 100.0) * total_5h_usd, 6)`.
+   - When `total_7d_usd` and `weekly_7d.used_pct` are known:
+     `rem_7d = round((max(0.0, 100.0 - reserve - weekly_7d.used_pct) / 100.0) * total_7d_usd, 6)`.
+   - When at least one window has a known remaining credit, `credit_budget` is attached with
+     `available_usd = min(present)` and the non-null `session_5h_remaining_usd` /
+     `weekly_7d_remaining_usd` fields (never emitting `None` inside `credit_budget`, so
+     `agroute inventory` renders valid inline TOML tables).
+   - If `credit_budget["available_usd"] <= 0.0`, the model is excluded naming the exhausted
+     credit window (`0 USD remaining`).
+   - When `credit_budget` is active on a candidate cell during `candidates` / `inventory`
+     emission, any candidate without a `rate_card` or `usd_per_mtok` is excluded so `howhard`
+     always receives uniformly priced candidates for credit-budget evaluation.
+
+`agroute usage show` and `agroute models` expose `agents.<name>.plan` and per-model
+`credit_budget` under `agents.<name>.models.<model>`.
 
 (native-quota-tracking)=
 ## Native quota and rate-limit tracking
@@ -492,10 +529,18 @@ it after the worker finishes and record it with the execution outcome.
 
 When `routing.host_affinity_epsilon > 0.0` and `howhard` chose a cross-agent route, `agroute plan`
 checks whether an eligible native host route in the decision's scored panel (`candidates`,
-`cells`, or `ranking`) has `cap_met != false` and expected cost `J_native <= J_chosen + epsilon`.
+`cells`, or `ranking`) has `cap_met != false`, fits within its live `credit_budget["available_usd"]`
+when `needed_credit_usd` (or `C_run`) is present, and has expected cost `J_native <= J_chosen + epsilon`.
 When that condition holds, `agroute plan` selects the native host cell, sets
 `host_affinity_applied = true`, and sets `feedback.mode = "raw_native"` so the caller records
 `howhard observe ... --native` instead of attaching the unexecuted cross-agent receipt.
+
+For the final resolved target cell, `agroute plan` extracts `needed_credit_usd` (falling back to
+`C_run`) from the decision's `cells` / `candidates` / `ranking` panel. When the target cell has a
+live `credit_budget` and `needed_credit_usd > credit_budget["available_usd"]`, `agroute plan`
+refuses with `AgRouteError` naming the required credit, remaining `available_usd`, and the
+`session_5h_remaining_usd` / `weekly_7d_remaining_usd` breakdown. When resolved, the execution
+plan and persisted route record include `credit_budget` and `needed_credit_usd` when present.
 
 (worktree-state-contract)=
 ## Worktree-aware state ownership

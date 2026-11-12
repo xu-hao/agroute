@@ -88,6 +88,37 @@ def _extract_cell_score(entry):
     return None
 
 
+def _extract_needed_credit(entry):
+    if not isinstance(entry, dict):
+        return None
+    for key in ("needed_credit_usd", "C_run"):
+        val = entry.get(key)
+        if type(val) in (int, float):
+            return float(val)
+    return None
+
+
+def _find_panel_cell(decision, cell_key):
+    for panel_key in ("cells", "candidates", "ranking"):
+        panel = decision.get(panel_key)
+        if not isinstance(panel, list):
+            continue
+        for item in panel:
+            if not isinstance(item, dict):
+                continue
+            m_raw = item.get("model")
+            eff_raw = item.get("effort")
+            if not isinstance(m_raw, str) or not isinstance(eff_raw, str):
+                continue
+            try:
+                ag, nat_m, _ = parse_qualified_model(m_raw, "decision panel.model")
+            except AgRouteError:
+                continue
+            if (ag, nat_m, eff_raw) == cell_key:
+                return item
+    return None
+
+
 class Router:
     """Plan-only local agent router integrating native quota state with howhard."""
 
@@ -125,7 +156,7 @@ class Router:
                 mid = cand["model"]
                 q = resolve_model_quota(name, cfg, eff, cand, is_host=is_host, surface=surface)
                 if mid not in models_map:
-                    models_map[mid] = {
+                    entry = {
                         "surface": surface,
                         "efforts": [cand["effort"]],
                         "quota_group": q["quota_group"],
@@ -134,6 +165,9 @@ class Router:
                         "eligible": q["eligible"],
                         "exclusion_reason": q["exclusion_reason"],
                     }
+                    if "credit_budget" in q:
+                        entry["credit_budget"] = deepcopy(q["credit_budget"])
+                    models_map[mid] = entry
                 else:
                     if cand["effort"] not in models_map[mid]["efforts"]:
                         models_map[mid]["efforts"].append(cand["effort"])
@@ -154,6 +188,7 @@ class Router:
             agents_out[name] = {
                 **eff,
                 "enabled": cfg["enabled"],
+                "plan": cfg["plan"],
                 "eligible_as_target": ok_target,
                 "target_exclusion_reason": reason_target,
                 "eligible_as_host_native": ok_host,
@@ -298,11 +333,25 @@ class Router:
                 cell = {"model": qualified, "effort": cand["effort"]}
                 if priced:
                     cell.update(self._price(name, cfg, adapter, cand, surface_name, qualified, now_dt, snapshot))
+                    if mq.get("credit_budget") is not None:
+                        if "rate_card" not in cell and "usd_per_mtok" not in cell:
+                            excluded.append(
+                                {
+                                    "agent": name,
+                                    "surface": surface_name,
+                                    "model": cand["model"],
+                                    "effort": cand["effort"],
+                                    "reason": "model has no known price required for credit_budget evaluation",
+                                }
+                            )
+                            continue
+                        cell["credit_budget"] = deepcopy(mq["credit_budget"])
                 admitted.append(cell)
                 admitted_meta[(name, cand["model"], cand["effort"])] = {
                     "qualified_model": qualified,
                     "surface": surface_name,
                     "candidate": deepcopy(cand),
+                    "credit_budget": deepcopy(mq.get("credit_budget")),
                 }
 
         if not admitted:
@@ -413,6 +462,11 @@ class Router:
         host_affinity_applied = False
         affinity_detail = None
 
+        chosen_panel_item = _find_panel_cell(decision, chosen_key)
+        needed_credit = _extract_needed_credit(chosen_panel_item)
+        if needed_credit is None:
+            needed_credit = _extract_needed_credit(chosen)
+
         epsilon = self.config.host_affinity_epsilon
         if epsilon > 0.0 and chosen_agent != host:
             panel = None
@@ -444,14 +498,24 @@ class Router:
                         and (ag, nat_m, eff_raw) in admitted_meta
                         and item.get("cap_met") is not False
                     ):
+                        nat_meta = admitted_meta[(ag, nat_m, eff_raw)]
+                        nat_budget = nat_meta.get("credit_budget")
+                        nat_needed = _extract_needed_credit(item)
+                        if (
+                            nat_budget is not None
+                            and nat_needed is not None
+                            and nat_needed > nat_budget["available_usd"]
+                        ):
+                            continue
                         if best_native is None or score < best_native[0]:
-                            best_native = (score, ag, nat_m, eff_raw)
+                            best_native = (score, ag, nat_m, eff_raw, nat_needed)
                 if chosen_score is not None and best_native is not None:
-                    native_score, nat_ag, nat_m, nat_eff = best_native
+                    native_score, nat_ag, nat_m, nat_eff, nat_needed = best_native
                     if native_score <= chosen_score + epsilon:
                         target_agent = nat_ag
                         target_model = nat_m
                         target_effort = nat_eff
+                        needed_credit = nat_needed
                         host_affinity_applied = True
                         affinity_detail = {
                             "chosen_score": chosen_score,
@@ -462,6 +526,23 @@ class Router:
 
         meta = admitted_meta[(target_agent, target_model, target_effort)]
         qualified_target_model = meta["qualified_model"]
+        live_budget = meta.get("credit_budget")
+        if live_budget is not None and needed_credit is not None:
+            if needed_credit > live_budget["available_usd"]:
+                window_parts = []
+                if "session_5h_remaining_usd" in live_budget:
+                    window_parts.append(
+                        f"session_5h_remaining_usd={live_budget['session_5h_remaining_usd']:.6g}"
+                    )
+                if "weekly_7d_remaining_usd" in live_budget:
+                    window_parts.append(
+                        f"weekly_7d_remaining_usd={live_budget['weekly_7d_remaining_usd']:.6g}"
+                    )
+                window_detail = f" ({', '.join(window_parts)})" if window_parts else ""
+                raise AgRouteError(
+                    f"plan: chosen cell ({qualified_target_model!r}, {target_effort!r}) requires {needed_credit:.6g} USD credit, "
+                    f"exceeding remaining credit {live_budget['available_usd']:.6g} USD{window_detail}"
+                )
         is_native = target_agent == host
         execution_mode = "native" if is_native else "cli"
 
@@ -575,6 +656,10 @@ class Router:
             "feedback": feedback,
             "warnings": warnings,
         }
+        if live_budget is not None:
+            result["credit_budget"] = deepcopy(live_budget)
+        if needed_credit is not None:
+            result["needed_credit_usd"] = needed_credit
         result["route_id"] = record_plan_route(self.config, result)
         return result
 
@@ -630,6 +715,7 @@ class Router:
             cli_cfg = cfg["cli_candidates"]
             out[name] = {
                 "enabled": cfg["enabled"],
+                "plan": cfg["plan"],
                 "native_source": "configured" if nat_cfg else "discovered",
                 "native_candidates": deepcopy(nat_cfg) if nat_cfg else discover_agent_candidates(name, "native", refresh=refresh),
                 "cli_source": "configured" if cli_cfg else "discovered",

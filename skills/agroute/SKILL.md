@@ -22,11 +22,16 @@ while `howhard` owns model/effort selection, execution accounting, and writable 
      the full eligible inventory (`<agent>/<model>`, `<effort>`). When `target == host`,
      `agroute` emits `native_candidates` supported by the host's native delegation tool; when
      `target != host`, `agroute` emits `cli_candidates` supported by the target's non-interactive CLI.
+     When an agent configures a subscription `plan` (such as `"ultra-200"`, `"pro-20"`,
+     `"max-20x"`, `"pro-200"`) or `credit` table, `agroute` attaches `credit_budget`
+     (`available_usd` across `session_5h` and `weekly_7d` windows) to priced candidates,
+     excludes unpriced models, and honors `exclude_quota_groups` (such as `["3p"]`).
    - Pass `--candidates /tmp/TASK-candidates.json` to `howhard context` (followed by independent
      baseline forecast, `retrieve`, and `decide`) or `howhard pick`, saving the decision JSON
      to `/tmp/TASK-decision.json`.
    - Run `agroute plan --host HOST --decision /tmp/TASK-decision.json --json` to resolve the
-     decision into an `agroute-execution-plan-v1` payload.
+     decision into an `agroute-execution-plan-v1` payload (which also verifies live
+     `needed_credit_usd <= credit_budget.available_usd` when present).
 4. Inspect `execution_mode`, `needs_review`, `invocation`, and `fallback` in the returned plan:
    - Honor `needs_review` before delegating or accepting silent-risk work.
    - When `execution_mode == "native"` (`target_agent == host_agent`), invoke the host's own

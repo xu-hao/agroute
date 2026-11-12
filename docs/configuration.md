@@ -45,6 +45,8 @@ namespace_separator = "/"
 
 [agents.agy]
 enabled = true
+plan = "ultra-200"
+exclude_quota_groups = ["3p"]
 max_session_used_pct = 90.0
 max_weekly_used_pct = 95.0
 max_tier_used_pct = 95.0
@@ -54,6 +56,7 @@ usage_probe_cmd = []
 
 [agents.codex]
 enabled = true
+plan = "pro-200"
 max_session_used_pct = 90.0
 max_weekly_used_pct = 95.0
 max_tier_used_pct = 95.0
@@ -63,6 +66,7 @@ usage_probe_cmd = []
 
 [agents.claude]
 enabled = true
+plan = "max-20x"
 usage_stale_after_seconds = 1800
 max_session_used_pct = 90.0
 max_weekly_used_pct = 95.0
@@ -77,6 +81,36 @@ evidence trigger a bounded refresh; a failed refresh excludes that provider with
 reason. Unknown unreported windows stay `null`. See the
 {ref}`quota freshness contract <native-quota-tracking>` for partial reports, retries,
 and offline inspection.
+
+(subscription-plan-presets)=
+## Subscription plan presets, credit overrides, and quota-group exclusions
+
+Each `[agents.<name>]` section accepts:
+
+- `plan = ""`: optional subscription plan preset identifier (trimmed and lowercased; `""`
+  means no credit preset is configured). Unknown plan names are refused with `AgRouteError`
+  listing the valid plans for that agent.
+  - **`agy`**:
+    - `"pro-20"` (aliases `"pro"`, `"google-ai-pro"`): `gemini` (`session_5h_usd = 32.0`,
+      `weekly_7d_usd = 135.0`), `3p` (`session_5h_usd = 5.0`, `weekly_7d_usd = 10.0`).
+    - `"ultra-200"` (aliases `"ultra"`, `"google-ai-ultra"`): `gemini` (`session_5h_usd = 320.0`,
+      `weekly_7d_usd = 1350.0`), `3p` (`session_5h_usd = 25.0`, `weekly_7d_usd = 50.0`).
+  - **`claude`**:
+    - `"pro-20"` (aliases `"pro"`, `"claude-pro"`): `session_5h_usd = 18.0`, `weekly_7d_usd = 45.0`.
+    - `"max-5x"` (alias `"claude-max-5x"`): `session_5h_usd = 90.0`, `weekly_7d_usd = 225.0`,
+      `fable` tier `weekly_7d_usd = 75.0`.
+    - `"max-20x"` (alias `"claude-max-20x"`): `session_5h_usd = 360.0`, `weekly_7d_usd = 900.0`,
+      `fable` tier `weekly_7d_usd = 300.0`.
+  - **`codex`**:
+    - `"plus-20"` (aliases `"plus"`, `"chatgpt-plus"`): `session_5h_usd = 20.0`, `weekly_7d_usd = 50.0`.
+    - `"pro-200"` (aliases `"pro"`, `"chatgpt-pro"`): `session_5h_usd = 200.0`, `weekly_7d_usd = 500.0`.
+- `credit = {}`: optional table overriding `session_5h_usd`, `weekly_7d_usd`, or
+  `tiers.<quota_group>.{session_5h_usd, weekly_7d_usd}` (positive numbers). Across configuration
+  layers (`default -> user -> project`), `plan` replaces an earlier `plan`, and `credit`
+  deep-merges on top of the resolved `plan` preset.
+- `exclude_quota_groups = []`: list of quota-group labels (for example `["3p"]` under
+  `[agents.agy]`) to exclude while keeping dynamic model discovery active for remaining groups.
+  See {ref}`remaining credit budgets <remaining-credit-budgets>`.
 
 (howhard-inventories)=
 ## Generating `[inventories]` for `howhard.toml`
