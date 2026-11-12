@@ -19,6 +19,12 @@ missing, stale, or expired known quota evidence; a provider whose refresh fails 
 bounded attempts is excluded with a retry reason. Inspect or retry the provider before
 using it; independently fresh providers remain available.
 
+Emitted cells carry a per-token `rate_card` when agroute can price their model. The price comes
+from the configuration, a snapshot written by `agroute prices refresh`, or the built-in catalog.
+Some cards are labelled guesses, with a `source` starting `guess:`. One unpriced cell turns
+`howhard`'s cost comparison off for the whole inventory. To price or exclude such cells, see the
+rate-card contract in `docs/reference.md`. Routing never fetches prices.
+
 To generate a named `[inventories]` section for `howhard.toml` (`howhard` 2.1+ `--inventory`):
 
 ```sh
