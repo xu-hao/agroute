@@ -41,9 +41,11 @@ ANTHROPIC_ROWS = {
     "claude-opus-4-8": (5, 6.25, 10, 0.50, 25),
     "claude-opus-4-7": (5, 6.25, 10, 0.50, 25),
     "claude-opus-4-6": (5, 6.25, 10, 0.50, 25),
+    "claude-opus-4-5": (5, 6.25, 10, 0.50, 25),
     "claude-sonnet-5-5": (2, 2.50, 4, 0.10, 10),
     "claude-sonnet-5": (2, 2.50, 4, 0.20, 10),
     "claude-sonnet-4-6": (3, 3.75, 6, 0.30, 15),
+    "claude-sonnet-4-5": (3, 3.75, 6, 0.30, 15),
     # The "prompts over 100,000 tokens" row: agent sessions routinely exceed it.
     "claude-haiku-5-5": (0.50, 0.625, 1, 0.05, 2.50),
     "claude-haiku-4-5": (1, 1.25, 2, 0.10, 5),
@@ -64,7 +66,10 @@ GOOGLE_PERIODS = {
     "gemini-4-carbon": [(VERIFIED, 2.00, 10.00, 0.10), ("2026-12-01T00:00:00+00:00", 4.00, 20.00, 0.20)],
     "gemini-4-argon": [(VERIFIED, 2.00, 10.00, 0.10), ("2026-12-01T00:00:00+00:00", 4.00, 20.00, 0.20)],
     "gemini-3.8-flash": [(VERIFIED, 0.75, 3.75, 0.075), ("2027-01-01T00:00:00+00:00", 1.50, 7.50, 0.15)],
+    "gemini-3.7-flash": [(VERIFIED, 0.75, 3.75, 0.075), ("2027-01-01T00:00:00+00:00", 1.50, 7.50, 0.15)],
+    "gemini-3.6-flash": [(VERIFIED, 0.75, 3.75, 0.075), ("2027-01-01T00:00:00+00:00", 1.50, 7.50, 0.15)],
     "gemini-3.5-flash-lite": [(VERIFIED, 0.30, 2.50, 0.03)],
+    "gemini-3.1-pro": [(VERIFIED, 2.00, 12.00, 0.20)],
 }
 
 # Guessed cards for agy cells with no published price, labelled so they cannot pass as list prices.
@@ -88,12 +93,27 @@ gemini-4-argon-low\tGemini 4 Argon (Low)
 gemini-3.8-flash-high\tGemini 3.8 Flash (High)
 gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)
 gemini-3.8-flash-low\tGemini 3.8 Flash (Low)
+gemini-3.7-flash-high\tGemini 3.7 Flash (High)
+gemini-3.7-flash-medium\tGemini 3.7 Flash (Medium)
+gemini-3.7-flash-low\tGemini 3.7 Flash (Low)
+gemini-3.6-flash-high\tGemini 3.6 Flash (High)
+gemini-3.6-flash-medium\tGemini 3.6 Flash (Medium)
+gemini-3.6-flash-low\tGemini 3.6 Flash (Low)
+gemini-3.1-pro-high\tGemini 3.1 Pro (High)
+gemini-3.1-pro-medium\tGemini 3.1 Pro (Medium)
+gemini-3.1-pro-low\tGemini 3.1 Pro (Low)
 claude-opus-5-5-low\tClaude Opus 5.5 (Low)
 claude-opus-5-5-medium\tClaude Opus 5.5 (Medium)
 claude-opus-5-5-high\tClaude Opus 5.5 (High)
+claude-opus-4-5-low\tClaude Opus 4.5 (Low)
+claude-opus-4-5-medium\tClaude Opus 4.5 (Medium)
+claude-opus-4-5-high\tClaude Opus 4.5 (High)
 claude-sonnet-5-5-low\tClaude Sonnet 5.5 (Low)
 claude-sonnet-5-5-medium\tClaude Sonnet 5.5 (Medium)
 claude-sonnet-5-5-high\tClaude Sonnet 5.5 (High)
+claude-sonnet-4-5-low\tClaude Sonnet 4.5 (Low)
+claude-sonnet-4-5-medium\tClaude Sonnet 4.5 (Medium)
+claude-sonnet-4-5-high\tClaude Sonnet 4.5 (High)
 gpt-oss-120b-medium\tGPT-OSS 120B (Medium)
 """
 
@@ -217,12 +237,13 @@ def test_codex_cells_use_short_context_rows_and_the_default_30m_write(tmp_path, 
 def test_agy_cli_cells_strip_the_effort_suffix_and_reuse_anthropic_cards(tmp_path, capsys):
     write_agy_cache(parse_agy_models_output(AGY_MODELS))
     cells, payload = cli_candidates(tmp_path, capsys, "claude", "agy")
-    assert len(payload["candidates"]) == 16
+    assert len(payload["candidates"]) == 31
     for effort in ("low", "medium", "high"):
-        for model in ("gemini-4-carbon", "gemini-4-argon", "gemini-3.8-flash"):
+        for model in ("gemini-4-carbon", "gemini-4-argon", "gemini-3.8-flash",
+                      "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.1-pro"):
             effective_at, rates = google_card_fields(model, NOW)
             assert_card(cells[f"agy/{model}-{effort}"], GOOGLE, rates, effective_at)
-        for model in ("claude-opus-5-5", "claude-sonnet-5-5"):
+        for model in ("claude-opus-5-5", "claude-opus-4-5", "claude-sonnet-5-5", "claude-sonnet-4-5"):
             assert_card(cells[f"agy/{model}-{effort}"], ANTHROPIC, anthropic_rates(model))
     # The open-weight model has no first-party list price; it carries OpenRouter's listed rate.
     assert_card(cells["agy/gpt-oss-120b-medium"], OPENROUTER, GPT_OSS_LISTED)
@@ -284,6 +305,8 @@ def test_tier_alias_table_is_exact(tmp_path, capsys):
         ("gemini-4-carbon", None, "2026-11-30T23:59:59Z", "2026-12-01T00:00:00Z"),
         ("gemini-4-argon", "pro", "2026-11-30T23:59:59Z", "2026-12-01T00:00:00Z"),
         ("gemini-3.8-flash", "flash", "2026-12-31T23:59:59Z", "2027-01-01T00:00:00Z"),
+        ("gemini-3.7-flash", None, "2026-12-31T23:59:59Z", "2027-01-01T00:00:00Z"),
+        ("gemini-3.6-flash", None, "2026-12-31T23:59:59Z", "2027-01-01T00:00:00Z"),
     ],
 )
 def test_google_cards_follow_published_price_changes(tmp_path, capsys, model, alias, before, after):

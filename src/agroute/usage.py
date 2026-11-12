@@ -34,6 +34,8 @@ from .validation import (
 USAGE_STORE_FORMAT = "agroute-usage-store-v1"
 PROBE_TIMEOUT_SECONDS = 15
 REFRESH_ATTEMPTS = 2
+# Patch marker: the report covers every quota window the agent currently has.
+COMPLETE_REPORT = "complete_report"
 
 
 def _empty_window():
@@ -355,6 +357,22 @@ def _write_shared_probe_cache(agent_name: str, state: dict) -> None:
         atomic_write(cache_path, json.dumps(existing, indent=2, sort_keys=True) + "\n")
     except OSError:
         pass
+
+
+def _clear_shared_probe_cache(agent_names) -> None:
+    cache_path = _live_usage_cache_file()
+    if cache_path is None or not cache_path.is_file():
+        return
+    try:
+        existing = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    agents_map = existing.get("agents") if isinstance(existing, dict) else None
+    if not isinstance(agents_map, dict) or not any(name in agents_map for name in agent_names):
+        return
+    for name in agent_names:
+        agents_map.pop(name, None)
+    atomic_write(cache_path, json.dumps(existing, indent=2, sort_keys=True) + "\n")
 
 
 def discover_live_usage_patch(agent_name: str) -> dict:
@@ -933,26 +951,37 @@ def _apply_rate_limits_dict(rl_obj, patch, where="rate_limits"):
     return changed
 
 
-def _apply_agy_usage_command(cmd_data: dict, patch: dict) -> bool:
+def _apply_agy_usage_command(cmd_data: dict, patch: dict, *, successful: bool = False) -> bool:
+    """Normalize an Antigravity `/usage` report.
+
+    A successful report in which every group and bucket carries quota evidence
+    describes the plan's whole quota-window set; it is marked complete so that
+    applying it replaces, rather than merges into, the stored windows.
+    """
     groups = cmd_data.get("groups")
     if not isinstance(groups, list):
         return False
     changed = False
+    complete = successful and bool(groups)
     tiers = patch.setdefault("tiers", {})
     for grp in groups:
         if not isinstance(grp, dict):
+            complete = False
             continue
         grp_name = str(grp.get("name") or "").strip().lower()
         buckets = grp.get("buckets")
-        if not isinstance(buckets, list):
+        if not isinstance(buckets, list) or not buckets:
+            complete = False
             continue
         for bkt in buckets:
             if not isinstance(bkt, dict):
+                complete = False
                 continue
             bid = str(bkt.get("id") or "").strip().lower()
             window = str(bkt.get("window") or "").strip().lower()
             win = _extract_window_dict(bkt, f"agy.command.data.{bid or 'bucket'}")
             if win["used_pct"] is None and win["reset_at"] is None:
+                complete = False
                 continue
             changed = True
             if bid:
@@ -988,6 +1017,8 @@ def _apply_agy_usage_command(cmd_data: dict, patch: dict) -> bool:
                             tiers[tok] = win
     if changed:
         patch.setdefault("rate_limited", False)
+        if complete:
+            patch[COMPLETE_REPORT] = True
     return changed
 
 
@@ -1169,6 +1200,8 @@ def _parse_json_events(raw_text, patch):
                 patch.pop("updated_at", None)
         if event_patch.get("warnings"):
             patch.setdefault("warnings", []).extend(event_patch["warnings"])
+        if event_patch.get(COMPLETE_REPORT):
+            patch[COMPLETE_REPORT] = True
     return changed
 
 
@@ -1210,7 +1243,7 @@ def _parse_json_object(obj, patch):
                     changed = True
     cmd_obj = obj.get("command")
     if isinstance(cmd_obj, dict) and cmd_obj.get("name") == "usage" and isinstance(cmd_obj.get("data"), dict):
-        if _apply_agy_usage_command(cmd_obj["data"], patch):
+        if _apply_agy_usage_command(cmd_obj["data"], patch, successful=obj.get("status") == "SUCCESS"):
             changed = True
     usage_rep = obj.get("usage_report")
     if isinstance(usage_rep, dict):
@@ -1367,6 +1400,13 @@ def apply_usage_patch(config, agent, patch, *, source="ingest", now=None):
             current = effective_agent_state(current, now_dt, project_rejections=False)
         if current["cooldown_until"] and now_dt >= parse_timestamp(current["cooldown_until"]):
             current["rate_limited"], current["cooldown_until"] = False, None
+        if patch.get(COMPLETE_REPORT) and source in ("ingest", "probe"):
+            # A complete provider report is the agent's whole current quota-window
+            # set: windows it omits (e.g. a previous plan's tiers) no longer exist.
+            current["tiers"] = {}
+            for key in ("session_5h", "weekly_7d"):
+                if key not in patch:
+                    current[key] = _empty_window()
         for key, win in _patch_windows(patch):
             incoming = _validate_window(win, key)
             if source in ("ingest", "probe", "set"):
@@ -1418,6 +1458,8 @@ def clear_usage(config, agent=None):
         for name in targets:
             store["agents"][name] = _empty_agent_state()
         write_store(config, store)
+        # The shared cache would otherwise repopulate the cleared state on read.
+        _clear_shared_probe_cache(targets)
         return store["agents"][agent] if agent is not None else store["agents"]
 
 
