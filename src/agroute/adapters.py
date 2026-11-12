@@ -291,19 +291,17 @@ class AgyAdapter(AgentAdapter):
 
         # Multi-provider buckets hosted inside Antigravity (e.g. Claude / GPT-OSS vs Gemini)
         if any(t in ("claude", "gpt", "opus", "sonnet", "haiku", "oss") for t in tokens):
+            quota_group = "3p"
             if "3p-5h" in tiers:
                 s5 = deepcopy(tiers["3p-5h"])
-                quota_group = "3p"
             if "3p-weekly" in tiers:
                 w7 = deepcopy(tiers["3p-weekly"])
-                quota_group = "3p"
         elif any(t in ("gemini", "flash", "flash_lite", "pro", "argon") for t in tokens):
+            quota_group = "gemini"
             if "gemini-5h" in tiers:
                 s5 = deepcopy(tiers["gemini-5h"])
-                quota_group = "gemini"
             if "gemini-weekly" in tiers:
                 w7 = deepcopy(tiers["gemini-weekly"])
-                quota_group = "gemini"
 
         # Specific model or family overrides (e.g. argon, opus, sonnet, pro, flash)
         specific_keys = [lower_id]
@@ -423,6 +421,8 @@ class ClaudeAdapter(AgentAdapter):
         tokens = [token for token in re.split(r"[-_./:]+", model_id.lower())
                   if token not in ("claude", "code") and len(token) >= 3]
         tokens.append(str(candidate.get("tier", "")).lower())
+        if group == "shared" and any(token in ("fable", "mythos") for token in tokens):
+            group = "fable"
         for key, win in effective_state.get("tiers", {}).items():
             if any(token and key.startswith(token + "-") for token in tokens):
                 if key.endswith("-5h"):
