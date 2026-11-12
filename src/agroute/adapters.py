@@ -84,6 +84,10 @@ class AgentAdapter(abc.ABC):
         """Probe live usage using agent-specific zero-token probe or app server."""
         ...
 
+    def rate_card_key(self, model: str, effort: str, surface: str) -> str | None:
+        """Exact built-in rate-card catalog key for a candidate cell; the model ID by default."""
+        return model
+
     def resolve_quota_group(
         self,
         model_id: str,
@@ -157,6 +161,14 @@ class AgyAdapter(AgentAdapter):
             return deepcopy(AGY_NATIVE_SUBAGENT_CANDIDATES)
         from .discovery import discover_agy_cli_candidates
         return discover_agy_cli_candidates(refresh=refresh)
+
+    def rate_card_key(self, model: str, effort: str, surface: str) -> str | None:
+        if surface == "native":
+            # Subagent tiers name no concrete model; the catalog keys their labelled guesses.
+            return f"agy:{model}"
+        # CLI model IDs carry the effort as a suffix; strip exactly the cell's own effort.
+        suffix = f"-{effort}"
+        return model[: -len(suffix)] if model.endswith(suffix) else model
 
     def build_native_invocation(
         self,

@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.3.0 — 2026-11-12
+
+- Price emitted candidates without configuration (#30). `candidates` and `inventory` attach
+  a per-token `howhard-rate-card-v1` `rate_card` to every cell they can price, so `howhard`
+  can compare worker cost across agents.
+  - **Built-in catalog.** A hardcoded catalog of Anthropic, OpenAI and Google list prices,
+    verified at 2026-11-12T02:18:20Z and cited to each provider's pricing page. It covers
+    Claude models, Codex `gpt-6*` models and Antigravity CLI models. An Antigravity model
+    resolves by stripping exactly its `-<effort>` suffix, and `claude-*` through Antigravity
+    reuses the Anthropic card. Published scheduled price changes take effect on their dates.
+  - **Guesses and third-party rates.** Antigravity's native tiers carry labelled guesses:
+    a `source` starting `guess:` and `version = "agroute-guess-2026-11-12"`. `gpt-oss-120b`
+    uses OpenRouter's third-party listed rate.
+- Add per-model user prices, `[agents.<agent>.prices."<model>"]`, alongside discovery (#30).
+  An entry is `usd_per_mtok` alone or all six rates; agroute refuses partial, unknown or
+  negative entries at config load. Precedence, highest first:
+  1. a candidate's own price;
+  2. a per-model price;
+  3. the later-effective of the refreshed snapshot and the built-in card, with the built-in
+     card winning a tie;
+  4. unpriced.
+- Add `agroute prices refresh` (#30). It fetches OpenRouter's model listing through an
+  explicit ID map and applies the built-in category rules. It writes an atomic snapshot to
+  the state directory and reports per-model drift. It makes three bounded attempts and then
+  fails clearly, keeping the previous snapshot. Routing never fetches.
+- `agroute inventory` TOML output keeps a cell's `rate_card` instead of dropping it (#30).
+
 ## 0.2.3 — 2026-11-10
 
 - Refresh missing, stale, and expired known quota evidence before routing, with bounded

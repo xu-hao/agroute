@@ -22,6 +22,19 @@ Explicit candidate lists override discovery for their respective surface. `candi
 and `inventory` emit the full eligible inventory; `--include-agents` restricts agents
 by policy, and never serves as an automatic size limit.
 
+Prices follow the {ref}`rate-card precedence <price-precedence>`:
+
+- A candidate entry may carry either an optional `usd_per_mtok` or a `howhard-rate-card-v1`
+  `rate_card`, but not both, and that price wins.
+- Otherwise a per-model entry under `[agents.<agent>.prices."<model>"]` applies. It holds
+  either `usd_per_mtok` alone or all six rate categories, and works alongside discovery.
+  See {ref}`per-model user prices <per-model-prices>`.
+- Otherwise the refreshed snapshot from `agroute prices refresh` or the built-in catalog
+  prices the cell, whichever took effect later.
+
+A candidate `rate_card`'s `model` must be the qualified cell model, for example
+`agy/gpt-oss-120b-medium`, because `howhard` rejects a mismatch.
+
 ## Example `agroute.toml`
 
 ```toml

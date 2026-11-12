@@ -19,6 +19,12 @@ def isolated_env(monkeypatch, tmp_path, request):
         raise AssertionError("test did not install a provider double")
 
     probe = unexpected_probe if request.path.name == "test_auto_quota_refresh.py" else synthetic_probe
+    from agroute import price_refresh
+
+    def unexpected_price_fetch(url, timeout):
+        raise AssertionError("test did not install a price-source double")
+
+    monkeypatch.setattr(price_refresh, "_http_get", unexpected_price_fetch)
     for agent in ("codex", "claude", "agy"):
         monkeypatch.setattr(get_adapter(agent), "probe_usage", probe)
 
