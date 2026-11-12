@@ -2,8 +2,9 @@
 
 - [Quickstart](quickstart.md) — install the Python backend and native plugin, filter candidates,
   resolve a `howhard` decision, and record feedback.
-- [Routing and storage contracts](reference.md) — candidate qualification, native vs. CLI
-  execution plans, quota window expiry, `host_affinity_epsilon`, and worktree state.
+- [Routing and storage contracts](reference.md) — candidate qualification, rate cards and
+  price refresh, native vs. CLI execution plans, quota window expiry,
+  `host_affinity_epsilon`, and worktree state.
 - [Configuration](configuration.md) — layered `agroute.toml`, `native_candidates` vs.
   `cli_candidates`, quota limits, and `howhard.toml` `[inventories]` generation.
 - [Reusable skill and host installation](skills.md) — Codex, Claude Code, and Antigravity

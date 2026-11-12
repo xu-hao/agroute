@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "agroute",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "description": "Route delegated tasks across Codex, Claude Code, and Antigravity within live usage limits using howhard.",
   "author": {"name": "agroute contributors"},
   "repository": "https://github.com/xu-hao/agroute"

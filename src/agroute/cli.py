@@ -7,6 +7,7 @@ import sys
 
 from . import __version__
 from .files import atomic_write
+from .price_refresh import format_report as format_price_report
 from .router import Router
 from . import tui
 from .validation import AgRouteError
@@ -82,6 +83,15 @@ def _build_parser():
     p_cands.add_argument("--include-agents", default=None, help="Comma-separated subset of agents to consider")
     p_cands.add_argument("--output", default=None, help="Write the howhard candidate JSON array to this file")
     _add_common_flags(p_cands)
+
+    # prices
+    p_prices = subparsers.add_parser("prices", help="Manage refreshed per-token price snapshots")
+    _add_common_flags(p_prices)
+    prices_sub = p_prices.add_subparsers(dest="prices_command")
+    p_p_refresh = prices_sub.add_parser(
+        "refresh", help="Fetch the OpenRouter model listing into the local price snapshot"
+    )
+    _add_common_flags(p_p_refresh)
 
     # inventory
     p_inv = subparsers.add_parser("inventory", help="Emit howhard.toml [inventories] block for howhard 2.1+")
@@ -222,6 +232,13 @@ def main(argv=None):
             if args.output:
                 atomic_write(args.output, json.dumps(res["candidates"], indent=2) + "\n")
             _emit(res, as_json=True)
+            return 0
+
+        if args.command == "prices":
+            if args.prices_command != "refresh":
+                raise AgRouteError("prices: expected the 'refresh' subcommand")
+            report = router.prices_refresh(now=args.now)
+            _emit(report if args.json else format_price_report(report), as_json=args.json)
             return 0
 
         if args.command == "inventory":
