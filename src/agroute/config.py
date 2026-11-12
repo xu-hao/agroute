@@ -8,6 +8,7 @@ from pathlib import Path
 import tomllib
 
 from .adapters import get_adapter
+from .pricing import RATE_CATEGORIES
 from .state import roots
 from .validation import (
     AGENTS,
@@ -22,9 +23,6 @@ from .validation import (
     table,
     text,
 )
-
-RATE_CATEGORIES = ("input", "output", "cache_read", "cache_write", "cache_write_5m", "cache_write_1h")
-
 
 @dataclass
 class Config:
@@ -100,6 +98,28 @@ def _validate_candidate_list(items, where, *, agent):
     return validated
 
 
+def _validate_prices(raw, where):
+    """Per-model prices: each entry is `usd_per_mtok` alone or all six rate categories."""
+    prices = {}
+    for model, entry in table(raw, where).items():
+        entry_where = f'{where}."{model}"'
+        if "/" in model or ":" in model or not model or model.strip() != model or len(model) > 200:
+            raise AgRouteError(f"{entry_where}: configure a bare model ID without agent prefix")
+        if not isinstance(entry, dict):
+            raise AgRouteError(f"{entry_where}: expected a table")
+        if "usd_per_mtok" in entry:
+            if len(entry) > 1:
+                raise AgRouteError(
+                    f"{entry_where}: usd_per_mtok cannot be combined with {sorted(set(entry) - {'usd_per_mtok'})}; "
+                    "give usd_per_mtok alone or all six rate categories"
+                )
+            prices[model] = {"usd_per_mtok": number(entry["usd_per_mtok"], f"{entry_where}.usd_per_mtok", positive=True)}
+        else:
+            keys(entry, RATE_CATEGORIES, where=entry_where)
+            prices[model] = {c: number(entry[c], f"{entry_where}.{c}", nonnegative=True) for c in RATE_CATEGORIES}
+    return prices
+
+
 def _merge_config(base, override, where):
     table(override, where)
     unknown_top = set(override) - {"routing", "agents", "state_dir"}
@@ -129,10 +149,16 @@ def _merge_config(base, override, where):
                 "usage_stale_after_seconds",
                 "native_candidates",
                 "cli_candidates",
+                "prices",
             }
             if unknown_a:
                 raise AgRouteError(f"{where}.agents.{name}: unknown keys {sorted(unknown_a)}")
-            merged["agents"][name].update(deepcopy(spec))
+            spec = deepcopy(spec)
+            if "prices" in spec:
+                # A later layer replaces an earlier layer's entry for the same model only.
+                spec["prices"] = {**merged["agents"][name]["prices"],
+                                  **table(spec["prices"], f"agents.{name}.prices")}
+            merged["agents"][name].update(spec)
     return merged
 
 
@@ -163,6 +189,7 @@ def _validate_merged(raw):
                 "usage_stale_after_seconds",
                 "native_candidates",
                 "cli_candidates",
+                "prices",
             ],
             where=where,
         )
@@ -192,6 +219,7 @@ def _validate_merged(raw):
             "usage_stale_after_seconds": number(spec["usage_stale_after_seconds"], f"{where}.usage_stale_after_seconds", positive=True),
             "native_candidates": native_cands,
             "cli_candidates": cli_cands,
+            "prices": _validate_prices(spec["prices"], f"{where}.prices"),
         }
     return default_host, epsilon, separator, agents
 

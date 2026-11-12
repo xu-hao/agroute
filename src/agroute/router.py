@@ -2,10 +2,13 @@
 
 from copy import deepcopy
 import json
+import re
 
 from .adapters import get_adapter
 from .config import load_config
 from .discovery import discover_agent_candidates
+from .price_refresh import read_snapshot, refresh as refresh_prices
+from .pricing import rate_card, resolve_price, user_rate_card
 from .routes import build_snapshot, find_route, record_plan_route, register_repository
 from .usage import (
     _now_utc,
@@ -51,6 +54,21 @@ def parse_qualified_model(qualified, where="model"):
     raise AgRouteError(
         f"{where}: expected provider-qualified model ID '<agent>/<model>' or '<agent>:<model>', got '{qualified}'"
     )
+
+
+def _toml_value(value):
+    """Render a candidate cell value as an inline TOML value."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        return json.dumps(value)
+    if isinstance(value, (int, float)):
+        return repr(value)
+    if isinstance(value, dict):
+        items = (f"{k if re.fullmatch(r'[A-Za-z0-9_-]+', k) else json.dumps(k)} = {_toml_value(v)}"
+                 for k, v in value.items())
+        return "{ " + ", ".join(items) + " }"
+    raise AgRouteError(f"inventory: cannot render {type(value).__name__} as TOML")
 
 
 def _extract_cell_score(entry):
@@ -209,9 +227,11 @@ class Router:
         admitted_meta = {}
         excluded = []
         warnings = []
+        snapshot = read_snapshot(self.config)
 
         for name in agent_order:
             cfg = self.config.agents[name]
+            adapter = get_adapter(name)
             warnings.extend(usage_warnings(name, store["agents"][name], cfg, now_dt))
             eff = visible_agent_state(name, store["agents"][name], cfg, now_dt)
             is_host = name == host
@@ -266,10 +286,7 @@ class Router:
                     continue
                 qualified = f"{name}{sep}{cand['model']}"
                 cell = {"model": qualified, "effort": cand["effort"]}
-                if "usd_per_mtok" in cand:
-                    cell["usd_per_mtok"] = cand["usd_per_mtok"]
-                if "rate_card" in cand:
-                    cell["rate_card"] = deepcopy(cand["rate_card"])
+                cell.update(self._price(name, cfg, adapter, cand, surface_name, qualified, now_dt, snapshot))
                 admitted.append(cell)
                 admitted_meta[(name, cand["model"], cand["effort"])] = {
                     "qualified_model": qualified,
@@ -283,6 +300,25 @@ class Router:
             error.details = {"format": "agroute-candidates-v1", "host_agent": host, "evaluated_at": format_timestamp(now_dt), "candidates": [], "excluded": excluded, "warnings": warnings}
             raise error
         return host, now_dt, admitted, admitted_meta, excluded, warnings
+
+    @staticmethod
+    def _price(name, cfg, adapter, cand, surface, qualified, now_dt, snapshot):
+        """Precedence: candidate price, per-model price, later of snapshot and built-in, none."""
+        if "usd_per_mtok" in cand:
+            return {"usd_per_mtok": cand["usd_per_mtok"]}
+        if "rate_card" in cand:
+            return {"rate_card": deepcopy(cand["rate_card"])}
+        price = cfg["prices"].get(cand["model"])
+        if price is not None:
+            if "usd_per_mtok" in price:
+                return {"usd_per_mtok": price["usd_per_mtok"]}
+            return {"rate_card": user_rate_card(price, name, qualified, now_dt)}
+        resolved = resolve_price(adapter.rate_card_key(cand["model"], cand["effort"], surface), now_dt, snapshot)
+        return {"rate_card": rate_card(resolved, qualified)} if resolved is not None else {}
+
+    def prices_refresh(self, *, now=None):
+        """Fetch the price source once (bounded retries) and store a new snapshot."""
+        return refresh_prices(self.config, _now_utc(now))
 
     def candidates(self, host=None, *, include_agents=None, now=None):
         host, now_dt, admitted, _, excluded, warnings = self._collect_eligible(
@@ -313,13 +349,7 @@ class Router:
         cells = inv["inventories"][name]
         lines = ["[inventories]", f"{name} = ["]
         for cell in cells:
-            parts = [
-                f'model = {json.dumps(cell["model"])}',
-                f'effort = {json.dumps(cell["effort"])}',
-            ]
-            if "usd_per_mtok" in cell:
-                parts.append(f'usd_per_mtok = {cell["usd_per_mtok"]}')
-            lines.append("  { " + ", ".join(parts) + " },")
+            lines.append(f"  {_toml_value(cell)},")
         lines.append("]")
         return "\n".join(lines) + "\n"
 

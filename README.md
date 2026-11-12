@@ -117,6 +117,63 @@ agroute tui
 efforts from the locally installed agents (`~/.codex/models_cache.json` for Codex,
 `~/.claude/cache/model-catalog/` for Claude Code, and `agy models` for Antigravity).
 
+Emitted candidates are priced without configuration. Every cell whose model has a known
+price carries a per-token `howhard-rate-card-v1` `rate_card`, so `howhard` can compare
+worker cost across agents. The prices come from a built-in catalog of Anthropic, OpenAI and
+Google list prices. The catalog is hardcoded and was verified against each provider's
+pricing page at `2026-11-12T02:18:20Z`. A release updates that timestamp whenever the
+prices are re-checked. A published scheduled change, such as `gemini-4-argon` on
+2026-12-01, takes effect on its date. A price you configure always wins. A model with no
+price stays unpriced, and one unpriced cell turns `howhard`'s cost comparison off for the
+whole inventory. The [rate-card contract](docs/reference.md#rate-cards-on-emitted-candidates)
+lists every price, the category mapping and the precedence rules.
+
+### Guessed prices
+
+Antigravity's native subagent tiers name no concrete model, so no price is published for
+them. Each tier carries a labelled guess, with a `source` starting `guess:` and
+`version = "agroute-guess-2026-11-12"`:
+
+- `agy/pro` is priced as `gemini-4-argon`, the Gemini 4 reasoning model Antigravity offers.
+- `agy/flash` is priced as `gemini-3.8-flash`, Antigravity's baseline model.
+- `agy/flash_lite` is priced as `gemini-3.5-flash-lite`, the newest Flash-Lite on Google's
+  pricing page.
+
+`gpt-oss-120b` on Antigravity has no first-party list price. It uses OpenRouter's
+third-party listed rate, which is not an official price: `input` 0.15, `output` 0.60 and
+`cache_read` 0.075 USD per million tokens, with writes at input.
+
+### Overriding a price
+
+Set a per-model price in `~/.config/agroute/config.toml` or a project `agroute.toml`.
+Discovery stays on. An entry is either all six rates or `usd_per_mtok` alone. It can
+replace a guess or price a model the catalog lacks:
+
+```toml
+[agents.agy.prices."pro"]
+input = 2.0
+output = 10.0
+cache_read = 0.10
+cache_write = 2.0
+cache_write_5m = 2.0
+cache_write_1h = 2.0
+```
+
+The rates shown are placeholders; replace them with your own price. agroute refuses a
+partial, unknown or negative entry when it loads the configuration. A price on a
+configured candidate beats a per-model price, and both beat refreshed and built-in prices.
+The [per-model price guide](docs/reference.md#per-model-user-prices) has the details.
+
+### Refreshing prices
+
+`agroute prices refresh` fetches OpenRouter's model listing and writes a local price
+snapshot. It prints the per-model drift against the prices in use. Routing never fetches.
+A refreshed price wins over a built-in price that took effect earlier, and a later
+scheduled built-in change wins over an older refresh. Re-run the refresh to pick up
+provider changes. Each refreshed card's `version` carries its fetch time. Failed refreshes
+retry three times and then exit nonzero, leaving the previous snapshot intact. See
+[refreshing prices](docs/reference.md#refreshing-prices).
+
 The [routing and storage contracts](docs/reference.md) and
 [configuration guide](docs/configuration.md) describe the CLI/API, live model discovery,
 native versus CLI candidate surfaces, `host_affinity_epsilon`, `[inventories]`

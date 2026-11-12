@@ -9,3 +9,4 @@ recursive-exclude docs/_build *
 recursive-include scripts *
 recursive-include skills *.md
 recursive-include tests *.py
+recursive-include tests *.json
