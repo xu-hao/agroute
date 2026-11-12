@@ -103,8 +103,8 @@ agroute plan --host agy --decision /tmp/task-decision.json --prompt-file /tmp/ta
 ```
 
 When `target_agent == host_agent`, `agroute` selects from `native_candidates` and emits
-`execution_mode = "native"` with the host's native delegation tool (`invoke_subagent`
-in Antigravity, `Agent` in Claude Code, or `spawn_agent` in Codex). When
+`execution_mode = "native"` with the host's native delegation tool (`swarm` for a
+concrete model slug, or `invoke_subagent` for a configured tier, in Antigravity, `Agent` in Claude Code, or `spawn_agent` in Codex). When
 `target_agent != host_agent`, `agroute` selects from `cli_candidates` and emits
 `execution_mode = "cli"` with the target's non-interactive CLI command (`codex exec`,
 `claude -p`, or `agy -p`). Honor `needs_review` before executing or accepting

@@ -50,12 +50,12 @@ def test_validate_native_candidate():
     claude = get_adapter("claude")
     codex = get_adapter("codex")
 
-    # Agy restricts native models to invoke_subagent enum
-    for valid in ("inherit", "flash_lite", "flash", "pro"):
+    # Agy accepts the invoke_subagent tier enum and concrete `agy models` slugs (swarm tool)
+    for valid in ("inherit", "flash_lite", "flash", "pro", "gemini-custom", "claude-opus-5-5-high"):
         agy.validate_native_candidate(valid, "where")
 
-    with pytest.raises(AgRouteError, match="Antigravity native subagent model must be one of"):
-        agy.validate_native_candidate("gemini-custom", "where")
+    with pytest.raises(AgRouteError, match="Antigravity native model must be a concrete"):
+        agy.validate_native_candidate("Gemini Custom", "where")
 
     # Claude and Codex allow arbitrary bare model strings
     claude.validate_native_candidate("custom-claude", "where")

@@ -61,6 +61,7 @@ OPENAI_ROWS = {
 
 # Google Cloud global rows: (effective_at, input, output, cached input) ($/MTok).
 GOOGLE_PERIODS = {
+    "gemini-4-carbon": [(VERIFIED, 2.00, 10.00, 0.10), ("2026-12-01T00:00:00+00:00", 4.00, 20.00, 0.20)],
     "gemini-4-argon": [(VERIFIED, 2.00, 10.00, 0.10), ("2026-12-01T00:00:00+00:00", 4.00, 20.00, 0.20)],
     "gemini-3.8-flash": [(VERIFIED, 0.75, 3.75, 0.075), ("2027-01-01T00:00:00+00:00", 1.50, 7.50, 0.15)],
     "gemini-3.5-flash-lite": [(VERIFIED, 0.30, 2.50, 0.03)],
@@ -69,12 +70,18 @@ GOOGLE_PERIODS = {
 # Guessed cards for agy cells with no published price, labelled so they cannot pass as list prices.
 GUESS_VERSION = "agroute-guess-2026-11-12"
 AGY_TIER_GUESSES = {"pro": "gemini-4-argon", "flash": "gemini-3.8-flash", "flash_lite": "gemini-3.5-flash-lite"}
+# `invoke_subagent` tiers are native candidates only when configured explicitly.
+AGY_TIER_CONFIG = "".join(f'[[agents.agy.native_candidates]]\nmodel = "{tier}"\neffort = "standard"\n\n'
+                          for tier in AGY_TIER_GUESSES)
 # A third-party listing, not an official price: prompt, completion and cache read; writes at input.
 GPT_OSS_LISTED = {"input": 0.15, "output": 0.60, "cache_read": 0.075, "cache_write": 0.15,
                   "cache_write_5m": 0.15, "cache_write_1h": 0.15}
 
 # Verbatim `agy models` listing from a host with Antigravity installed.
 AGY_MODELS = """Fetching available models...
+gemini-4-carbon-medium\tGemini 4 Carbon (Medium)
+gemini-4-carbon-high\tGemini 4 Carbon (High)
+gemini-4-carbon-low\tGemini 4 Carbon (Low)
 gemini-4-argon-medium\tGemini 4 Argon (Medium)
 gemini-4-argon-high\tGemini 4 Argon (High)
 gemini-4-argon-low\tGemini 4 Argon (Low)
@@ -210,9 +217,9 @@ def test_codex_cells_use_short_context_rows_and_the_default_30m_write(tmp_path, 
 def test_agy_cli_cells_strip_the_effort_suffix_and_reuse_anthropic_cards(tmp_path, capsys):
     write_agy_cache(parse_agy_models_output(AGY_MODELS))
     cells, payload = cli_candidates(tmp_path, capsys, "claude", "agy")
-    assert len(payload["candidates"]) == 13
+    assert len(payload["candidates"]) == 16
     for effort in ("low", "medium", "high"):
-        for model in ("gemini-4-argon", "gemini-3.8-flash"):
+        for model in ("gemini-4-carbon", "gemini-4-argon", "gemini-3.8-flash"):
             effective_at, rates = google_card_fields(model, NOW)
             assert_card(cells[f"agy/{model}-{effort}"], GOOGLE, rates, effective_at)
         for model in ("claude-opus-5-5", "claude-sonnet-5-5"):
@@ -244,7 +251,9 @@ def test_agy_effort_suffix_rule_is_exact(tmp_path, capsys, candidate, priced):
 
 
 def test_agy_native_tier_aliases_carry_labelled_guesses(tmp_path, capsys):
-    cells, payload = cli_candidates(tmp_path, capsys, "agy", "agy")
+    config = tmp_path / "agroute.toml"
+    config.write_text(AGY_TIER_CONFIG, encoding="utf-8")
+    cells, payload = cli_candidates(tmp_path, capsys, "agy", "agy", "--config", str(config))
     assert set(cells) == {"agy/pro", "agy/flash", "agy/flash_lite"}
     for alias, model in AGY_TIER_GUESSES.items():
         effective_at, rates = google_card_fields(model, NOW)
@@ -272,12 +281,18 @@ def test_tier_alias_table_is_exact(tmp_path, capsys):
 @pytest.mark.parametrize(
     "model,alias,before,after",
     [
+        ("gemini-4-carbon", None, "2026-11-30T23:59:59Z", "2026-12-01T00:00:00Z"),
         ("gemini-4-argon", "pro", "2026-11-30T23:59:59Z", "2026-12-01T00:00:00Z"),
         ("gemini-3.8-flash", "flash", "2026-12-31T23:59:59Z", "2027-01-01T00:00:00Z"),
     ],
 )
 def test_google_cards_follow_published_price_changes(tmp_path, capsys, model, alias, before, after):
     write_agy_cache([{"model": f"{model}-high", "effort": "high"}])
+    # A separate config directory is a separate capture root, so it gets its own state.
+    tiers = tmp_path / "tiers"
+    tiers.mkdir()
+    config = tiers / "agroute.toml"
+    config.write_text(AGY_TIER_CONFIG, encoding="utf-8")
     for at, period in ((before, 0), (after, 1)):
         effective_at, base, output, cached = GOOGLE_PERIODS[model][period]
         rates = {"input": base, "output": output, "cache_read": cached, "cache_write": base,
@@ -285,8 +300,12 @@ def test_google_cards_follow_published_price_changes(tmp_path, capsys, model, al
         cells, payload = cli_candidates(tmp_path, capsys, "claude", "agy", now=at)
         assert payload["evaluated_at"] == at
         assert_card(cells[f"agy/{model}-high"], GOOGLE, rates, effective_at)
+        # The agy host prices the same discovered slug identically on the native surface.
         cells, _ = cli_candidates(tmp_path, capsys, "agy", "agy", now=at)
-        assert_guess(cells[f"agy/{alias}"], "google", rates, model, effective_at)
+        assert_card(cells[f"agy/{model}-high"], GOOGLE, rates, effective_at)
+        if alias is not None:
+            cells, _ = cli_candidates(tiers, capsys, "agy", "agy", "--config", str(config), now=at)
+            assert_guess(cells[f"agy/{alias}"], "google", rates, model, effective_at)
 
 
 def test_no_card_is_attached_before_catalog_verification(tmp_path, capsys):
@@ -398,7 +417,7 @@ def test_user_price_overrides_a_discovered_model_with_discovery_on(tmp_path):
 def test_user_price_replaces_a_guess_and_prices_an_unknown_model(tmp_path, capsys):
     write_claude_catalog(["claude-current-0"])
     config = tmp_path / "agroute.toml"
-    config.write_text(price_entry("agy", "flash", {"usd_per_mtok": 0.9})
+    config.write_text(AGY_TIER_CONFIG + price_entry("agy", "flash", {"usd_per_mtok": 0.9})
                       + price_entry("claude", "claude-current-0", USER_RATES), encoding="utf-8")
     cells, _ = cli_candidates(tmp_path, capsys, "agy", "agy", "--config", str(config))
     assert cells["agy/flash"] == {"model": "agy/flash", "effort": "standard", "usd_per_mtok": 0.9}
