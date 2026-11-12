@@ -239,6 +239,10 @@ def record_plan_route(config, plan: dict) -> str:
         "invocation": deepcopy(plan["invocation"]),
         "feedback": deepcopy(plan["feedback"]),
     }
+    if "credit_budget" in plan and plan["credit_budget"] is not None:
+        record["credit_budget"] = deepcopy(plan["credit_budget"])
+    if "needed_credit_usd" in plan and plan["needed_credit_usd"] is not None:
+        record["needed_credit_usd"] = plan["needed_credit_usd"]
     with _usage_locked(config):
         claim(config)
         record["repository_id"] = config.project_identity or config.capture_root.name
@@ -363,39 +367,42 @@ def load_repository_routes(capture_root: Path, state_root: Path, repository_id: 
         )
         risk_class = (dec_doc or {}).get("risk_class") or (obs or {}).get("risk_class")
 
-        routes.append(
-            {
-                "route_id": route_id,
-                "decision_id": dec_id,
-                "status": status,
-                "execution_mode": str(rec.get("execution_mode") or ("native" if host_agent == target_agent else "cli")),
-                "repository": str(rec.get("repository") or capture_root),
-                "repository_id": str(rec.get("repository_id") or repository_id),
-                "host_agent": host_agent,
-                "target_agent": target_agent,
-                "model": model,
-                "qualified_model": qualified,
-                "effort": effort,
-                "task_type": task_type,
-                "risk_class": str(risk_class) if risk_class else None,
-                "role": role,
-                "label": label,
-                "cap_met": cap_met if isinstance(cap_met, bool) else None,
-                "needs_review": needs_review,
-                "host_affinity_applied": bool(rec.get("host_affinity_applied", False)),
-                "created_at": _normalize_iso_utc(rec.get("created_at")),
-                "observed_at": _normalize_iso_utc(obs.get("observed_at")) if isinstance(obs, dict) and obs.get("observed_at") else None,
-                "outcome": outcome,
-                "execution_id": str(obs.get("id")) if isinstance(obs, dict) and obs.get("id") else None,
-                "tokens": obs.get("tokens") if isinstance(obs, dict) and isinstance(obs.get("tokens"), int) else None,
-                "seconds": float(obs["seconds"]) if isinstance(obs, dict) and type(obs.get("seconds")) in (int, float) else None,
-                "cost_usd": float(obs["cost_usd"]) if isinstance(obs, dict) and type(obs.get("cost_usd")) in (int, float) else None,
-                "invocation": rec.get("invocation") if isinstance(rec.get("invocation"), dict) else None,
-                "forecasts": _extract_forecasts(dec_doc),
-                "note": str(obs.get("note")) if isinstance(obs, dict) and obs.get("note") else None,
-                "task_text": task_text[:4000] if isinstance(task_text, str) else None,
-            }
-        )
+        route_entry = {
+            "route_id": route_id,
+            "decision_id": dec_id,
+            "status": status,
+            "execution_mode": str(rec.get("execution_mode") or ("native" if host_agent == target_agent else "cli")),
+            "repository": str(rec.get("repository") or capture_root),
+            "repository_id": str(rec.get("repository_id") or repository_id),
+            "host_agent": host_agent,
+            "target_agent": target_agent,
+            "model": model,
+            "qualified_model": qualified,
+            "effort": effort,
+            "task_type": task_type,
+            "risk_class": str(risk_class) if risk_class else None,
+            "role": role,
+            "label": label,
+            "cap_met": cap_met if isinstance(cap_met, bool) else None,
+            "needs_review": needs_review,
+            "host_affinity_applied": bool(rec.get("host_affinity_applied", False)),
+            "created_at": _normalize_iso_utc(rec.get("created_at")),
+            "observed_at": _normalize_iso_utc(obs.get("observed_at")) if isinstance(obs, dict) and obs.get("observed_at") else None,
+            "outcome": outcome,
+            "execution_id": str(obs.get("id")) if isinstance(obs, dict) and obs.get("id") else None,
+            "tokens": obs.get("tokens") if isinstance(obs, dict) and isinstance(obs.get("tokens"), int) else None,
+            "seconds": float(obs["seconds"]) if isinstance(obs, dict) and type(obs.get("seconds")) in (int, float) else None,
+            "cost_usd": float(obs["cost_usd"]) if isinstance(obs, dict) and type(obs.get("cost_usd")) in (int, float) else None,
+            "invocation": rec.get("invocation") if isinstance(rec.get("invocation"), dict) else None,
+            "forecasts": _extract_forecasts(dec_doc),
+            "note": str(obs.get("note")) if isinstance(obs, dict) and obs.get("note") else None,
+            "task_text": task_text[:4000] if isinstance(task_text, str) else None,
+        }
+        if isinstance(rec.get("credit_budget"), dict):
+            route_entry["credit_budget"] = deepcopy(rec["credit_budget"])
+        if type(rec.get("needed_credit_usd")) in (int, float):
+            route_entry["needed_credit_usd"] = float(rec["needed_credit_usd"])
+        routes.append(route_entry)
 
     for ev in hh_events:
         dec_id = ev.get("decision_id")

@@ -799,92 +799,97 @@ def resolve_model_quota(agent_name, agent_cfg, effective_state, candidate, *, is
         w7 = deepcopy(effective_state["weekly_7d"])
         quota_group = "shared"
 
+    reserve = agent_cfg["host_reserve_pct"] if is_host else 0.0
+    effective_credit = agent_cfg.get("credit") or {}
+    credit_tiers = effective_credit.get("tiers") or {}
+    tier_spec = credit_tiers.get(quota_group)
+    if tier_spec is None and "-" in quota_group:
+        tier_spec = credit_tiers.get(quota_group.split("-", 1)[0])
+    if tier_spec is None and agent_name == "agy" and quota_group == "argon":
+        tier_spec = credit_tiers.get("gemini")
+    if tier_spec is None:
+        tier_spec = {}
+
+    total_5h_usd = tier_spec.get("session_5h_usd", effective_credit.get("session_5h_usd"))
+    total_7d_usd = tier_spec.get("weekly_7d_usd", effective_credit.get("weekly_7d_usd"))
+
+    if total_5h_usd is not None and s5["used_pct"] is not None:
+        pct_left_5h = max(0.0, 100.0 - reserve - s5["used_pct"])
+        rem_5h = round((pct_left_5h / 100.0) * total_5h_usd, 6)
+    else:
+        rem_5h = None
+
+    if total_7d_usd is not None and w7["used_pct"] is not None:
+        pct_left_7d = max(0.0, 100.0 - reserve - w7["used_pct"])
+        rem_7d = round((pct_left_7d / 100.0) * total_7d_usd, 6)
+    else:
+        rem_7d = None
+
+    credit_budget = None
+    present = [x for x in (rem_5h, rem_7d) if x is not None]
+    if present:
+        credit_budget = {"available_usd": min(present)}
+        if rem_5h is not None:
+            credit_budget["session_5h_remaining_usd"] = rem_5h
+        if rem_7d is not None:
+            credit_budget["weekly_7d_remaining_usd"] = rem_7d
+
+    def _result(eligible, exclusion_reason):
+        res = {
+            "model": model_id,
+            "surface": surface,
+            "quota_group": quota_group,
+            "session_5h": s5,
+            "weekly_7d": w7,
+            "eligible": eligible,
+            "exclusion_reason": exclusion_reason,
+        }
+        if credit_budget is not None:
+            res["credit_budget"] = deepcopy(credit_budget)
+        return res
+
+    if not agent_cfg["enabled"]:
+        return _result(False, "agent is disabled in configuration")
+
+    if quota_group in agent_cfg.get("exclude_quota_groups", ()):
+        return _result(False, f"quota_group '{quota_group}' is excluded in configuration")
+
     rejection = (_rejection_reason(agent_name, effective_state)
                  or _scoped_access_rejection(agent_name, effective_state, candidate)
                  or _window_rejection_reason(agent_name, quota_group, s5, w7))
-    if rejection and agent_cfg["enabled"]:
-        return {"model": model_id, "surface": surface, "quota_group": quota_group,
-                "session_5h": s5, "weekly_7d": w7, "eligible": False,
-                "exclusion_reason": rejection}
-    if not agent_cfg["enabled"]:
-        return {
-            "model": model_id,
-            "surface": surface,
-            "quota_group": quota_group,
-            "session_5h": s5,
-            "weekly_7d": w7,
-            "eligible": False,
-            "exclusion_reason": "agent is disabled in configuration",
-        }
+    if rejection:
+        return _result(False, rejection)
+
     if effective_state["rate_limited"]:
         until = effective_state["cooldown_until"]
         suffix = f" until {until}" if until else ""
-        return {
-            "model": model_id,
-            "surface": surface,
-            "quota_group": quota_group,
-            "session_5h": s5,
-            "weekly_7d": w7,
-            "eligible": False,
-            "exclusion_reason": f"agent is rate-limited{suffix}",
-        }
+        return _result(False, f"agent is rate-limited{suffix}")
     if effective_state["cooldown_until"] is not None:
-        return {
-            "model": model_id,
-            "surface": surface,
-            "quota_group": quota_group,
-            "session_5h": s5,
-            "weekly_7d": w7,
-            "eligible": False,
-            "exclusion_reason": f"agent is in cooldown until {effective_state['cooldown_until']}",
-        }
+        return _result(False, f"agent is in cooldown until {effective_state['cooldown_until']}")
 
-    reserve = agent_cfg["host_reserve_pct"] if is_host else 0.0
+    if credit_budget is not None and credit_budget["available_usd"] <= 0.0:
+        exhausted_win = "session_5h" if (rem_5h is not None and rem_5h <= 0.0) else "weekly_7d"
+        return _result(False, f"{exhausted_win} credit_budget exhausted (0 USD remaining)")
+
     max_session = max(0.0, agent_cfg["max_session_used_pct"] - reserve)
     max_weekly = max(0.0, agent_cfg["max_weekly_used_pct"] - reserve)
 
     ok_tier, reason_tier = evaluate_candidate_tier(agent_cfg, effective_state, candidate)
     if not ok_tier:
-        return {
-            "model": model_id,
-            "surface": surface,
-            "quota_group": quota_group,
-            "session_5h": s5,
-            "weekly_7d": w7,
-            "eligible": False,
-            "exclusion_reason": reason_tier,
-        }
+        return _result(False, reason_tier)
 
     if s5["used_pct"] is not None and s5["used_pct"] >= max_session:
-        return {
-            "model": model_id,
-            "surface": surface,
-            "quota_group": quota_group,
-            "session_5h": s5,
-            "weekly_7d": w7,
-            "eligible": False,
-            "exclusion_reason": f"session_5h used_pct ({s5['used_pct']:.1f}%) >= effective limit ({max_session:.1f}%)",
-        }
+        return _result(
+            False,
+            f"session_5h used_pct ({s5['used_pct']:.1f}%) >= effective limit ({max_session:.1f}%)",
+        )
     if w7["used_pct"] is not None and w7["used_pct"] >= max_weekly:
-        return {
-            "model": model_id,
-            "surface": surface,
-            "quota_group": quota_group,
-            "session_5h": s5,
-            "weekly_7d": w7,
-            "eligible": False,
-            "exclusion_reason": f"weekly_7d used_pct ({w7['used_pct']:.1f}%) >= effective limit ({max_weekly:.1f}%)",
-        }
+        return _result(
+            False,
+            f"weekly_7d used_pct ({w7['used_pct']:.1f}%) >= effective limit ({max_weekly:.1f}%)",
+        )
 
-    return {
-        "model": model_id,
-        "surface": surface,
-        "quota_group": quota_group,
-        "session_5h": s5,
-        "weekly_7d": w7,
-        "eligible": True,
-        "exclusion_reason": None,
-    }
+    return _result(True, None)
 
 
 def _extract_window_dict(obj, where):
