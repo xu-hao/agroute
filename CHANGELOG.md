@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- Delegate Antigravity native routes through the `swarm` tool at the selected model and
+  effort (#33). With `--host agy`, `candidates` now offers every `agy models` cell natively
+  (for example `agy/claude-opus-5-5-high` at `high`) instead of the abstract `agy/pro`,
+  `agy/flash` and `agy/flash_lite` tiers, and `plan` emits
+  `swarm{action: "add", name, model, workspace, brief}` for a concrete slug. A tier listed
+  explicitly in `native_candidates` still plans `invoke_subagent`, which has no effort
+  control. Explicit Antigravity `native_candidates` may now be concrete model slugs.
+- Add a built-in Google Cloud rate card for `gemini-4-carbon` (#33): $2.00 input, $10.00
+  output and $0.10 cached input per million tokens, doubling on 2026-12-01. It prices
+  `agy/gemini-4-carbon-{low,medium,high}`.
+- Document how to read a native `swarm` worker's actual token usage from its conversation
+  transcript (#33).
+
 ## 0.3.0 — 2026-11-12
 
 - Price emitted candidates without configuration (#30). `candidates` and `inventory` attach

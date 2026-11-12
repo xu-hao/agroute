@@ -213,20 +213,21 @@ with tempfile.TemporaryDirectory(prefix="agroute-wheel-") as directory:
         )
     )
     models = [c["model"] for c in cands["candidates"]]
-    assert "agy/pro" in models
+    assert "agy/gemini-2.5-pro" in models
     assert "claude/claude-sonnet-4-6" in models
     assert not any(m.startswith("codex/") for m in models)
     assert (root / "probe-agy").read_text() == "called"
     assert (root / "probe-claude").read_text() == "called"
     assert not (root / "probe-codex").exists()  # Fresh, exhausted evidence is reused.
 
-    # Resolve both a native plan (agy/pro) and a cross-agent CLI plan (claude/claude-sonnet-4-6)
+    # Resolve both a native swarm plan (agy/gemini-2.5-pro) and a cross-agent CLI plan
+    # (claude/claude-sonnet-4-6)
     decision_native = root / "decision-native.json"
     decision_native.write_text(
         json.dumps(
             {
                 "decision_id": "dec-wheel-1",
-                "chosen": {"model": "agy/pro", "effort": "standard"},
+                "chosen": {"model": "agy/gemini-2.5-pro", "effort": "high"},
                 "cap_met": True,
                 "needs_review": False,
             }
@@ -252,8 +253,10 @@ with tempfile.TemporaryDirectory(prefix="agroute-wheel-") as directory:
         )
     )
     assert plan_native["execution_mode"] == "native"
-    assert plan_native["invocation"]["tool_name"] == "invoke_subagent"
-    assert plan_native["invocation"]["parameters"]["Model"] == "pro"
+    assert plan_native["invocation"]["tool_name"] == "swarm"
+    assert plan_native["invocation"]["parameters"]["action"] == "add"
+    assert plan_native["invocation"]["parameters"]["model"] == "gemini-2.5-pro"
+    assert plan_native["invocation"]["parameters"]["brief"] == "verify wheel"
 
     decision_cli = root / "decision-cli.json"
     decision_cli.write_text(

@@ -11,8 +11,8 @@ controls from its non-interactive CLI (used when `target_agent != host_agent`). 
 supports two distinct candidate surfaces in `agroute.toml`:
 
 - `native_candidates`: candidate `(model, effort)` cells enforceable through the host's
-  native delegation tool (`invoke_subagent` in Antigravity, `Agent` in Claude Code, or
-  `spawn_agent` in Codex).
+  native delegation tool (`swarm` or `invoke_subagent` in Antigravity, `Agent` in Claude Code,
+  or `spawn_agent` in Codex).
 - `cli_candidates`: candidate `(model, effort)` cells enforceable through the target's
   non-interactive CLI (`codex exec`, `claude -p`, or `agy -p`).
 
@@ -28,10 +28,16 @@ from the locally installed agents at runtime:
   `${CLAUDE_CONFIG_DIR:-~/.claude}/cache/model-catalog/*.json`, selects `main` (`quick_select`)
   models (falling back to all catalog models only when none are marked), infers quota tier
   (`opus`, `fable`, `sonnet`, `haiku`), and emits every `runtime.effort_levels` value.
-- **Antigravity (`agy`)**: uses the host `invoke_subagent` schema tiers (`pro`, `flash`,
-  `flash_lite` at `standard` effort) for `native_candidates`, and queries `agy models` (cached
-  in `${AGROUTE_SPOOL_DIR:-~/.local/share/agroute}/agy_models_cache.json`, refreshable via
-  `agroute models --refresh`) for `cli_candidates`, retaining every listed model.
+- **Antigravity (`agy`)**: queries `agy models` (cached in
+  `${AGROUTE_SPOOL_DIR:-~/.local/share/agroute}/agy_models_cache.json`, refreshable via
+  `agroute models --refresh`) for both surfaces, retaining every listed model. Each listed slug
+  names one `(model, effort)` cell, for example `gemini-4-carbon-high` at effort `high`. The
+  native `swarm` tool runs any listed slug, so `native_candidates` and `cli_candidates` hold
+  the same discovered cells. Antigravity's `invoke_subagent` tool accepts only the abstract
+  tiers `inherit`, `flash_lite`, `flash` and `pro`, with no effort control; agroute never
+  discovers them, and offers them only when listed explicitly in `native_candidates`.
+  Explicit Antigravity `native_candidates` must be either a concrete model slug or one of
+  those four tiers.
 
 Inspect discovered or configured models per agent and surface with `agroute models [--refresh] [--json]`.
 Explicit `[[agents.<name>.native_candidates]]` or `[[agents.<name>.cli_candidates]]` entries in
@@ -92,11 +98,12 @@ For each cell, the first rule that applies sets its price. Higher rules come fir
 agroute resolves a cell's catalog key by exact rules only:
 
 - **Claude Code and Codex**: the cell's model ID.
-- **Antigravity CLI**: the model ID with exactly `-<cell effort>` removed from the end, when it
-  ends that way. For example, `gemini-4-argon-high` at `high` resolves to `gemini-4-argon`, and
+- **Antigravity concrete slugs** (both surfaces): the model ID with exactly `-<cell effort>`
+  removed from the end, when it ends that way. For example, `gemini-4-argon-high` at `high` resolves to `gemini-4-argon`, and
   `claude-opus-5-5-low` at `low` resolves to the Anthropic `claude-opus-5-5` card.
   `gemini-4-argon-high` at `low` keeps its full ID and is unpriced.
-- **Antigravity native tiers** (`pro`, `flash`, `flash_lite`): an exact tier table of
+- **Antigravity `invoke_subagent` tiers** (`pro`, `flash`, `flash_lite`, native surface only):
+  an exact tier table of
   {ref}`labelled guesses <guessed-rate-cards>`. `inherit` runs the caller's model and stays
   unpriced.
 
@@ -148,8 +155,8 @@ Catalog prices in USD per million tokens:
 | `gpt-6.1-sol` | 2 | 10 | 0.10 | 2.50 | 2.50 |
 | `gpt-6.1-terra` | 1 | 5 | 0.05 | 1.25 | 1.25 |
 | `gpt-6-luna` | 0.10 | 0.50 | 0.01 | 0.125 | 0.125 |
-| `gemini-4-argon` until 2026-12-01 | 2 | 10 | 0.10 | 2 | 2 |
-| `gemini-4-argon` from 2026-12-01 | 4 | 20 | 0.20 | 4 | 4 |
+| `gemini-4-carbon`, `gemini-4-argon` until 2026-12-01 | 2 | 10 | 0.10 | 2 | 2 |
+| `gemini-4-carbon`, `gemini-4-argon` from 2026-12-01 | 4 | 20 | 0.20 | 4 | 4 |
 | `gemini-3.8-flash` until 2027-01-01 | 0.75 | 3.75 | 0.075 | 0.75 | 0.75 |
 | `gemini-3.8-flash` from 2027-01-01 | 1.50 | 7.50 | 0.15 | 1.50 | 1.50 |
 | `gemini-3.5-flash-lite` | 0.30 | 2.50 | 0.03 | 0.30 | 0.30 |
@@ -440,7 +447,14 @@ Unknown windows remain null; admission follows the refresh contract above for al
 eligible candidate pool and emits an `agroute-execution-plan-v1` object:
 
 - **`execution_mode = "native"` (`target_agent == host_agent`)**:
-  - `agy`: `tool_name = "invoke_subagent"` with `TypeName`, `Model`, `Role`, `Workspace`, and
+  - `agy`, concrete model slug (for example `claude-opus-5-5-high`): `tool_name = "swarm"`
+    with `action = "add"`, `name`, `model` (the slug, which already names its effort),
+    `workspace`, and optional `brief` (the prompt). `name` is the `--role` reduced to a
+    lowercase roster slug matching `[a-z0-9]+(-[a-z0-9]+)*`, for example `Parser Builder`
+    becomes `parser-builder`. An empty result or a reserved roster name (`all`,
+    `coordinator`) becomes `task-worker`.
+  - `agy`, configured `invoke_subagent` tier (`inherit`, `flash_lite`, `flash`, `pro`):
+    `tool_name = "invoke_subagent"` with `TypeName`, `Model`, `Role`, `Workspace`, and
     optional `Prompt`.
   - `claude`: `tool_name = "Agent"` with `subagent_type`, `description`, `model`, `effort`,
     and optional `prompt`.
@@ -459,6 +473,13 @@ When `execution_mode = "native"`, `agroute plan` also attaches a `fallback` CLI 
 tool delegation fails at launch (for example, if a host client reaches its local concurrent subagent
 limit), the host agent can immediately execute `fallback` via CLI and record the outcome as raw native
 feedback (`howhard observe ... --native`).
+
+An Antigravity native `swarm` worker writes no CLI capture artifact. Its actual token usage is
+recorded in the worker's own conversation transcript,
+`<appDataDir>/brain/<conversationId>/.system_generated/logs/transcript.jsonl`: every step with
+`type = "PLANNER_RESPONSE"` carries `input_tokens`, `cache_read_tokens` and `output_tokens`
+for one model generation. The worker's usage is the sum of those fields over its steps; read
+it after the worker finishes and record it with the execution outcome.
 
 When `routing.host_affinity_epsilon > 0.0` and `howhard` chose a cross-agent route, `agroute plan`
 checks whether an eligible native host route in the decision's scored panel (`candidates`,
@@ -485,9 +506,9 @@ interface and dynamic dispatch registry (`agroute.adapters`). Each supported age
 
 - `name` & `display_name`: canonical identifier and human-readable label.
 - `capture_adapter`: CLI stream output capture protocol name (`agy-print-v1`, `claude-sdk-v1`, `codex-exec-v1`).
-- `validate_native_candidate`: agent-specific constraints on native subagent model parameters (such as the `invoke_subagent` enum in Antigravity).
+- `validate_native_candidate`: agent-specific constraints on native subagent model parameters (in Antigravity, a concrete model slug or an `invoke_subagent` tier).
 - `discover_candidates`: surface-aware local model discovery (`native` vs `cli`).
-- `build_native_invocation`: formats the native tool call directive (`invoke_subagent`, `Agent`, `spawn_agent`).
+- `build_native_invocation`: formats the native tool call directive (`swarm` or `invoke_subagent`, `Agent`, `spawn_agent`).
 - `build_cli_invocation`: constructs the non-interactive CLI argv and prompt delivery mechanism.
 - `discover_live_usage_patch`: discovers rate-limit telemetry from local session files and probe caches.
 - `probe_usage`: performs zero-token or RPC rate-limit probing.

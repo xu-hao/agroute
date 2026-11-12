@@ -128,6 +128,21 @@ class AgentAdapter(abc.ABC):
         return quota_group, s5, w7
 
 
+# Antigravity `invoke_subagent` model enum: abstract tiers that name no concrete model.
+AGY_SUBAGENT_TIERS = ("inherit", "flash_lite", "flash", "pro")
+# Roster names the Antigravity swarm reserves for addressing.
+_SWARM_RESERVED_NAMES = frozenset({"all", "coordinator"})
+_SWARM_DEFAULT_NAME = "task-worker"
+
+
+def _swarm_worker_name(role: str) -> str:
+    """A short lowercase roster slug (`[a-z0-9]+(-[a-z0-9]+)*`) for a swarm worker role."""
+    name = "-".join(re.findall(r"[a-z0-9]+", role.lower()))[:48].strip("-")
+    if not name or name in _SWARM_RESERVED_NAMES:
+        return _SWARM_DEFAULT_NAME
+    return name
+
+
 class AgyAdapter(AgentAdapter):
     """Adapter for Google Antigravity (agy)."""
 
@@ -144,9 +159,11 @@ class AgyAdapter(AgentAdapter):
         return "agy-print-v1"
 
     def validate_native_candidate(self, model: str, where: str) -> None:
-        if model not in ("inherit", "flash_lite", "flash", "pro"):
+        from .discovery import _MODEL_SLUG
+        if model not in AGY_SUBAGENT_TIERS and not _MODEL_SLUG.match(model):
             raise AgRouteError(
-                f"{where}: Antigravity native subagent model must be one of inherit, flash_lite, flash, pro"
+                f"{where}: Antigravity native model must be a concrete `agy models` slug "
+                "or one of inherit, flash_lite, flash, pro"
             )
 
     def discover_candidates(
@@ -156,14 +173,13 @@ class AgyAdapter(AgentAdapter):
         refresh: bool = False,
         **kwargs: Any,
     ) -> list[dict]:
-        if surface == "native":
-            from .discovery import AGY_NATIVE_SUBAGENT_CANDIDATES
-            return deepcopy(AGY_NATIVE_SUBAGENT_CANDIDATES)
+        # The native `swarm` tool accepts every concrete `agy models` slug, so both
+        # surfaces offer the same discovered (model, effort) cells.
         from .discovery import discover_agy_cli_candidates
         return discover_agy_cli_candidates(refresh=refresh)
 
     def rate_card_key(self, model: str, effort: str, surface: str) -> str | None:
-        if surface == "native":
+        if surface == "native" and model in AGY_SUBAGENT_TIERS:
             # Subagent tiers name no concrete model; the catalog keys their labelled guesses.
             return f"agy:{model}"
         # CLI model IDs carry the effort as a suffix; strip exactly the cell's own effort.
@@ -180,17 +196,33 @@ class AgyAdapter(AgentAdapter):
         subagent_type: str | None = None,
         workspace: str = "inherit",
     ) -> dict:
-        params: dict[str, Any] = {
-            "TypeName": subagent_type or "self",
-            "Model": model,
-            "Role": role,
-            "Workspace": workspace,
+        if model in AGY_SUBAGENT_TIERS:
+            # `invoke_subagent` accepts only its tier enum and has no effort control.
+            params: dict[str, Any] = {
+                "TypeName": subagent_type or "self",
+                "Model": model,
+                "Role": role,
+                "Workspace": workspace,
+            }
+            if prompt is not None:
+                params["Prompt"] = prompt
+            return {
+                "kind": "native_tool",
+                "tool_name": "invoke_subagent",
+                "parameters": params,
+            }
+        # A concrete slug already names its effort; the `swarm` tool runs it as given.
+        params = {
+            "action": "add",
+            "name": _swarm_worker_name(role),
+            "model": model,
+            "workspace": workspace,
         }
         if prompt is not None:
-            params["Prompt"] = prompt
+            params["brief"] = prompt
         return {
             "kind": "native_tool",
-            "tool_name": "invoke_subagent",
+            "tool_name": "swarm",
             "parameters": params,
         }
 
