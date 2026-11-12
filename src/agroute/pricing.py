@@ -86,9 +86,11 @@ _CATALOG = {
     "claude-opus-4-8": _entry(_ANTHROPIC, (VERIFIED_AT, anthropic_rates(5, 25, 0.50, 6.25, 10))),
     "claude-opus-4-7": _entry(_ANTHROPIC, (VERIFIED_AT, anthropic_rates(5, 25, 0.50, 6.25, 10))),
     "claude-opus-4-6": _entry(_ANTHROPIC, (VERIFIED_AT, anthropic_rates(5, 25, 0.50, 6.25, 10))),
+    "claude-opus-4-5": _entry(_ANTHROPIC, (VERIFIED_AT, anthropic_rates(5, 25, 0.50, 6.25, 10))),
     "claude-sonnet-5-5": _entry(_ANTHROPIC, (VERIFIED_AT, anthropic_rates(2, 10, 0.10, 2.50, 4))),
     "claude-sonnet-5": _entry(_ANTHROPIC, (VERIFIED_AT, anthropic_rates(2, 10, 0.20, 2.50, 4))),
     "claude-sonnet-4-6": _entry(_ANTHROPIC, (VERIFIED_AT, anthropic_rates(3, 15, 0.30, 3.75, 6))),
+    "claude-sonnet-4-5": _entry(_ANTHROPIC, (VERIFIED_AT, anthropic_rates(3, 15, 0.30, 3.75, 6))),
     # The "prompts over 100,000 tokens" row: agent sessions routinely exceed that size.
     "claude-haiku-5-5": _entry(_ANTHROPIC, (VERIFIED_AT, anthropic_rates(0.50, 2.50, 0.05, 0.625, 1))),
     "claude-haiku-4-5": _entry(_ANTHROPIC, (VERIFIED_AT, anthropic_rates(1, 5, 0.10, 1.25, 2))),
@@ -115,7 +117,18 @@ _CATALOG = {
         (VERIFIED_AT, google_rates(0.75, 3.75, 0.075)),
         ("2027-01-01T00:00:00+00:00", google_rates(1.50, 7.50, 0.15)),
     ),
+    "gemini-3.7-flash": _entry(
+        _GOOGLE,
+        (VERIFIED_AT, google_rates(0.75, 3.75, 0.075)),
+        ("2027-01-01T00:00:00+00:00", google_rates(1.50, 7.50, 0.15)),
+    ),
+    "gemini-3.6-flash": _entry(
+        _GOOGLE,
+        (VERIFIED_AT, google_rates(0.75, 3.75, 0.075)),
+        ("2027-01-01T00:00:00+00:00", google_rates(1.50, 7.50, 0.15)),
+    ),
     "gemini-3.5-flash-lite": _entry(_GOOGLE, (VERIFIED_AT, google_rates(0.30, 2.50, 0.03))),
+    "gemini-3.1-pro": _entry(_GOOGLE, (VERIFIED_AT, google_rates(2.00, 12.00, 0.20))),
     # No first-party list price exists for this open-weight model; this is OpenRouter's
     # third-party listing, not an official price.
     "gpt-oss-120b": _entry(_OPENROUTER_GPT_OSS, (VERIFIED_AT, unwritten_cache_rates(0.15, 0.60, 0.075))),
