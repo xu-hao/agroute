@@ -70,8 +70,8 @@ namespace_separator = ":"
             "without agent prefix",
         ),
         (
-            '[[agents.agy.native_candidates]]\nmodel = "gemini-2.5-pro"\neffort = "standard"\n',
-            "Antigravity native subagent model must be one of",
+            '[[agents.agy.native_candidates]]\nmodel = "Gemini 2.5 Pro"\neffort = "standard"\n',
+            "Antigravity native model must be a concrete",
         ),
         (
             '[[agents.codex.cli_candidates]]\nmodel = "gpt-5.4"\neffort = "high"\n'

@@ -84,6 +84,12 @@ When `execution_mode == "cli"` produces an owned JSONL artifact for Codex (`code
 or Claude Code (`claude-sdk-v1`), collect and attach measured token usage through
 `howhard usage collect` and `howhard usage attach` as documented in `howhard`.
 
+An Antigravity native `swarm` worker (`invocation.tool_name == "swarm"`) writes no CLI
+artifact. Read its actual usage from the worker's own conversation transcript,
+`<appDataDir>/brain/<conversationId>/.system_generated/logs/transcript.jsonl`: sum
+`input_tokens`, `cache_read_tokens` and `output_tokens` over its `PLANNER_RESPONSE` steps
+after the worker finishes, and record that total with the outcome.
+
 There is no model-count or cell-count cap. Every current model and supported effort is
 emitted after quota filtering. Use `--include-agents` to restrict agents by policy. A
 consumer with a smaller supported inventory must report its own validation error;
