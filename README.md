@@ -170,8 +170,8 @@ The [per-model price guide](docs/reference.md#per-model-user-prices) has the det
 snapshot. It prints the per-model drift against the prices in use. Routing never fetches.
 A refreshed price wins over a built-in price that took effect earlier, and a later
 scheduled built-in change wins over an older refresh. Re-run the refresh to pick up
-provider changes. Each refreshed card's `version` carries its fetch time. Failed refreshes
-retry three times and then exit nonzero, leaving the previous snapshot intact. See
+provider changes. Each refreshed card's `version` carries its fetch time. A failed refresh
+makes at most three attempts, then exits nonzero and leaves the previous snapshot intact. See
 [refreshing prices](docs/reference.md#refreshing-prices).
 
 The [routing and storage contracts](docs/reference.md) and

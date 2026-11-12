@@ -474,3 +474,23 @@ def test_malformed_price_tables_refuse_at_config_load(tmp_path, body, match):
     config.write_text(body, encoding="utf-8")
     with pytest.raises(AgRouteError, match=match):
         load_config(config, include_user_config=False)
+
+
+def test_toml_inventory_round_trips_configured_cards_with_any_text(tmp_path, capsys):
+    config = tmp_path / "agroute.toml"
+    config.write_text(
+        '[[agents.claude.native_candidates]]\nmodel = "claude-opus-5-5"\neffort = "high"\n\n'
+        '[agents.claude.native_candidates.rate_card]\nformat = "howhard-rate-card-v1"\n'
+        'source = "https://example.invalid/price \U0001F4B8 \\"quoted\\" back\\\\slash tab\\t del\\u007f"\n'
+        'version = "v1"\neffective_at = "2026-01-01T00:00:00+00:00"\nprovider = "anthropic"\n'
+        'model = "claude/claude-opus-5-5"\nservice_tier = "standard"\nbasis = "estimate"\n\n'
+        '[agents.claude.native_candidates.rate_card.rates]\n'
+        + "".join(f"{key} = {value}\n" for key, value in USER_RATES.items()),
+        encoding="utf-8",
+    )
+    _, payload = cli_candidates(tmp_path, capsys, "claude", "claude", "--config", str(config))
+    assert "\U0001F4B8" in payload["candidates"][0]["rate_card"]["source"]
+    common = ["--host", "claude", "--include-agents", "claude", "--no-user-config", "--state-dir",
+              str(tmp_path / "state"), "--now", NOW, "--config", str(config)]
+    assert main(["inventory", *common]) == 0
+    assert tomllib.loads(capsys.readouterr().out)["inventories"]["router"] == payload["candidates"]

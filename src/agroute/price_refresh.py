@@ -5,7 +5,7 @@ it leaves at ``<state_root>/prices.json``. See docs/reference.md (refreshing pri
 """
 
 from contextlib import contextmanager
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, DecimalException
 import fcntl
 import hashlib
 import http.client
@@ -89,10 +89,9 @@ def _per_mtok(value, where):
     if isinstance(value, bool) or not isinstance(value, (str, int, float)):
         raise AgRouteError(f"{where}: expected a per-token USD price")
     try:
-        amount = Decimal(str(value)) * 1_000_000
-    except InvalidOperation as exc:
+        rate = float(Decimal(str(value)) * 1_000_000)
+    except DecimalException as exc:
         raise AgRouteError(f"{where}: invalid per-token USD price {value!r}") from exc
-    rate = float(amount)
     if not math.isfinite(rate) or rate < 0:
         raise AgRouteError(f"{where}: expected a non-negative per-token USD price")
     return rate
@@ -101,7 +100,9 @@ def _per_mtok(value, where):
 def _rates(model_id, pricing, rule):
     where = f"price source: {model_id}"
     if rule == "anthropic-over-100k":
-        tiers = [t for t in pricing.get("overrides") or [] if isinstance(t, dict) and t.get("min_prompt_tokens") == 100000]
+        overrides = pricing.get("overrides")
+        tiers = [t for t in overrides if isinstance(t, dict) and t.get("min_prompt_tokens") == 100000] \
+            if isinstance(overrides, list) else []
         if len(tiers) != 1:
             raise KeptBuiltin(f"{model_id} lists no single over-100K prompt tier")
         pricing, where = tiers[0], f"{where} over-100K tier"
@@ -199,7 +200,10 @@ def read_snapshot(config):
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, UnicodeError) as exc:
         raise AgRouteError(f"price snapshot: invalid JSON at {path}: {exc}; rerun agroute prices refresh") from exc
-    return _validate_snapshot(raw, path)
+    try:
+        return _validate_snapshot(raw, path)
+    except AgRouteError as exc:
+        raise AgRouteError(f"{exc}; rerun agroute prices refresh") from exc
 
 
 @contextmanager

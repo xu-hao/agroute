@@ -127,7 +127,7 @@ Two providers price by prompt length, and the catalog picks one row for each:
 | Model | Row used | Excluded alternative | Reason |
 | --- | --- | --- | --- |
 | `claude-haiku-5-5` | Prompts over 100,000 tokens | Prompts up to 100,000 tokens (0.10 / 0.125 / 0.20 / 0.01 / 0.50) | Agent sessions routinely exceed 100K tokens of context. |
-| OpenAI `gpt-6*` | Short context, up to 272K input tokens | Long context: over 272K input tokens costs 2x input and cache rates and 1.5x output for the whole request | The threshold is far above typical agent prompts, and OpenAI states that Codex subscription usage has no long-context surcharge. |
+| OpenAI `gpt-6*` | Short context, up to 272K input tokens | Long context: over 272K input tokens costs 2x input and cache rates and 1.5x output for the whole request | The threshold is far above typical agent prompts. OpenAI's gpt-6.1-sol model page also states that usage drawn from a Codex subscription has no long-context surcharge. |
 
 Catalog prices in USD per million tokens:
 
@@ -216,8 +216,9 @@ A six-rate entry is emitted as a card with these fields:
 - `effective_at` set to the evaluation time.
 
 A `usd_per_mtok` entry is emitted as the cell's `usd_per_mtok`. Mixing money bases has a
-cost: `howhard` counts worker money only when every cell uses one basis, so a
-`usd_per_mtok` cell next to rate cards turns the comparison off. Prefer six-rate entries.
+cost: `howhard` counts worker money only when every cell uses one basis. A `usd_per_mtok`
+cell, or a candidate card with another basis such as `charge`, next to `estimate` rate
+cards turns the comparison off. Prefer six-rate entries.
 
 (refreshing-prices)=
 ### Refreshing prices
@@ -273,9 +274,10 @@ A refreshed card has these fields:
 exits nonzero naming each attempt's cause. Every failure leaves the previous snapshot
 intact. Failures include a network or HTTP error, a non-JSON or malformed response, a
 mapped model missing from the response, and a missing or negative price. Refresh never
-writes partially, and never reports success after a fallback. A refresh replaces an
-unreadable snapshot and reports the error. `candidates` refuses an unreadable snapshot and
-asks for a refresh.
+writes partially. When the listing lacks the Haiku over-100K tier, refresh still succeeds
+and names the model under `kept_builtin` in the report. A refresh replaces an unreadable
+snapshot and reports the error. `candidates` and `inventory` refuse an unreadable snapshot
+and ask for a refresh. `plan` never reads prices.
 
 **Effect on routing.** Snapshot and built-in prices compare by `effective_at`
 ({ref}`precedence rule 3 <price-precedence>`). A worked example for `gemini-4-argon`, with a

@@ -157,7 +157,7 @@ def _merge_config(base, override, where):
             if "prices" in spec:
                 # A later layer replaces an earlier layer's entry for the same model only.
                 spec["prices"] = {**merged["agents"][name]["prices"],
-                                  **table(spec["prices"], f"agents.{name}.prices")}
+                                  **table(spec["prices"], f"{where}.agents.{name}.prices")}
             merged["agents"][name].update(spec)
     return merged
 
