@@ -129,12 +129,13 @@ is the later of the verification time and its period's start:
 | Google | [Google Cloud generative AI pricing](https://cloud.google.com/vertex-ai/generative-ai/pricing) (Global, Standard), `google-cloud-list-2026-11-12` | `cache_read` = cached input (implicit caching). All three write categories equal input, because implicit caching bills writes as ordinary input. The per-hour storage price of explicit caches is excluded. Antigravity overage credits are consumed at Gemini Enterprise (Google Cloud) consumption pricing. For these models, the Global rates equal the Gemini Developer API list prices. |
 | OpenRouter (third-party listing) | `https://openrouter.ai/api/v1/models (openrouter/openai/gpt-oss-120b)`, `openrouter-listing-2026-11-12` | Only for `gpt-oss-120b`, which has no first-party list price. This is a third-party listed rate, not an official one. `input` = prompt; `output` = completion; `cache_read` = cache read. All three writes equal input, because no write price is listed. |
 
-Two providers price by prompt length, and the catalog picks one row for each:
+Three providers price by prompt length, and the catalog picks one row for each:
 
 | Model | Row used | Excluded alternative | Reason |
 | --- | --- | --- | --- |
 | `claude-haiku-5-5` | Prompts over 100,000 tokens | Prompts up to 100,000 tokens (0.10 / 0.125 / 0.20 / 0.01 / 0.50) | Agent sessions routinely exceed 100K tokens of context. |
 | OpenAI `gpt-6*` | Short context, up to 272K input tokens | Long context: over 272K input tokens costs 2x input and cache rates and 1.5x output for the whole request | The threshold is far above typical agent prompts. OpenAI's gpt-6.1-sol model page also states that usage drawn from a Codex subscription has no long-context surcharge. |
+| `gemini-3.1-pro` | Standard context, up to 200,000 input tokens | Prompts over 200,000 input tokens (4 / 18 / 0.40) | Matches the standard Gemini 3.1 Pro rate in Google Cloud's agent pricing table. |
 
 Catalog prices in USD per million tokens:
 
@@ -144,10 +145,10 @@ Catalog prices in USD per million tokens:
 | `claude-fable-5-1`, `claude-mythos-5-1` | 10 | 50 | 0.25 | 12.50 | 20 |
 | `claude-fable-5`, `claude-mythos-5` | 10 | 50 | 1 | 12.50 | 20 |
 | `claude-opus-5-5` | 4 | 20 | 0.20 | 5 | 8 |
-| `claude-opus-5`, `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6` | 5 | 25 | 0.50 | 6.25 | 10 |
+| `claude-opus-5`, `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`, `claude-opus-4-5` | 5 | 25 | 0.50 | 6.25 | 10 |
 | `claude-sonnet-5-5` | 2 | 10 | 0.10 | 2.50 | 4 |
 | `claude-sonnet-5` | 2 | 10 | 0.20 | 2.50 | 4 |
-| `claude-sonnet-4-6` | 3 | 15 | 0.30 | 3.75 | 6 |
+| `claude-sonnet-4-6`, `claude-sonnet-4-5` | 3 | 15 | 0.30 | 3.75 | 6 |
 | `claude-haiku-5-5` (over 100K row) | 0.50 | 2.50 | 0.05 | 0.625 | 1 |
 | `claude-haiku-4-5`, `claude-haiku-4-5-20251001` | 1 | 5 | 0.10 | 1.25 | 2 |
 | `gpt-6-astra` | 10 | 50 | 1 | 12.50 | 12.50 |
@@ -157,9 +158,10 @@ Catalog prices in USD per million tokens:
 | `gpt-6-luna` | 0.10 | 0.50 | 0.01 | 0.125 | 0.125 |
 | `gemini-4-carbon`, `gemini-4-argon` until 2026-12-01 | 2 | 10 | 0.10 | 2 | 2 |
 | `gemini-4-carbon`, `gemini-4-argon` from 2026-12-01 | 4 | 20 | 0.20 | 4 | 4 |
-| `gemini-3.8-flash` until 2027-01-01 | 0.75 | 3.75 | 0.075 | 0.75 | 0.75 |
-| `gemini-3.8-flash` from 2027-01-01 | 1.50 | 7.50 | 0.15 | 1.50 | 1.50 |
+| `gemini-3.8-flash`, `gemini-3.7-flash`, `gemini-3.6-flash` until 2027-01-01 | 0.75 | 3.75 | 0.075 | 0.75 | 0.75 |
+| `gemini-3.8-flash`, `gemini-3.7-flash`, `gemini-3.6-flash` from 2027-01-01 | 1.50 | 7.50 | 0.15 | 1.50 | 1.50 |
 | `gemini-3.5-flash-lite` | 0.30 | 2.50 | 0.03 | 0.30 | 0.30 |
+| `gemini-3.1-pro` | 2 | 12 | 0.20 | 2 | 2 |
 | `gpt-oss-120b` (OpenRouter listing) | 0.15 | 0.60 | 0.075 | 0.15 | 0.15 |
 
 (guessed-rate-cards)=
@@ -317,16 +319,15 @@ One unpriced cell turns `howhard`'s worker-money comparison off for the whole in
 it. Examples:
 
 - Antigravity's native `inherit` tier, when configured;
-- Antigravity CLI models outside the catalog, such as `gemini-4-carbon-<effort>`,
-  `gemini-3.7-flash-<effort>`, `gemini-3.6-flash-<effort>` and `gemini-3.1-pro-<effort>`,
-  which other Antigravity plans list;
+- Antigravity models outside the catalog, such as a preview slug released after the catalog
+  was verified;
 - Claude or Codex models released after the catalog was verified.
 
 Price such a cell with a per-model entry. Use the cell's bare model ID, which for an
-Antigravity CLI cell includes its effort suffix:
+Antigravity model slug includes its effort suffix:
 
 ```toml
-[agents.agy.prices."gemini-4-carbon-high"]
+[agents.agy.prices."gemini-preview-high"]
 input = 4.0
 output = 20.0
 cache_read = 0.20
@@ -374,6 +375,14 @@ expiry alone. Omitted, nonexpired stale scopes remain freshness obligations. A f
 whole-provider quota block remains a quota exclusion even when another scope is stale or
 expired. Existing legacy evidence without scope timestamps uses its genuine stored
 evidence timestamp, including when another scope later receives a partial report.
+A complete Antigravity `/usage` report (`status: "SUCCESS"` in which every group and bucket
+carries quota evidence) replaces the agent's stored quota-window set, dropping tiers from an
+older plan (such as `argon`, `argon-weekly`, and `gemini-argon-wtu-weekly`) when the new plan
+reports only `"Gemini Models"` and `"Claude and GPT models"`. Without a separate Argon bucket,
+Argon models resolve against the combined Gemini quota (`gemini-weekly` / `gemini-5h`). A
+partial or failed report keeps existing valid tiers. `agroute usage clear` (with `--agent X`
+or across all agents) also removes the cleared agent entries from the shared live usage cache
+(`$XDG_DATA_HOME/agroute/live_usage_cache.json`).
 
 A refresh has at most two attempts, each bounded to 15 seconds for a command or RPC. If
 refresh cannot establish current evidence for known nonexpired stale scopes, the provider is excluded
