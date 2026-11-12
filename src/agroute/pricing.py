@@ -132,7 +132,7 @@ def _builtin(key, at):
     in_effect = [period for period in entry["periods"] if period[0] <= at]
     if not in_effect:
         return None
-    effective, effective_at, rates = in_effect[-1]
+    effective, effective_at, rates = max(in_effect, key=lambda period: period[0])
     return {"provider": entry["provider"], "source": entry["source"], "version": entry["version"],
             "effective": effective, "effective_at": effective_at, "rates": rates}
 

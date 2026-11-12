@@ -56,16 +56,25 @@ def parse_qualified_model(qualified, where="model"):
     )
 
 
+def _toml_string(value):
+    """A TOML basic string: escape quote, backslash and control characters; keep the rest raw."""
+    escaped = "".join(
+        "\\" + char if char in '"\\' else f"\\u{ord(char):04x}" if ord(char) < 0x20 or ord(char) == 0x7F else char
+        for char in value
+    )
+    return f'"{escaped}"'
+
+
 def _toml_value(value):
     """Render a candidate cell value as an inline TOML value."""
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, str):
-        return json.dumps(value)
+        return _toml_string(value)
     if isinstance(value, (int, float)):
         return repr(value)
     if isinstance(value, dict):
-        items = (f"{k if re.fullmatch(r'[A-Za-z0-9_-]+', k) else json.dumps(k)} = {_toml_value(v)}"
+        items = (f"{k if re.fullmatch(r'[A-Za-z0-9_-]+', k) else _toml_string(k)} = {_toml_value(v)}"
                  for k, v in value.items())
         return "{ " + ", ".join(items) + " }"
     raise AgRouteError(f"inventory: cannot render {type(value).__name__} as TOML")
@@ -207,7 +216,7 @@ class Router:
         cleared = clear_usage(self.config, agent)
         return {"cleared": cleared}
 
-    def _collect_eligible(self, host, *, include_agents=None, now=None):
+    def _collect_eligible(self, host, *, include_agents=None, now=None, priced=True):
         host = agent_id(host or self.config.default_host, "host")
         now_dt = _now_utc(now)
         sep = self.config.namespace_separator
@@ -227,7 +236,8 @@ class Router:
         admitted_meta = {}
         excluded = []
         warnings = []
-        snapshot = read_snapshot(self.config)
+        # Execution planning needs eligibility only, so it never depends on price state.
+        snapshot = read_snapshot(self.config) if priced else None
 
         for name in agent_order:
             cfg = self.config.agents[name]
@@ -286,7 +296,8 @@ class Router:
                     continue
                 qualified = f"{name}{sep}{cand['model']}"
                 cell = {"model": qualified, "effort": cand["effort"]}
-                cell.update(self._price(name, cfg, adapter, cand, surface_name, qualified, now_dt, snapshot))
+                if priced:
+                    cell.update(self._price(name, cfg, adapter, cand, surface_name, qualified, now_dt, snapshot))
                 admitted.append(cell)
                 admitted_meta[(name, cand["model"], cand["effort"])] = {
                     "qualified_model": qualified,
@@ -366,7 +377,7 @@ class Router:
         now=None,
     ):
         host, now_dt, _, admitted_meta, excluded, warnings = self._collect_eligible(
-            host, include_agents=include_agents, now=now
+            host, include_agents=include_agents, now=now, priced=False
         )
         table(decision, "decision")
         decision_id = text(decision.get("decision_id"), "decision.decision_id", max_length=128)

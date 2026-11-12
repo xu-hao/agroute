@@ -75,10 +75,13 @@ def write_agy_cache(models):
         "format": "agroute-agy-models-cache-v1", "fetched_at": time.time(), "candidates": cells}), encoding="utf-8")
 
 
-def test_refresh_maps_ids_units_and_categories_into_an_atomic_snapshot(tmp_path, capsys, monkeypatch, sleeps):
+def test_refresh_maps_ids_units_and_categories_into_a_snapshot(tmp_path, capsys, monkeypatch, sleeps):
     body = listing()
     code, report, _ = refresh(tmp_path, capsys, monkeypatch, Source(body), "2026-11-20T00:00:00Z")
     assert code == 0
+    # The snapshot is replaced in one rename; no temporary file is left behind.
+    assert sorted(p.name for p in (tmp_path / "state").iterdir() if p.name.startswith("prices")) == [
+        "prices.json", "prices.lock"]
     snapshot = json.loads((tmp_path / "state/prices.json").read_text())
     assert snapshot["format"] == "agroute-price-snapshot-v1"
     assert snapshot["source"] == SOURCE
@@ -127,9 +130,14 @@ def test_refresh_reports_drift_against_the_prices_in_use(tmp_path, capsys, monke
             "(openrouter-2026-11-20T00:00:00Z -> openrouter-2026-11-21T00:00:00Z)") in text
 
 
-def test_missing_haiku_tier_keeps_the_built_in_card_and_says_so(tmp_path, capsys, monkeypatch, sleeps):
+@pytest.mark.parametrize("overrides", [None, 5, [{"min_prompt_tokens": 200000}]])
+def test_missing_haiku_tier_keeps_the_built_in_card_and_says_so(tmp_path, capsys, monkeypatch, sleeps, overrides):
     def untiered(rows, _):
-        del rows["anthropic/claude-haiku-5.5"]["pricing"]["overrides"]
+        pricing = rows["anthropic/claude-haiku-5.5"]["pricing"]
+        if overrides is None:
+            del pricing["overrides"]
+        else:
+            pricing["overrides"] = overrides
     code, report, _ = refresh(tmp_path, capsys, monkeypatch, Source(listing(untiered)), "2026-11-20T00:00:00Z")
     assert code == 0
     assert "claude-haiku-5-5" not in json.loads((tmp_path / "state/prices.json").read_text())["models"]
@@ -150,6 +158,8 @@ def test_missing_haiku_tier_keeps_the_built_in_card_and_says_so(tmp_path, capsys
          "openai/gpt-6-sol: missing price categories ['input_cache_write']"),
         (listing(lambda rows, _: rows["openai/gpt-6-sol"]["pricing"].update(prompt="-0.000001")),
          "openai/gpt-6-sol.prompt: expected a non-negative per-token USD price"),
+        (listing(lambda rows, _: rows["openai/gpt-6-sol"]["pricing"].update(prompt="1e999999")),
+         "openai/gpt-6-sol.prompt: invalid per-token USD price"),
     ],
 )
 def test_failed_refresh_retries_three_times_and_keeps_the_old_snapshot(
@@ -191,6 +201,10 @@ def test_snapshot_and_built_in_compare_by_effective_at(tmp_path, capsys, monkeyp
     assert refresh(tmp_path, capsys, monkeypatch, Source(listing()), fetched)[0] == 0
     write_agy_cache(["gemini-4-argon"])
     card = candidates(tmp_path, capsys, "claude", "agy", evaluated)["agy/gemini-4-argon-high"]["rate_card"]
+    assert set(card) == {"format", "source", "version", "effective_at", "provider", "model", "service_tier",
+                         "basis", "rates"}
+    assert set(card["rates"]) == {"input", "output", "cache_read", "cache_write", "cache_write_5m", "cache_write_1h"}
+    assert card["format"] == "howhard-rate-card-v1" and card["service_tier"] == "standard"
     if winner == "snapshot":
         assert (card["provider"], card["version"]) == ("openrouter", f"openrouter-{fetched}")
         assert card["source"] == f"{SOURCE} (openrouter/google/gemini-4-argon)"
@@ -255,3 +269,15 @@ def test_an_unclaimed_price_snapshot_is_refused(tmp_path, capsys):
     assert main(["candidates", "--host", "claude", "--no-user-config", "--state-dir", str(tmp_path / "state"),
                  "--now", "2026-11-25T00:00:00Z", "--json"]) == 1
     assert "refusing unclaimed store ['prices.json']" in capsys.readouterr().err
+
+
+def test_plan_ignores_prices_and_candidates_name_the_repair_for_a_bad_snapshot(tmp_path, capsys, monkeypatch, sleeps):
+    write_claude_catalog(["claude-opus-5-5"])
+    assert refresh(tmp_path, capsys, monkeypatch, Source(listing()), "2026-11-20T00:00:00Z")[0] == 0
+    (tmp_path / "state/prices.json").write_text('{"format": "agroute-price-snapshot-v1"}', encoding="utf-8")
+    router = Router(state_directory=tmp_path / "state", include_user_config=False)
+    decision = {"decision_id": "bad-snapshot", "chosen": {"model": "claude/claude-opus-5-5", "effort": "high"}}
+    plan = router.plan("claude", decision, include_agents=["claude"], now="2026-11-25T00:00:00Z")
+    assert plan["resolved_target"]["model"] == "claude-opus-5-5"
+    with pytest.raises(AgRouteError, match="missing keys.*rerun agroute prices refresh"):
+        router.candidates("claude", include_agents=["claude"], now="2026-11-25T00:00:00Z")
