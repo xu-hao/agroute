@@ -9,15 +9,17 @@ surface actually enforces.
 | --- | --- | --- | --- |
 | `codex` | `$agroute` or `/skills` | Tool: `spawn_agent` with `model` and `reasoning_effort` | `codex exec --json --model <MODEL> -c model_reasoning_effort=<EFFORT> -- "<PROMPT>"` |
 | `claude` | `/agroute:agroute` or `/agroute` | Tool: `Agent` with `subagent_type`, `description`, `model`, `effort` | `claude -p --verbose --output-format stream-json --model <MODEL> --effort <EFFORT> -- "<PROMPT>"` |
-| `agy` | `/agroute` | Tool: `invoke_subagent` with `TypeName`, `Model` (`inherit\|flash_lite\|flash\|pro`), `Role`, `Workspace` | `agy -p --output-format stream-json --model <MODEL> --effort <EFFORT> -- "<PROMPT>"` |
+| `agy` | `/agroute` | Tool: `swarm` with `action = "add"`, `name`, `model` (concrete `agy models` slug such as `gemini-4-carbon-high`), `workspace`, `brief`; or, for a configured tier, `invoke_subagent` with `TypeName`, `Model` (`inherit\|flash_lite\|flash\|pro`), `Role`, `Workspace` | `agy -p --output-format stream-json --model <MODEL> --effort <EFFORT> -- "<PROMPT>"` |
 
 ## Provider-qualified identities for `howhard`
 
 `howhard` 2.1+ evaluates `(model, effort)` cells and treats provider-qualified model IDs as
 opaque identities. `agroute candidates` prefixes every bare model ID with its agent ID:
 
-- `agy/pro` (`effort = "standard"`) when `agy` is the host agent (`native_candidates`)
-- `agy/gemini-2.5-pro` (`effort = "high"`) when routing to `agy` via CLI (`cli_candidates`)
+- `agy/gemini-4-carbon-high` (`effort = "high"`) for `agy` on either surface: the native
+  `swarm` tool and `agy -p` both run every slug listed by `agy models`
+- `agy/pro` (`effort = "standard"`) only when that `invoke_subagent` tier is configured in
+  `native_candidates`
 - `codex/gpt-5.4` (`effort = "high"`)
 - `claude/claude-sonnet-4-6` (`effort = "high"`)
 

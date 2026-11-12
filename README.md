@@ -12,7 +12,7 @@ provider-qualified model identities (`<agent>/<model>`), and resolves a `howhard
 decision into a deterministic execution plan.
 
 When the selected target agent matches the current host agent, `agroute` emits a
-native delegation tool directive (`invoke_subagent`, `Agent`, or `spawn_agent`).
+native delegation tool directive (`swarm` or `invoke_subagent`, `Agent`, or `spawn_agent`).
 When the target agent differs from the host, `agroute` emits a non-interactive CLI
 execution plan (`codex exec`, `claude -p`, or `agy -p`). `agroute` never spawns
 worker processes itself; selection, outcome observation, execution accounting, and
@@ -130,8 +130,8 @@ lists every price, the category mapping and the precedence rules.
 
 ### Guessed prices
 
-Antigravity's native subagent tiers name no concrete model, so no price is published for
-them. Each tier carries a labelled guess, with a `source` starting `guess:` and
+Antigravity's `invoke_subagent` tiers name no concrete model, so no price is published for
+them. When configured as native candidates, each tier carries a labelled guess, with a `source` starting `guess:` and
 `version = "agroute-guess-2026-11-12"`:
 
 - `agy/pro` is priced as `gemini-4-argon`, the Gemini 4 reasoning model Antigravity offers.

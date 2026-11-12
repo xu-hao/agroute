@@ -100,6 +100,11 @@ _CATALOG = {
     "gpt-6.1-terra": _entry(_OPENAI, (VERIFIED_AT, openai_rates(1.00, 5.00, 0.05, 1.25))),
     "gpt-6-luna": _entry(_OPENAI, (VERIFIED_AT, openai_rates(0.10, 0.50, 0.01, 0.125))),
     # Google Cloud Global Standard rates, with published scheduled changes.
+    "gemini-4-carbon": _entry(
+        _GOOGLE,
+        (VERIFIED_AT, google_rates(2.00, 10.00, 0.10)),
+        ("2026-12-01T00:00:00+00:00", google_rates(4.00, 20.00, 0.20)),
+    ),
     "gemini-4-argon": _entry(
         _GOOGLE,
         (VERIFIED_AT, google_rates(2.00, 10.00, 0.10)),

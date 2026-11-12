@@ -219,6 +219,9 @@ def test_snapshot_and_built_in_compare_by_effective_at(tmp_path, capsys, monkeyp
 
 def test_guessed_tiers_follow_their_model_through_the_snapshot(tmp_path, capsys, monkeypatch, sleeps):
     assert refresh(tmp_path, capsys, monkeypatch, Source(listing()), "2026-11-20T00:00:00Z")[0] == 0
+    # The working directory's agroute.toml, so refresh and candidates share one capture root.
+    (Path.cwd() / "agroute.toml").write_text(
+        '[[agents.agy.native_candidates]]\nmodel = "flash"\neffort = "standard"\n', encoding="utf-8")
     card = candidates(tmp_path, capsys, "agy", "agy", "2026-11-25T00:00:00Z")["agy/flash"]["rate_card"]
     assert card["version"] == "agroute-guess-2026-11-12"
     assert card["source"].endswith("; priced as gemini-3.8-flash from openrouter-2026-11-20T00:00:00Z")

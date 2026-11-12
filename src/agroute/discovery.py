@@ -18,12 +18,6 @@ _MODEL_SLUG = re.compile(r"^[a-z0-9][a-z0-9._-]{1,120}$")
 _PAREN_EFFORT = re.compile(r"\(([A-Za-z0-9_-]+)\)\s*$")
 _EFFORT_SUFFIXES = ("low", "medium", "high", "xhigh", "max", "ultra", "standard")
 
-AGY_NATIVE_SUBAGENT_CANDIDATES = [
-    {"model": "pro", "effort": "standard", "tier": "pro"},
-    {"model": "flash", "effort": "standard", "tier": "flash"},
-    {"model": "flash_lite", "effort": "standard", "tier": "flash_lite"},
-]
-
 _AGY_CACHE_TTL_SECONDS = 3600.0
 _MEM_CACHE: dict[str, tuple[float, list[dict]]] = {}
 

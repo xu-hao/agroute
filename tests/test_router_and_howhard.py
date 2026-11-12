@@ -8,11 +8,12 @@ from agroute import AgRouteError, Router
 def test_candidates_separate_native_host_from_cli_targets(tmp_path):
     router = Router(project=tmp_path)
 
-    # When host is agy: agy uses native_candidates (pro, flash, flash_lite), codex & claude use cli_candidates
+    # When host is agy: agy offers its discovered `agy models` cells natively (the `swarm`
+    # tool runs any concrete slug); codex & claude use cli_candidates
     res_agy = router.candidates("agy", now="2026-11-08T17:00:00Z")
     models_agy = [(c["model"], c["effort"]) for c in res_agy["candidates"]]
-    assert ("agy/pro", "standard") in models_agy
-    assert ("agy/gemini-2.5-pro", "high") not in models_agy
+    assert ("agy/gemini-2.5-pro", "high") in models_agy
+    assert ("agy/pro", "standard") not in models_agy
     assert ("codex/gpt-5.4", "high") in models_agy
     assert ("claude/claude-opus-4-6", "high") in models_agy
 
@@ -62,9 +63,13 @@ def test_all_routes_exhausted_raises_diagnostic_error(tmp_path):
 
 
 def test_plan_resolution_native_and_cross_agent_across_all_hosts(tmp_path):
-    router = Router(project=tmp_path)
+    cfg = tmp_path / "agroute.toml"
+    cfg.write_text(
+        '[[agents.agy.native_candidates]]\nmodel = "pro"\neffort = "standard"\n', encoding="utf-8"
+    )
+    router = Router(cfg, project=tmp_path)
 
-    # 1. Host agy -> native agy/pro
+    # 1. Host agy -> native agy/pro (a configured invoke_subagent tier)
     plan_agy_native = router.plan(
         "agy",
         {
@@ -213,14 +218,16 @@ host_affinity_epsilon = 0.50
         "needs_review": False,
         "candidates": [
             {"model": "codex/gpt-5.4", "effort": "high", "J": 2.00, "cap_met": True},
-            {"model": "agy/pro", "effort": "standard", "J": 2.35, "cap_met": True},
+            {"model": "agy/gemini-2.5-flash", "effort": "medium", "J": 2.35, "cap_met": True},
         ],
     }
     plan = router.plan("agy", decision, prompt="nearby native cost")
     assert plan["host_affinity_applied"] is True
     assert plan["execution_mode"] == "native"
     assert plan["target_agent"] == "agy"
-    assert plan["howhard_cell"] == {"model": "agy/pro", "effort": "standard"}
+    assert plan["howhard_cell"] == {"model": "agy/gemini-2.5-flash", "effort": "medium"}
+    assert plan["invocation"]["tool_name"] == "swarm"
+    assert plan["invocation"]["parameters"]["model"] == "gemini-2.5-flash"
     assert plan["feedback"]["mode"] == "raw_native"
     assert plan["feedback"]["decision_id"] is None
     assert plan["feedback"]["unexecuted_decision_id"] == "dec-affinity"
@@ -231,7 +238,7 @@ host_affinity_epsilon = 0.50
         "chosen": {"model": "codex/gpt-5.4", "effort": "high"},
         "candidates": [
             {"model": "codex/gpt-5.4", "effort": "high", "J": 2.00, "cap_met": True},
-            {"model": "agy/pro", "effort": "standard", "J": 2.80, "cap_met": True},
+            {"model": "agy/gemini-2.5-flash", "effort": "medium", "J": 2.80, "cap_met": True},
         ],
     }
     plan_far = router.plan("agy", decision_far, prompt="far native cost")
@@ -249,4 +256,4 @@ def test_howhard_inventory_toml_generation(tmp_path):
     parsed = tomllib.loads(toml_str)
     assert "inventories" in parsed
     assert "router" in parsed["inventories"]
-    assert any(c["model"] == "agy/pro" for c in parsed["inventories"]["router"])
+    assert any(c["model"] == "agy/gemini-2.5-pro" for c in parsed["inventories"]["router"])

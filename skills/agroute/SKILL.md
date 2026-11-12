@@ -30,8 +30,9 @@ while `howhard` owns model/effort selection, execution accounting, and writable 
 4. Inspect `execution_mode`, `needs_review`, `invocation`, and `fallback` in the returned plan:
    - Honor `needs_review` before delegating or accepting silent-risk work.
    - When `execution_mode == "native"` (`target_agent == host_agent`), invoke the host's own
-     native delegation tool (`invoke_subagent` in Antigravity, `Agent` in Claude Code, or
-     `spawn_agent` in Codex) using the exact `invocation.parameters`.
+     native delegation tool (`swarm` or `invoke_subagent` in Antigravity, as named by
+     `invocation.tool_name`; `Agent` in Claude Code; or `spawn_agent` in Codex) using the exact
+     `invocation.parameters`.
      - **Native launch failure recovery**: If native delegation fails at launch (for example,
        host subagent concurrency or slot limit reached), execute the non-interactive CLI command
        in `fallback.argv` instead. When recording feedback after fallback execution, record raw
