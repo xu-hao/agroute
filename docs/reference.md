@@ -349,18 +349,23 @@ cells instead, use one of these:
 (remaining-credit-budgets)=
 ### Subscription plan presets, quota-group exclusions, and remaining credit budgets
 
-When an agent configures a subscription `plan` preset (such as `plan = "ultra-200"` on `agy`,
-`plan = "max-20x"` on `claude`, or `plan = "pro-200"` on `codex`) or a `[agents.<name>.credit]`
-override table (see {ref}`subscription-plan-presets`), `resolve_model_quota` computes the
-remaining schedulable USD credit across both 5-hour (`session_5h`) and weekly (`weekly_7d`)
-windows for the model's resolved `quota_group`:
+When an agent resolves a subscription `plan` preset — either automatically via `plan = "auto"`
+from `detected_plan` (detected from Antigravity `statusLine` `plan_tier`, Claude `claude auth status`
+`planTier` / `subscriptionType`, or Codex `rateLimits.planType`), or from an explicit preset
+(such as `plan = "ultra-200"` or `plan = "ultra-100"` on `agy`, `plan = "max-20x"` on `claude`,
+or `plan = "pro-200"` on `codex`) — or a `[agents.<name>.credit]` override table (see
+{ref}`subscription-plan-presets`), `resolve_model_quota` computes the remaining schedulable USD
+credit across both 5-hour (`session_5h`) and weekly (`weekly_7d`) windows for the model's
+resolved `quota_group`:
 
 1. **Quota-group exclusion.** Before evaluating usage percentages, if `quota_group` is listed
    in `agents.<name>.exclude_quota_groups` (for example `exclude_quota_groups = ["3p"]`), the
    model is excluded with `reason = "quota_group '<group>' is excluded in configuration"`.
-2. **Total window credit.** `total_5h_usd` and `total_7d_usd` resolve from
-   `effective_credit["tiers"][quota_group]`, falling back to agent-level
-   `effective_credit["session_5h_usd"]` and `effective_credit["weekly_7d_usd"]`.
+2. **Total window credit.** `resolve_effective_plan_credit` resolves the effective plan and
+   merges its preset credit with any explicit `agents.<name>.credit` overrides (or returns `""`
+   when `plan == ""` or when `plan == "auto"` and `detected_plan` is unknown). `total_5h_usd`
+   and `total_7d_usd` resolve from `effective_credit["tiers"][quota_group]`, falling back to
+   agent-level `effective_credit["session_5h_usd"]` and `effective_credit["weekly_7d_usd"]`.
 3. **Remaining credit across 5-hour and weekly windows.** With `reserve = host_reserve_pct`
    when `agent == host` and `0.0` otherwise:
    - When `total_5h_usd` and `session_5h.used_pct` are known:
@@ -377,8 +382,11 @@ windows for the model's resolved `quota_group`:
      emission, any candidate without a `rate_card` or `usd_per_mtok` is excluded so `howhard`
      always receives uniformly priced candidates for credit-budget evaluation.
 
-`agroute usage show` and `agroute models` expose `agents.<name>.plan` and per-model
-`credit_budget` under `agents.<name>.models.<model>`.
+`agroute usage show` and `agroute models` expose `agents.<name>.plan`,
+`agents.<name>.detected_plan`, `agents.<name>.effective_plan`, and per-model `credit_budget`
+under `agents.<name>.models.<model>`. `agroute config show` and
+`agroute config set-plan <agent> <plan> [--user | --project]` inspect and update
+`[agents.<agent>].plan`.
 
 (native-quota-tracking)=
 ## Native quota and rate-limit tracking

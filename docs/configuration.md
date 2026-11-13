@@ -87,23 +87,35 @@ and offline inspection.
 
 Each `[agents.<name>]` section accepts:
 
-- `plan = ""`: optional subscription plan preset identifier (trimmed and lowercased; `""`
-  means no credit preset is configured). Unknown plan names are refused with `AgRouteError`
-  listing the valid plans for that agent.
+- `plan = "auto"` (packaged default): subscription plan preset selector (trimmed and
+  lowercased). Accepts `"auto"` (resolves preset credit dynamically from the agent's
+  `detected_plan` persisted in `<state_root>/usage.json`, falling back to `""` when no plan has
+  been detected yet), `""` or `"none"` (disables preset credit lookup, leaving only explicit
+  `[agents.<name>].credit` overrides), or an explicit preset/alias. Unknown plan names are
+  refused with `AgRouteError` listing the valid plans for that agent.
   - **`agy`**:
-    - `"pro-20"` (aliases `"pro"`, `"google-ai-pro"`): `gemini` (`session_5h_usd = 32.0`,
-      `weekly_7d_usd = 135.0`), `3p` (`session_5h_usd = 5.0`, `weekly_7d_usd = 10.0`).
-    - `"ultra-200"` (aliases `"ultra"`, `"google-ai-ultra"`): `gemini` (`session_5h_usd = 320.0`,
-      `weekly_7d_usd = 1350.0`), `3p` (`session_5h_usd = 25.0`, `weekly_7d_usd = 50.0`).
+    - `"free"` (aliases `"google-ai-free"`, `"google ai free"`): `gemini` (`session_5h_usd = 3.0`,
+      `weekly_7d_usd = 10.0`).
+    - `"plus-8"` (aliases `"plus"`, `"google-ai-plus"`, `"google ai plus"`): `gemini`
+      (`session_5h_usd = 12.0`, `weekly_7d_usd = 50.0`).
+    - `"pro-20"` (aliases `"pro"`, `"google-ai-pro"`, `"google ai pro"`): `gemini`
+      (`session_5h_usd = 32.0`, `weekly_7d_usd = 135.0`), `3p` (`session_5h_usd = 5.0`,
+      `weekly_7d_usd = 10.0`).
+    - `"ultra-100"`: `gemini` (`session_5h_usd = 80.0`, `weekly_7d_usd = 337.5`), `3p`
+      (`session_5h_usd = 12.5`, `weekly_7d_usd = 25.0`).
+    - `"ultra-200"` (aliases `"ultra"`, `"google-ai-ultra"`, `"google ai ultra"`): `gemini`
+      (`session_5h_usd = 320.0`, `weekly_7d_usd = 1350.0`), `3p` (`session_5h_usd = 25.0`,
+      `weekly_7d_usd = 50.0`).
   - **`claude`**:
     - `"pro-20"` (aliases `"pro"`, `"claude-pro"`): `session_5h_usd = 18.0`, `weekly_7d_usd = 45.0`.
-    - `"max-5x"` (alias `"claude-max-5x"`): `session_5h_usd = 90.0`, `weekly_7d_usd = 225.0`,
-      `fable` tier `weekly_7d_usd = 75.0`.
-    - `"max-20x"` (alias `"claude-max-20x"`): `session_5h_usd = 360.0`, `weekly_7d_usd = 900.0`,
-      `fable` tier `weekly_7d_usd = 300.0`.
+    - `"max-5x"` (aliases `"max_5x"`, `"claude-max-5x"`): `session_5h_usd = 90.0`,
+      `weekly_7d_usd = 225.0`, `fable` tier `weekly_7d_usd = 75.0`.
+    - `"max-20x"` (aliases `"max_20x"`, `"claude-max-20x"`): `session_5h_usd = 360.0`,
+      `weekly_7d_usd = 900.0`, `fable` tier `weekly_7d_usd = 300.0`.
   - **`codex`**:
     - `"plus-20"` (aliases `"plus"`, `"chatgpt-plus"`): `session_5h_usd = 20.0`, `weekly_7d_usd = 50.0`.
-    - `"pro-200"` (aliases `"pro"`, `"chatgpt-pro"`): `session_5h_usd = 200.0`, `weekly_7d_usd = 500.0`.
+    - `"pro-200"` (aliases `"pro"`, `"promax"`, `"chatgpt-pro"`): `session_5h_usd = 200.0`,
+      `weekly_7d_usd = 500.0`.
 - `credit = {}`: optional table overriding `session_5h_usd`, `weekly_7d_usd`, or
   `tiers.<quota_group>.{session_5h_usd, weekly_7d_usd}` (positive numbers). Across configuration
   layers (`default -> user -> project`), `plan` replaces an earlier `plan`, and `credit`
@@ -111,6 +123,16 @@ Each `[agents.<name>]` section accepts:
 - `exclude_quota_groups = []`: list of quota-group labels (for example `["3p"]` under
   `[agents.agy]`) to exclude while keeping dynamic model discovery active for remaining groups.
   See {ref}`remaining credit budgets <remaining-credit-budgets>`.
+
+Inspect or persist `[agents.<agent>].plan` from the CLI while preserving existing TOML comments,
+keys, and subtables:
+
+```sh
+agroute config show --json
+agroute config set-plan agy ultra-100 --json
+agroute config set-plan claude max-20x --project --json
+agroute config set-plan codex auto --json
+```
 
 (howhard-inventories)=
 ## Generating `[inventories]` for `howhard.toml`

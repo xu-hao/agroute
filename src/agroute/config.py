@@ -5,9 +5,11 @@ from dataclasses import dataclass
 from importlib.resources import files
 import os
 from pathlib import Path
+import re
 import tomllib
 
 from .adapters import get_adapter
+from .files import atomic_write
 from .pricing import RATE_CATEGORIES
 from .state import roots
 from .validation import (
@@ -18,7 +20,7 @@ from .validation import (
     effort_id,
     keys,
     number,
-     parse_timestamp,
+    parse_timestamp,
     percentage,
     table,
     text,
@@ -26,10 +28,26 @@ from .validation import (
 
 PLAN_PRESETS = {
     "agy": {
+        "free": {
+            "tiers": {
+                "gemini": {"session_5h_usd": 3.0, "weekly_7d_usd": 10.0},
+            },
+        },
+        "plus-8": {
+            "tiers": {
+                "gemini": {"session_5h_usd": 12.0, "weekly_7d_usd": 50.0},
+            },
+        },
         "pro-20": {
             "tiers": {
                 "gemini": {"session_5h_usd": 32.0, "weekly_7d_usd": 135.0},
                 "3p": {"session_5h_usd": 5.0, "weekly_7d_usd": 10.0},
+            },
+        },
+        "ultra-100": {
+            "tiers": {
+                "gemini": {"session_5h_usd": 80.0, "weekly_7d_usd": 337.5},
+                "3p": {"session_5h_usd": 12.5, "weekly_7d_usd": 25.0},
             },
         },
         "ultra-200": {
@@ -76,21 +94,32 @@ PLAN_PRESETS = {
 
 PLAN_ALIASES = {
     "agy": {
+        "free": "free",
+        "google-ai-free": "free",
+        "google ai free": "free",
+        "plus": "plus-8",
+        "google-ai-plus": "plus-8",
+        "google ai plus": "plus-8",
         "pro": "pro-20",
         "google-ai-pro": "pro-20",
+        "google ai pro": "pro-20",
         "ultra": "ultra-200",
         "google-ai-ultra": "ultra-200",
+        "google ai ultra": "ultra-200",
     },
     "claude": {
         "pro": "pro-20",
         "claude-pro": "pro-20",
+        "max_5x": "max-5x",
         "claude-max-5x": "max-5x",
+        "max_20x": "max-20x",
         "claude-max-20x": "max-20x",
     },
     "codex": {
         "plus": "plus-20",
         "chatgpt-plus": "plus-20",
         "pro": "pro-200",
+        "promax": "pro-200",
         "chatgpt-pro": "pro-200",
     },
 }
@@ -208,17 +237,76 @@ def _validate_prices(raw, where):
     return prices
 
 
+def normalize_plan_slug(agent: str, raw: str | None) -> str | None:
+    """Normalize a preset or provider telemetry plan string to its canonical slug for `agent`."""
+    if not isinstance(raw, str):
+        return None
+    norm = raw.strip().lower()
+    if not norm:
+        return None
+    presets = PLAN_PRESETS.get(agent, {})
+    aliases = PLAN_ALIASES.get(agent, {})
+    if norm in presets:
+        return norm
+    if norm in aliases:
+        return aliases[norm]
+    collapsed = re.sub(r"[\s_]+", "-", norm)
+    if collapsed in presets:
+        return collapsed
+    if collapsed in aliases:
+        return aliases[collapsed]
+    return None
+
+
+def _merge_credit_dict(base_credit: dict, override_credit: dict) -> dict:
+    effective = deepcopy(base_credit)
+    effective.setdefault("tiers", {})
+    for ck in ("session_5h_usd", "weekly_7d_usd"):
+        if ck in override_credit:
+            effective[ck] = override_credit[ck]
+    for tk, tv in (override_credit.get("tiers") or {}).items():
+        effective["tiers"][tk] = {
+            **effective["tiers"].get(tk, {}),
+            **deepcopy(tv),
+        }
+    return effective
+
+
+def resolve_effective_plan_credit(
+    agent_name: str,
+    agent_cfg: dict,
+    detected_plan: str | None,
+) -> tuple[str, dict]:
+    """Resolve effective canonical plan slug and merged credit table for an agent."""
+    configured = (agent_cfg.get("plan") or "").strip().lower()
+    explicit_credit = deepcopy(agent_cfg.get("credit") or {"tiers": {}})
+    explicit_credit.setdefault("tiers", {})
+    if configured in ("", "none"):
+        return "", explicit_credit
+    if configured == "auto":
+        canonical = normalize_plan_slug(agent_name, detected_plan)
+        if canonical is None:
+            return "", explicit_credit
+        preset = PLAN_PRESETS[agent_name][canonical]
+        return canonical, _merge_credit_dict(preset, explicit_credit)
+    canonical = normalize_plan_slug(agent_name, configured) or configured
+    preset = PLAN_PRESETS.get(agent_name, {}).get(canonical, {"tiers": {}})
+    return canonical, _merge_credit_dict(preset, explicit_credit)
+
+
 def _validate_plan(raw, where, *, agent):
     if not isinstance(raw, str):
         raise AgRouteError(f"{where}: expected a string")
     norm = raw.strip().lower()
-    if norm == "":
+    if norm in ("", "none"):
         return "", {"tiers": {}}
+    if norm == "auto":
+        return "auto", {"tiers": {}}
     presets = PLAN_PRESETS[agent]
     aliases = PLAN_ALIASES[agent]
-    canonical = norm if norm in presets else aliases.get(norm)
+    canonical = normalize_plan_slug(agent, raw)
     if canonical is None:
-        valid = sorted(set(presets) | set(aliases))
+        valid = sorted({"auto"} | set(presets) | set(aliases))
         raise AgRouteError(
             f"{where}: unknown plan {raw!r} for agent '{agent}' (expected one of {valid})"
         )
@@ -451,3 +539,113 @@ def load_config(path=None, *, project=None, state_directory=None, include_user_c
         agents=agents,
         explicit_state=bool(cfg_state_dir is not None or os.environ.get("AGROUTE_STATE_DIR")),
     )
+
+
+_TOML_SECTION_RE = re.compile(
+    r'^\s*(\[\[?\s*[A-Za-z0-9_."-]+(?:\s*\.\s*[A-Za-z0-9_."-]+)*\s*\]\]?)\s*(?:#.*)?$'
+)
+_TOML_PLAN_KEY_RE = re.compile(r"^(\s*)plan\s*=\s*(.*?)(?:\s*(#.*))?$")
+
+
+def _resolve_default_user_config_path() -> Path:
+    env_user = os.environ.get("AGROUTE_USER_CONFIG")
+    if env_user:
+        return Path(env_user).expanduser().resolve()
+    xdg = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    return (xdg / "agroute" / "config.toml").resolve()
+
+
+def _update_agent_plan_toml_text(existing_text: str, agent: str, canonical_plan: str) -> str:
+    target_header = f"agents.{agent}"
+    lines = existing_text.splitlines()
+    if not any(line.strip() for line in lines):
+        return f'[agents.{agent}]\nplan = "{canonical_plan}"\n'
+
+    sections: list[tuple[int, str, bool]] = []
+    for idx, line in enumerate(lines):
+        m = _TOML_SECTION_RE.match(line)
+        if not m:
+            continue
+        raw_hdr = m.group(1).strip()
+        is_array = raw_hdr.startswith("[[") and raw_hdr.endswith("]]")
+        inner = raw_hdr[2:-2].strip() if is_array else raw_hdr[1:-1].strip()
+        norm_path = ".".join(part.strip().strip('"').strip("'") for part in inner.split("."))
+        sections.append((idx, norm_path, is_array))
+
+    for sec_i, (hdr_line_idx, norm_path, is_array) in enumerate(sections):
+        if not is_array and norm_path == target_header:
+            next_hdr_idx = sections[sec_i + 1][0] if sec_i + 1 < len(sections) else len(lines)
+            for line_idx in range(hdr_line_idx + 1, next_hdr_idx):
+                pm = _TOML_PLAN_KEY_RE.match(lines[line_idx])
+                if pm:
+                    indent = pm.group(1)
+                    comment = f" {pm.group(3)}" if pm.group(3) else ""
+                    lines[line_idx] = f'{indent}plan = "{canonical_plan}"{comment}'
+                    return "\n".join(lines) + "\n"
+            lines.insert(hdr_line_idx + 1, f'plan = "{canonical_plan}"')
+            return "\n".join(lines) + "\n"
+
+    for hdr_line_idx, norm_path, _ in sections:
+        if norm_path.startswith(f"{target_header}."):
+            insert_block = [f"[agents.{agent}]", f'plan = "{canonical_plan}"', ""]
+            lines[hdr_line_idx:hdr_line_idx] = insert_block
+            return "\n".join(lines) + "\n"
+
+    if lines and lines[-1].strip() != "":
+        lines.append("")
+    lines.append(f"[agents.{agent}]")
+    lines.append(f'plan = "{canonical_plan}"')
+    return "\n".join(lines) + "\n"
+
+
+def set_agent_plan_in_config(
+    agent: str,
+    raw_plan: str,
+    *,
+    config_path: str | Path | None = None,
+    project: str | Path | None = None,
+    scope: str = "user",
+) -> dict:
+    """Validate and persist `[agents.<agent>].plan` in user or project TOML configuration."""
+    agent = agent_id(agent, "agent")
+    if scope not in ("user", "project"):
+        raise AgRouteError(f"config set-plan: unsupported scope {scope!r} (expected 'user' or 'project')")
+    canonical_plan, _ = _validate_plan(raw_plan, f"agents.{agent}.plan", agent=agent)
+
+    if scope == "project":
+        if config_path is not None:
+            target_path = Path(config_path).expanduser().resolve()
+        else:
+            base_dir = Path(project).resolve() if project is not None else Path.cwd().resolve()
+            target_path = (base_dir / "agroute.toml").resolve()
+    else:
+        if config_path is not None:
+            target_path = Path(config_path).expanduser().resolve()
+        else:
+            target_path = _resolve_default_user_config_path()
+
+    existing_text = ""
+    if target_path.exists():
+        try:
+            existing_text = target_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise AgRouteError(f"config set-plan: unable to read {target_path}: {exc}") from exc
+
+    new_text = _update_agent_plan_toml_text(existing_text, agent, canonical_plan)
+    try:
+        parsed = tomllib.loads(new_text)
+    except tomllib.TOMLDecodeError as exc:
+        raise AgRouteError(f"config set-plan: invalid TOML in {target_path}: {exc}") from exc
+
+    default_bytes = files("agroute").joinpath("data/default_config.toml").read_text(encoding="utf-8")
+    merged = _merge_config(tomllib.loads(default_bytes), parsed, str(target_path))
+    _, _, _, validated_agents = _validate_merged(merged)
+
+    atomic_write(target_path, new_text)
+    return {
+        "agent": agent,
+        "plan": canonical_plan,
+        "scope": scope,
+        "config_path": str(target_path),
+        "credit": deepcopy(validated_agents[agent]["credit"]),
+    }

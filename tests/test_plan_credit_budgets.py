@@ -62,6 +62,37 @@ def _write_codex_cache(models):
     [
         (
             "agy",
+            "free",
+            "free",
+            {
+                "tiers": {
+                    "gemini": {"session_5h_usd": 3.0, "weekly_7d_usd": 10.0},
+                }
+            },
+        ),
+        (
+            "agy",
+            "Google AI Plus",
+            "plus-8",
+            {
+                "tiers": {
+                    "gemini": {"session_5h_usd": 12.0, "weekly_7d_usd": 50.0},
+                }
+            },
+        ),
+        (
+            "agy",
+            "ultra-100",
+            "ultra-100",
+            {
+                "tiers": {
+                    "gemini": {"session_5h_usd": 80.0, "weekly_7d_usd": 337.5},
+                    "3p": {"session_5h_usd": 12.5, "weekly_7d_usd": 25.0},
+                }
+            },
+        ),
+        (
+            "agy",
             "pro-20",
             "pro-20",
             {
@@ -95,7 +126,7 @@ def _write_codex_cache(models):
         ),
         (
             "agy",
-            "ultra",
+            "Google AI Ultra",
             "ultra-200",
             {
                 "tiers": {
@@ -105,6 +136,18 @@ def _write_codex_cache(models):
             },
         ),
         (
+            "agy",
+            "auto",
+            "auto",
+            {"tiers": {}},
+        ),
+        (
+            "agy",
+            "",
+            "",
+            {"tiers": {}},
+        ),
+        (
             "claude",
             "claude-pro",
             "pro-20",
@@ -112,7 +155,7 @@ def _write_codex_cache(models):
         ),
         (
             "claude",
-            "claude-max-5x",
+            "max_5x",
             "max-5x",
             {
                 "session_5h_usd": 90.0,
@@ -122,7 +165,7 @@ def _write_codex_cache(models):
         ),
         (
             "claude",
-            "max-20x",
+            "max_20x",
             "max-20x",
             {
                 "session_5h_usd": 360.0,
@@ -138,7 +181,7 @@ def _write_codex_cache(models):
         ),
         (
             "codex",
-            "pro-200",
+            "promax",
             "pro-200",
             {"session_5h_usd": 200.0, "weekly_7d_usd": 500.0, "tiers": {}},
         ),
@@ -532,3 +575,325 @@ plan = "plus-20"
     }
     with pytest.raises(AgRouteError, match=r"requires 3\.5 USD credit, exceeding remaining credit 2\.7 USD"):
         router.plan("agy", decision_c_run, prompt="c_run fallback", now=NOW)
+
+
+@pytest.mark.parametrize(
+    "raw_plan_tier,expected_plan,expected_5h_usd,expected_7d_usd",
+    [
+        ("Google AI Ultra", "ultra-200", 240.0, 1080.0),
+        ("Google AI Pro", "pro-20", 24.0, 108.0),
+        ("Google AI Plus", "plus-8", 9.0, 40.0),
+        ("Free", "free", 2.25, 8.0),
+    ],
+)
+def test_auto_plan_resolution_for_agy_statusline_and_clear(
+    tmp_path, raw_plan_tier, expected_plan, expected_5h_usd, expected_7d_usd
+):
+    _write_agy_models_cache([{"model": "gemini-4-carbon-high", "effort": "high"}])
+    router = Router(project=tmp_path)
+    assert router.config.agents["agy"]["plan"] == "auto"
+
+    statusline_payload = json.dumps(
+        {
+            "plan_tier": raw_plan_tier,
+            "quota": {
+                "gemini-5h": {
+                    "remaining_fraction": 0.75,
+                    "reset_time": "2026-11-12T16:00:00Z",
+                },
+                "gemini-weekly": {
+                    "remaining_fraction": 0.80,
+                    "reset_time": "2026-11-18T00:00:00Z",
+                },
+            },
+        }
+    )
+    router.usage_ingest("agy", statusline_payload, now=NOW)
+    snap = router.usage_show("agy", now=NOW)["agents"]["agy"]
+    assert snap["plan"] == "auto"
+    assert snap["detected_plan"] == expected_plan
+    assert snap["effective_plan"] == expected_plan
+    assert snap["models"]["gemini-4-carbon-high"]["credit_budget"] == {
+        "available_usd": expected_5h_usd,
+        "session_5h_remaining_usd": expected_5h_usd,
+        "weekly_7d_remaining_usd": expected_7d_usd,
+    }
+
+    router.usage_clear("agy")
+    cleared = router.usage_show("agy", now=NOW)["agents"]["agy"]
+    assert cleared["detected_plan"] is None
+    assert cleared["effective_plan"] == ""
+    assert "credit_budget" not in cleared["models"]["gemini-4-carbon-high"]
+
+
+@pytest.mark.parametrize(
+    "auth_obj,expected_plan,expected_5h_usd",
+    [
+        ({"planTier": "max_20x", "subscriptionType": "max"}, "max-20x", 180.0),
+        ({"planTier": "max_5x", "subscriptionType": "max"}, "max-5x", 45.0),
+        ({"planTier": "pro", "subscriptionType": "pro"}, "pro-20", 9.0),
+        ({"subscriptionType": "pro"}, "pro-20", 9.0),
+    ],
+)
+def test_auto_plan_resolution_for_claude_and_codex_telemetry(
+    tmp_path, auth_obj, expected_plan, expected_5h_usd
+):
+    _write_claude_catalog(["claude-opus-5-5"])
+    _write_codex_cache(["gpt-6.1-sol"])
+    router = Router(project=tmp_path)
+
+    # Auth status alone without quota evidence must still be rejected by parse_native_usage
+    with pytest.raises(AgRouteError, match="no recognizable native usage"):
+        router.usage_ingest("claude", json.dumps(auth_obj), now=NOW)
+
+    # Combined with a quota event, detected_plan is persisted and resolves auto credit
+    claude_stream = "\n".join(
+        [
+            json.dumps(auth_obj),
+            json.dumps(
+                {
+                    "usage_report": {
+                        "rate_limits": {
+                            "limits": [
+                                {
+                                    "kind": "five_hour",
+                                    "used_pct": 50.0,
+                                    "reset_at": "2026-11-12T16:00:00Z",
+                                }
+                            ]
+                        }
+                    }
+                }
+            ),
+        ]
+    )
+    router.usage_ingest("claude", claude_stream, now=NOW)
+    c_snap = router.usage_show("claude", now=NOW)["agents"]["claude"]
+    assert c_snap["plan"] == "auto"
+    assert c_snap["detected_plan"] == expected_plan
+    assert c_snap["effective_plan"] == expected_plan
+    assert c_snap["models"]["claude-opus-5-5"]["credit_budget"]["available_usd"] == expected_5h_usd
+
+    # Codex rateLimits with planType = "promax" vs "plus"
+    for raw_codex_plan, exp_codex_plan, exp_usd in (("promax", "pro-200", 150.0), ("plus", "plus-20", 15.0)):
+        codex_rpc = json.dumps(
+            {
+                "id": 2,
+                "result": {
+                    "rateLimits": {
+                        "planType": raw_codex_plan,
+                        "primary": {
+                            "usedPercent": 25.0,
+                            "windowDurationMins": 300,
+                            "resetsAt": "2026-11-12T16:00:00Z",
+                        },
+                    }
+                },
+            }
+        )
+        router.usage_ingest("codex", codex_rpc, now=NOW)
+        x_snap = router.usage_show("codex", now=NOW)["agents"]["codex"]
+        assert x_snap["detected_plan"] == exp_codex_plan
+        assert x_snap["effective_plan"] == exp_codex_plan
+        assert x_snap["models"]["gpt-6.1-sol"]["credit_budget"]["available_usd"] == exp_usd
+
+
+def test_explicit_plan_overrides_detected_plan_and_empty_plan_disables_preset(tmp_path):
+    _write_agy_models_cache([{"model": "gemini-4-carbon-high", "effort": "high"}])
+    statusline = json.dumps(
+        {
+            "plan_tier": "Google AI Ultra",
+            "quota": {
+                "gemini-5h": {
+                    "remaining_fraction": 0.50,
+                    "reset_time": "2026-11-12T16:00:00Z",
+                }
+            },
+        }
+    )
+
+    # 1. Explicit plan = "ultra-100" overrides detected "ultra-200" (50% of 80.0 = 40.0 USD)
+    cfg_file = tmp_path / "agroute.toml"
+    cfg_file.write_text('[agents.agy]\nplan = "ultra-100"\n', encoding="utf-8")
+    r_explicit = Router(cfg_file, project=tmp_path)
+    r_explicit.usage_ingest("agy", statusline, now=NOW)
+    snap_exp = r_explicit.usage_show("agy", now=NOW)["agents"]["agy"]
+    assert snap_exp["plan"] == "ultra-100"
+    assert snap_exp["detected_plan"] == "ultra-200"
+    assert snap_exp["effective_plan"] == "ultra-100"
+    assert snap_exp["models"]["gemini-4-carbon-high"]["credit_budget"]["available_usd"] == 40.0
+
+    # 2. Explicit plan = "" disables preset lookup even when detected_plan is "ultra-200"
+    cfg_file.write_text('[agents.agy]\nplan = ""\n', encoding="utf-8")
+    r_empty = Router(cfg_file, project=tmp_path)
+    snap_empty = r_empty.usage_show("agy", now=NOW)["agents"]["agy"]
+    assert snap_empty["plan"] == ""
+    assert snap_empty["detected_plan"] == "ultra-200"
+    assert snap_empty["effective_plan"] == ""
+    assert "credit_budget" not in snap_empty["models"]["gemini-4-carbon-high"]
+
+    # 3. Explicit plan = "" with explicit [agents.agy.credit.tiers.gemini] uses only explicit credit
+    cfg_file.write_text(
+        '[agents.agy]\nplan = ""\n[agents.agy.credit.tiers.gemini]\nsession_5h_usd = 50.0\n',
+        encoding="utf-8",
+    )
+    r_credit_only = Router(cfg_file, project=tmp_path)
+    snap_co = r_credit_only.usage_show("agy", now=NOW)["agents"]["agy"]
+    assert snap_co["effective_plan"] == ""
+    assert snap_co["models"]["gemini-4-carbon-high"]["credit_budget"]["available_usd"] == 25.0
+
+
+def test_agy_and_claude_adapter_probe_plan_tier_in_isolated_tmp_path(tmp_path, monkeypatch):
+    import subprocess
+    import sys
+    from types import MethodType
+    from agroute.adapters import AgyAdapter, ClaudeAdapter, get_adapter
+
+    bindir = tmp_path / "fake-bin"
+    bindir.mkdir()
+
+    # Fake `agy` script:
+    # - For `-p /usage`, emits standard JSON `/usage` report
+    # - For `--settings <json>`, runs `statusLine.command` passing `{"plan_tier": "Google AI Ultra"}` on stdin
+    fake_agy = bindir / "agy"
+    fake_agy.write_text(
+        f"#!{sys.executable}\n"
+        "import json, subprocess, sys\n"
+        "args = sys.argv[1:]\n"
+        "if '-p' in args and '/usage' in args:\n"
+        "    print(json.dumps({\n"
+        "        'status': 'SUCCESS',\n"
+        "        'command': {\n"
+        "            'name': 'usage',\n"
+        "            'data': {\n"
+        "                'groups': [{\n"
+        "                    'name': 'Gemini Models',\n"
+        "                    'buckets': [{'id': 'gemini-5h', 'window': '5h', 'remaining_fraction': 0.8, 'reset_time': '2026-11-12T16:00:00Z'}]\n"
+        "                }]\n"
+        "            }\n"
+        "        }\n"
+        "    }))\n"
+        "    sys.exit(0)\n"
+        "if '--settings' in args:\n"
+        "    idx = args.index('--settings')\n"
+        "    settings = json.loads(args[idx + 1])\n"
+        "    cmd = settings['statusLine']['command']\n"
+        "    subprocess.run(cmd, shell=True, input=json.dumps({'plan_tier': 'Google AI Ultra'}), text=True)\n"
+        "    try:\n"
+        "        sys.stdin.read(2)\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    sys.exit(0)\n",
+        encoding="utf-8",
+    )
+    fake_agy.chmod(0o755)
+
+    # Fake `claude` script:
+    # - For `auth status`, emits `{"loggedIn": true, "planTier": "max_20x", "subscriptionType": "max"}`
+    # - For `-p /usage`, emits stream-json usage_report
+    fake_claude = bindir / "claude"
+    fake_claude.write_text(
+        f"#!{sys.executable}\n"
+        "import json, sys\n"
+        "args = sys.argv[1:]\n"
+        "if args[:2] == ['auth', 'status']:\n"
+        "    print(json.dumps({'loggedIn': True, 'planTier': 'max_20x', 'subscriptionType': 'max'}))\n"
+        "    sys.exit(0)\n"
+        "if '-p' in args and '/usage' in args:\n"
+        "    print(json.dumps({'usage_report': {'rate_limits': {'limits': [{'kind': 'five_hour', 'used_pct': 20.0, 'reset_at': '2026-11-12T16:00:00Z'}]}}}))\n"
+        "    sys.exit(0)\n",
+        encoding="utf-8",
+    )
+    fake_claude.chmod(0o755)
+
+    monkeypatch.setenv("PATH", str(bindir) + os.pathsep + os.environ["PATH"])
+
+    agy_adapter = get_adapter("agy")
+    monkeypatch.setattr(agy_adapter, "probe_plan_tier", MethodType(AgyAdapter.probe_plan_tier, agy_adapter))
+    monkeypatch.setattr(agy_adapter, "probe_usage", MethodType(AgyAdapter.probe_usage, agy_adapter))
+
+    claude_adapter = get_adapter("claude")
+    monkeypatch.setattr(claude_adapter, "probe_plan_tier", MethodType(ClaudeAdapter.probe_plan_tier, claude_adapter))
+    monkeypatch.setattr(claude_adapter, "probe_usage", MethodType(ClaudeAdapter.probe_usage, claude_adapter))
+
+    router = Router(project=tmp_path)
+    probed_agy = router.usage_probe("agy", now=NOW)["probed"]["agy"]
+    assert probed_agy["detected_plan"] == "ultra-200"
+
+    probed_claude = router.usage_probe("claude", now=NOW)["probed"]["claude"]
+    assert probed_claude["detected_plan"] == "max-20x"
+
+
+def test_cli_config_set_plan_and_show_preserve_comments_and_subtables(tmp_path, capsys):
+    user_cfg = Path(os.environ["XDG_CONFIG_HOME"]) / "agroute" / "config.toml"
+    user_cfg.parent.mkdir(parents=True, exist_ok=True)
+    user_cfg.write_text(
+        "# User-level agroute configuration\n"
+        "[routing]\n"
+        'default_host = "agy"\n\n'
+        "[agents.agy]\n"
+        "# Keep 3p excluded\n"
+        'plan = "auto" # inline comment\n'
+        'exclude_quota_groups = ["3p"]\n\n'
+        "[agents.agy.credit.tiers.gemini]\n"
+        "weekly_7d_usd = 400.0\n",
+        encoding="utf-8",
+    )
+
+    # 1. Update user config via CLI `agroute config set-plan agy ultra-100 --json`
+    rc = main(["config", "set-plan", "agy", "ultra-100", "--json"])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["agent"] == "agy"
+    assert out["plan"] == "ultra-100"
+    assert out["scope"] == "user"
+    assert out["config_path"] == str(user_cfg.resolve())
+    assert out["credit"] == {
+        "tiers": {
+            "gemini": {"session_5h_usd": 80.0, "weekly_7d_usd": 400.0},
+            "3p": {"session_5h_usd": 12.5, "weekly_7d_usd": 25.0},
+        }
+    }
+
+    raw_after = user_cfg.read_text(encoding="utf-8")
+    assert "# User-level agroute configuration" in raw_after
+    assert "# Keep 3p excluded" in raw_after
+    assert "# inline comment" in raw_after
+    assert 'plan = "ultra-100" # inline comment' in raw_after
+    assert 'exclude_quota_groups = ["3p"]' in raw_after
+    assert "[agents.agy.credit.tiers.gemini]" in raw_after
+    assert "weekly_7d_usd = 400.0" in raw_after
+
+    # 2. Update project config via `--project` (inserting new [agents.claude] section)
+    rc_proj = main(["config", "set-plan", "claude", "max_20x", "--project", "--json"])
+    assert rc_proj == 0
+    out_proj = json.loads(capsys.readouterr().out)
+    assert out_proj["agent"] == "claude"
+    assert out_proj["plan"] == "max-20x"
+    assert out_proj["scope"] == "project"
+    proj_cfg = Path.cwd() / "agroute.toml"
+    assert proj_cfg.is_file()
+    assert 'plan = "max-20x"' in proj_cfg.read_text(encoding="utf-8")
+
+    # 3. Inspect via `agroute config show --json`
+    rc_show = main(["config", "show", "--json"])
+    assert rc_show == 0
+    shown = json.loads(capsys.readouterr().out)
+    assert shown["format"] == "agroute-config-v1"
+    assert shown["agents"]["agy"]["plan"] == "ultra-100"
+    assert shown["agents"]["agy"]["effective_plan"] == "ultra-100"
+    assert shown["agents"]["claude"]["plan"] == "max-20x"
+    assert shown["agents"]["claude"]["effective_plan"] == "max-20x"
+
+    # 4. Reset to none (`plan = ""`) and back to `auto`
+    assert main(["config", "set-plan", "agy", "none", "--json"]) == 0
+    out_none = json.loads(capsys.readouterr().out)
+    assert out_none["plan"] == ""
+    assert main(["config", "set-plan", "agy", "auto", "--json"]) == 0
+    out_auto = json.loads(capsys.readouterr().out)
+    assert out_auto["plan"] == "auto"
+
+    # 5. Invalid plan name fails cleanly without corrupting file
+    assert main(["config", "set-plan", "agy", "invalid-tier", "--json"]) == 1
+    capsys.readouterr()
+    assert 'plan = "auto"' in user_cfg.read_text(encoding="utf-8")

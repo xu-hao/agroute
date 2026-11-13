@@ -84,6 +84,10 @@ class AgentAdapter(abc.ABC):
         """Probe live usage using agent-specific zero-token probe or app server."""
         ...
 
+    def probe_plan_tier(self, cwd: Path) -> str | None:
+        """Probe live subscription plan tier when not already included in usage probe output."""
+        return None
+
     def rate_card_key(self, model: str, effort: str, surface: str) -> str | None:
         """Exact built-in rate-card catalog key for a candidate cell; the model ID by default."""
         return model
@@ -255,6 +259,133 @@ class AgyAdapter(AgentAdapter):
         from .usage import _read_shared_probe_cache
         return _read_shared_probe_cache(self.name)
 
+    def probe_plan_tier(self, cwd: Path) -> str | None:
+        import json
+        import os
+        import selectors
+        import shlex
+        import sys
+        import tempfile
+        import time
+
+        if os.name != "posix" or not shutil.which("agy"):
+            return None
+        try:
+            import pty
+        except ImportError:
+            return None
+
+        from .config import normalize_plan_slug
+
+        def _extract_plan(lines: list[str]) -> str | None:
+            for line in lines:
+                brace = line.find("{")
+                if brace < 0:
+                    continue
+                try:
+                    obj = json.loads(line[brace:].strip())
+                except ValueError:
+                    continue
+                if isinstance(obj, dict) and isinstance(obj.get("plan_tier"), str) and obj["plan_tier"].strip():
+                    canonical = normalize_plan_slug("agy", obj["plan_tier"])
+                    if canonical is not None:
+                        return canonical
+            return None
+
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                out_file = Path(tmp) / "statusline.jsonl"
+                helper_path = Path(tmp) / "helper.py"
+                helper_path.write_text(
+                    "import sys\n"
+                    "data = sys.stdin.read()\n"
+                    f"with open({str(out_file)!r}, 'a', encoding='utf-8') as out:\n"
+                    "    out.write(data + '\\n')\n"
+                    "print('ok')\n",
+                    encoding="utf-8",
+                )
+                settings = json.dumps(
+                    {
+                        "statusLine": {
+                            "type": "command",
+                            "command": f"{shlex.quote(sys.executable)} {shlex.quote(str(helper_path))}",
+                            "enabled": True,
+                        }
+                    }
+                )
+                master_fd: int | None = None
+                slave_fd: int | None = None
+                proc: subprocess.Popen[bytes] | None = None
+                try:
+                    master_fd, slave_fd = pty.openpty()
+                    proc = subprocess.Popen(
+                        ["agy", "--settings", settings],
+                        cwd=cwd,
+                        stdin=slave_fd,
+                        stdout=slave_fd,
+                        stderr=slave_fd,
+                        close_fds=True,
+                    )
+                    os.close(slave_fd)
+                    slave_fd = None
+
+                    deadline = time.monotonic() + 6.0
+                    pty_buf = b""
+                    with selectors.DefaultSelector() as sel:
+                        sel.register(master_fd, selectors.EVENT_READ)
+                        while time.monotonic() < deadline:
+                            if sel.select(0.1):
+                                try:
+                                    chunk = os.read(master_fd, 4096)
+                                except OSError:
+                                    break
+                                if not chunk:
+                                    break
+                                pty_buf += chunk
+                                found = _extract_plan(
+                                    pty_buf.decode("utf-8", errors="replace").splitlines()
+                                )
+                                if found is not None:
+                                    return found
+                            if out_file.is_file():
+                                try:
+                                    lines = out_file.read_text(encoding="utf-8", errors="replace").splitlines()
+                                except OSError:
+                                    lines = []
+                                found = _extract_plan(lines)
+                                if found is not None:
+                                    return found
+                            if proc.poll() is not None and not out_file.is_file():
+                                break
+                finally:
+                    if master_fd is not None:
+                        try:
+                            os.write(master_fd, b"\x04\x04")
+                        except OSError:
+                            pass
+                        try:
+                            os.close(master_fd)
+                        except OSError:
+                            pass
+                    if slave_fd is not None:
+                        try:
+                            os.close(slave_fd)
+                        except OSError:
+                            pass
+                    if proc is not None:
+                        try:
+                            proc.terminate()
+                            proc.wait(timeout=1.5)
+                        except (OSError, subprocess.TimeoutExpired):
+                            try:
+                                proc.kill()
+                                proc.wait(timeout=1.5)
+                            except (OSError, subprocess.TimeoutExpired):
+                                pass
+        except Exception:
+            return None
+        return None
+
     def probe_usage(self, cwd: Path) -> dict | None:
         if shutil.which("agy"):
             try:
@@ -269,7 +400,12 @@ class AgyAdapter(AgentAdapter):
                 combined = "\n".join(part for part in (proc.stdout, proc.stderr) if part).strip()
                 if combined:
                     from .usage import parse_native_usage
-                    return parse_native_usage("agy", combined)
+                    patch = parse_native_usage("agy", combined)
+                    if patch and patch.get("detected_plan") is None:
+                        detected = self.probe_plan_tier(cwd)
+                        if detected is not None:
+                            patch["detected_plan"] = detected
+                    return patch
             except (OSError, subprocess.TimeoutExpired) as exc:
                 raise AgRouteError(f"usage probe: Antigravity command failed: {exc}") from exc
             raise AgRouteError("usage probe: Antigravity command returned no quota evidence")
@@ -431,6 +567,40 @@ class ClaudeAdapter(AgentAdapter):
                     w7, group = deepcopy(win), key[:-7]
         return group, s5, w7
 
+    def probe_plan_tier(self, cwd: Path) -> str | None:
+        if not shutil.which("claude"):
+            return None
+        try:
+            proc = subprocess.run(
+                ["claude", "auth", "status"],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        combined = "\n".join(part for part in (proc.stdout, proc.stderr) if part).strip()
+        if not combined:
+            return None
+        import json
+        from .usage import _extract_claude_detected_plan
+
+        for candidate in [combined, *combined.splitlines()]:
+            brace = candidate.find("{")
+            if brace < 0:
+                continue
+            try:
+                obj = json.loads(candidate[brace:].strip())
+            except ValueError:
+                continue
+            if isinstance(obj, dict):
+                detected = _extract_claude_detected_plan(obj)
+                if detected is not None:
+                    return detected
+        return None
+
     def probe_usage(self, cwd: Path) -> dict | None:
         if not shutil.which("claude"):
             raise AgRouteError("usage probe: Claude CLI is not installed")
@@ -445,7 +615,12 @@ class ClaudeAdapter(AgentAdapter):
         combined = "\n".join(part for part in (proc.stdout, proc.stderr) if part).strip()
         # Cached transcripts are useful evidence, but cannot turn a failed
         # current probe into a fresh successful availability report.
-        return parse_native_usage("claude", combined)
+        patch = parse_native_usage("claude", combined)
+        if patch and patch.get("detected_plan") is None:
+            detected = self.probe_plan_tier(cwd)
+            if detected is not None:
+                patch["detected_plan"] = detected
+        return patch
 
 
 class CodexAdapter(AgentAdapter):
