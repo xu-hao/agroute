@@ -820,11 +820,13 @@ def resolve_model_quota(
 
     try:
         adapter = get_adapter(agent_name)
-        quota_group, s5, w7 = adapter.resolve_quota_group(model_id, candidate, effective_state)
+        quota_pools = adapter.resolve_quota_pools(model_id, candidate, effective_state)
+        quota_group, s5, w7 = quota_pools[0]
     except Exception:
         s5 = deepcopy(effective_state["session_5h"])
         w7 = deepcopy(effective_state["weekly_7d"])
         quota_group = "shared"
+        quota_pools = [(quota_group, s5, w7)]
 
     from .calibration import resolve_calibrated_quota_credit
 
@@ -838,6 +840,7 @@ def resolve_model_quota(
         w7,
         reserve_pct=reserve,
         calibration_store=calibration_store,
+        quota_pools=quota_pools,
     )
     rem_5h = credit_budget.get("session_5h_remaining_usd") if credit_budget else None
     rem_7d = credit_budget.get("weekly_7d_remaining_usd") if credit_budget else None
@@ -861,12 +864,19 @@ def resolve_model_quota(
     if not agent_cfg["enabled"]:
         return _result(False, "agent is disabled in configuration")
 
-    if quota_group in agent_cfg.get("exclude_quota_groups", ()):
-        return _result(False, f"quota_group '{quota_group}' is excluded in configuration")
+    excluded_groups = agent_cfg.get("exclude_quota_groups", ())
+    for grp, _, _ in quota_pools:
+        if grp in excluded_groups:
+            return _result(False, f"quota_group '{grp}' is excluded in configuration")
 
-    rejection = (_rejection_reason(agent_name, effective_state)
-                 or _scoped_access_rejection(agent_name, effective_state, candidate)
-                 or _window_rejection_reason(agent_name, quota_group, s5, w7))
+    rejection = _rejection_reason(agent_name, effective_state) or _scoped_access_rejection(
+        agent_name, effective_state, candidate
+    )
+    if not rejection:
+        for grp, p_s5, p_w7 in quota_pools:
+            rejection = _window_rejection_reason(agent_name, grp, p_s5, p_w7)
+            if rejection:
+                break
     if rejection:
         return _result(False, rejection)
 
@@ -888,16 +898,18 @@ def resolve_model_quota(
     if not ok_tier:
         return _result(False, reason_tier)
 
-    if s5["used_pct"] is not None and s5["used_pct"] >= max_session:
-        return _result(
-            False,
-            f"session_5h used_pct ({s5['used_pct']:.1f}%) >= effective limit ({max_session:.1f}%)",
-        )
-    if w7["used_pct"] is not None and w7["used_pct"] >= max_weekly:
-        return _result(
-            False,
-            f"weekly_7d used_pct ({w7['used_pct']:.1f}%) >= effective limit ({max_weekly:.1f}%)",
-        )
+    for idx, (grp, p_s5, p_w7) in enumerate(quota_pools):
+        prefix = "" if idx == 0 else f"overlapping quota_group '{grp}' "
+        if p_s5["used_pct"] is not None and p_s5["used_pct"] >= max_session:
+            return _result(
+                False,
+                f"{prefix}session_5h used_pct ({p_s5['used_pct']:.1f}%) >= effective limit ({max_session:.1f}%)",
+            )
+        if p_w7["used_pct"] is not None and p_w7["used_pct"] >= max_weekly:
+            return _result(
+                False,
+                f"{prefix}weekly_7d used_pct ({p_w7['used_pct']:.1f}%) >= effective limit ({max_weekly:.1f}%)",
+            )
 
     return _result(True, None)
 
