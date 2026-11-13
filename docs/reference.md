@@ -51,7 +51,11 @@ The emitted list is the full eligible inventory with no model-count or cell-coun
 Efforts appear in canonical order (`low`, `medium`, `high`, `xhigh`, `max`), followed by
 additional efforts in their declared order. Missing effort catalogs retain the declared
 default effort (or `medium`). Use `--include-agents` to restrict agents by policy.
-Quota exclusions remain visible in `excluded` with their reasons. If all routes are
+Quota exclusions remain visible in `excluded` with their reasons. Without `--json`,
+`agroute candidates` writes the plain JSON candidate array directly to stdout (matching
+`--output`) for `howhard --candidates` compatibility; with `--json`, it emits the full
+`agroute-candidates-v1` envelope (`candidates`, `excluded`, `price_request`,
+`credit_calibration`, and `warnings`). If all routes are
 exhausted, `agroute` fails closed with an `AgRouteError` naming each exclusion reason.
 With `candidates --json`, the failing command also emits an empty `candidates` list,
 structured `excluded` reasons, and `warnings` before exiting with status 1.
@@ -89,11 +93,20 @@ For each cell, the first rule that applies sets its price. Higher rules come fir
    `native_candidates` or `cli_candidates`.
 2. **A per-model user price**: `[agents.<agent>.prices."<model>"]`. See
    {ref}`per-model-prices`.
-3. **The later-effective of the refreshed snapshot entry and the built-in card.** A refreshed
-   entry is effective from its `fetched_at`. A built-in card is effective from the start of
-   its period in effect at the cell's `evaluated_at`. On an exact tie, the built-in card wins.
-   Either side applies only once its `effective_at` has passed.
-4. **Unpriced.** The cell carries neither `usd_per_mtok` nor `rate_card`.
+3. **Non-expired `<state_root>/prices.json` resolution or the built-in catalog**
+   (see {ref}`calling-agent-price-resolution`):
+   - If `<state_root>/prices.json` holds an active (`resolved_at <= evaluated_at < expires_at`)
+     `"unlisted"` entry for the catalog key, the cell stays unpriced and is omitted from
+     `price_request` until `expires_at`.
+   - If `<state_root>/prices.json` holds an active `"alias"` entry (`alias_of`), the cell resolves
+     to `alias_of`'s card and emits a labelled guess (`source = "guess: <reason>; priced as
+     <alias_of> from <version>"`, `version = "agroute-guess-2026-11-12"`).
+   - Otherwise the later-effective of an active `"priced"` entry in `<state_root>/prices.json`
+     (`effective_at = resolved_at`) and the built-in catalog card (`effective_at` at the start of
+     its active period) wins; on an exact tie, the built-in card wins. Either side applies only
+     once its `effective_at` has passed.
+4. **Unpriced.** The cell carries neither `usd_per_mtok` nor `rate_card` (and its catalog key is
+   included in `price_request` when discovered).
 
 agroute resolves a cell's catalog key by exact rules only:
 
@@ -127,7 +140,7 @@ is the later of the verification time and its period's start:
 | Anthropic | [Claude API pricing](https://platform.claude.com/docs/en/about-claude/pricing), `anthropic-list-2026-11-12` | `input` = base input; `output`; `cache_read` = cache hits and refreshes; `cache_write` and `cache_write_5m` = 5-minute cache write; `cache_write_1h` = 1-hour cache write. |
 | OpenAI | [OpenAI API pricing](https://developers.openai.com/api/docs/pricing), `openai-list-2026-11-12` | Standard short-context rows. `cache_read` = cached input. `cache_write`, `cache_write_5m` and `cache_write_1h` all equal the default 30-minute cache write (1.25x input). The optional 12-hour write (2.5x input) is not represented: Codex writes at the default lifetime, and `howhard`'s Codex usage collection records every Codex write as `cache_write`, with zero 5m and 1h tokens. |
 | Google | [Google Cloud generative AI pricing](https://cloud.google.com/vertex-ai/generative-ai/pricing) (Global, Standard), `google-cloud-list-2026-11-12` | `cache_read` = cached input (implicit caching). All three write categories equal input, because implicit caching bills writes as ordinary input. The per-hour storage price of explicit caches is excluded. Antigravity overage credits are consumed at Gemini Enterprise (Google Cloud) consumption pricing. For these models, the Global rates equal the Gemini Developer API list prices. |
-| OpenRouter (third-party listing) | `https://openrouter.ai/api/v1/models (openrouter/openai/gpt-oss-120b)`, `openrouter-listing-2026-11-12` | Only for `gpt-oss-120b`, which has no first-party list price. This is a third-party listed rate, not an official one. `input` = prompt; `output` = completion; `cache_read` = cache read. All three writes equal input, because no write price is listed. |
+| Open-weight market estimate (`openai-oss`) | `published open-weight market estimate (gpt-oss-120b)`, `openai-oss-estimate-2026-11-12` | Only for `gpt-oss-120b`, which has no first-party list price. `input`, `output`, and `cache_read` reflect published open-weight token market rates; all three writes equal input. |
 
 Three providers price by prompt length, and the catalog picks one row for each:
 
@@ -158,11 +171,12 @@ Catalog prices in USD per million tokens:
 | `gpt-6-luna` | 0.10 | 0.50 | 0.01 | 0.125 | 0.125 |
 | `gemini-4-carbon`, `gemini-4-argon` until 2026-12-01 | 2 | 10 | 0.10 | 2 | 2 |
 | `gemini-4-carbon`, `gemini-4-argon` from 2026-12-01 | 4 | 20 | 0.20 | 4 | 4 |
+| `gemini-4-hydrogen` | 1.50 | 7.50 | 0.075 | 1.50 | 1.50 |
 | `gemini-3.8-flash`, `gemini-3.7-flash`, `gemini-3.6-flash` until 2027-01-01 | 0.75 | 3.75 | 0.075 | 0.75 | 0.75 |
 | `gemini-3.8-flash`, `gemini-3.7-flash`, `gemini-3.6-flash` from 2027-01-01 | 1.50 | 7.50 | 0.15 | 1.50 | 1.50 |
 | `gemini-3.5-flash-lite` | 0.30 | 2.50 | 0.03 | 0.30 | 0.30 |
 | `gemini-3.1-pro` | 2 | 12 | 0.20 | 2 | 2 |
-| `gpt-oss-120b` (OpenRouter listing) | 0.15 | 0.60 | 0.075 | 0.15 | 0.15 |
+| `gpt-oss-120b` (`openai-oss` market estimate) | 0.15 | 0.60 | 0.075 | 0.15 | 0.15 |
 
 (guessed-rate-cards)=
 ### Guessed rate cards: not published prices
@@ -229,87 +243,40 @@ cost: `howhard` counts worker money only when every cell uses one basis. A `usd_
 cell, or a candidate card with another basis such as `charge`, next to `estimate` rate
 cards turns the comparison off. Prefer six-rate entries.
 
-(refreshing-prices)=
-### Refreshing prices
+(calling-agent-price-resolution)=
+### Calling-agent price resolution (`price_request` and `agroute prices`)
 
-`agroute prices refresh [--json]` is the only command that reads prices from the network.
-`candidates`, `inventory`, `plan` and routing never fetch.
+`agroute` never fetches prices over the network. Instead, whenever model discovery surfaces a
+catalog key that has no configured price, no active built-in catalog card, and no active entry in
+`<state_root>/prices.json` (or whose `<state_root>/prices.json` entry has expired),
+`agroute candidates --json`, `agroute inventory --json`, and
+`agroute prices pending [--host HOST] [--include-agents ...] [--json]` emit a deterministic
+`price_request` (`format = "agroute-price-request-v1"`, or `null` when nothing is pending):
 
-**What it fetches.** It fetches `https://openrouter.ai/api/v1/models` and maps OpenRouter
-IDs to agroute model IDs through an explicit table, for example:
+- `unpriced_models`: sorted list of `{key, agents, sample_models, display_names[, expired_at]}`,
+  preserving human-readable `display_names` from discovery (such as `"Orchestrator (Carbon)"` from
+  `agy models`, `short_name` from Claude's catalog, or `display_name` from Codex's cache).
+- `resolve_command = "agroute prices resolve --file <path> --json"`.
+- `contract`: instructions for the calling agent to write `{"models": {"<key>": <resolution>, ...}}`
+  using one of three validated statuses:
+  1. **`"priced"`** (`default TTL = 30 days`): official first-party provider list rates across all
+     six categories (`provider`, `source`, `rates`, optional `resolved_at` / `expires_at`), emitted
+     with `version = "resolved-<resolved_at>"` and `effective_at = resolved_at`.
+  2. **`"alias"`** (`default TTL = 30 days`): internal harness/orchestrator model backed by a known
+     built-in or `"priced"` catalog key (`alias_of`, `reason`, optional `resolved_at` /
+     `expires_at`), emitted as a labelled guess `source = "guess: <reason>; priced as <alias_of>
+     from <version>"` (`version = "agroute-guess-2026-11-12"`). Self-aliases, cycles, unknown
+     targets, and `"unlisted"` targets are rejected.
+  3. **`"unlisted"`** (`default TTL = 7 days`): negative cache entry (`reason`, optional
+     `resolved_at` / `expires_at`) keeping an internal or experimental model unpriced without
+     re-requesting it in `price_request` until `expires_at` passes.
 
-- `anthropic/claude-opus-5.5` maps to `claude-opus-5-5`;
-- `openai/gpt-6.1-sol` maps to `gpt-6.1-sol`;
-- `google/gemini-4-argon` maps to `gemini-4-argon`;
-- `openai/gpt-oss-120b` maps to `gpt-oss-120b`;
-- `anthropic/claude-haiku-4.5` maps to both Haiku 4.5 IDs.
-
-`:batch` variants and unmapped IDs are ignored. Per-token USD strings are converted to USD
-per million tokens.
-
-**Category mapping.** Each provider's categories map by the built-in catalog's rule for that
-provider:
-
-- **Anthropic**: prompt, completion, cache read, cache write (5-minute) and 1-hour cache write.
-- **OpenAI**: every write equals the listed cache write. The long-context `overrides`
-  (prompts over 272K tokens) are ignored.
-- **Google**: every write equals the prompt price. OpenRouter's Google `input_cache_write` is
-  ignored, because it is a storage-derived charge, not a write price. For `gemini-3.8-flash`
-  it is 0.0417, which equals $0.50/MTok/hour of storage x 5/60 hours.
-- **`gpt-oss-120b`**: writes equal the prompt price.
-
-`claude-haiku-5-5` takes the over-100K tier from the listing's `overrides`. If the listing
-carries no such tier, the built-in card stays in use, and the report says so. OpenRouter
-lists no Mythos models, so those stay built-in only.
-
-**The snapshot.** Refresh writes `<state_root>/prices.json` atomically (see
-`agroute paths`; `--state-dir` selects another store). The snapshot records:
-
-- `fetched_at`;
-- the source URL;
-- a SHA-256 of the response;
-- the mapped six-category rates per model.
-
-A refreshed card has these fields:
-
-- `provider = "openrouter"`;
-- `source = "https://openrouter.ai/api/v1/models (openrouter/<id>)"`;
-- `version = "openrouter-<fetched_at>"`, so a stale snapshot is visible on every cell;
-- `effective_at` set to `fetched_at`.
-
-`--now` overrides the recorded fetch time.
-
-**Failure.** Refresh makes at most three attempts, with 1- and 2-second backoff, and then
-exits nonzero naming each attempt's cause. Every failure leaves the previous snapshot
-intact. Failures include a network or HTTP error, a non-JSON or malformed response, a
-mapped model missing from the response, and a missing or negative price. Refresh never
-writes partially. When the listing lacks the Haiku over-100K tier, refresh still succeeds
-and names the model under `kept_builtin` in the report. A refresh replaces an unreadable
-snapshot and reports the error. `candidates` and `inventory` refuse an unreadable snapshot
-and ask for a refresh. `plan` never reads prices.
-
-**Effect on routing.** Snapshot and built-in prices compare by `effective_at`
-({ref}`precedence rule 3 <price-precedence>`). A worked example for `gemini-4-argon`, with a
-refresh fetched on 2026-11-20:
-
-- Evaluating on 2026-11-25, the refreshed price wins over the built-in period that started
-  at verification on 2026-11-12.
-- Evaluating on 2026-12-02, the built-in period starting 2026-12-01 is newer and wins, until
-  a later refresh.
-- A refresh fetched before the catalog's verification time loses to the built-in card.
-- A refresh fetched at exactly the verification time ties, and the built-in card wins.
-
-**Diff report.** Each refresh prints, per model, the price in use before the refresh and
-after it:
-
-- every changed category, as old to new;
-- models added or dropped;
-- each side's `version`, which shows the previous snapshot's fetch time;
-- models kept on their built-in card.
-
-`--json` emits the same report as `agroute-price-refresh-v1`. Known drift: OpenRouter lists
-`gemini-3.8-flash` at 0.825 / 4.125, against Google Cloud's Global 0.75 / 3.75. That is
-Google's non-global regional rate.
+`agroute prices resolve --file <path> [--json]` validates incoming entries, merges them into
+`<state_root>/prices.json` (`format = "agroute-price-snapshot-v2"`) atomically under the store
+identity lock, and repairs an unreadable snapshot if one existed. `agroute prices show [--json]`
+inspects stored entries with active/expired status annotations. `candidates`, `inventory`, and
+`prices show` refuse an unreadable or unclaimed `prices.json` and direct the caller to
+`agroute prices resolve --file <path>`. `plan` never reads `prices.json`.
 
 (pricing-unpriced-cells)=
 ### Unpriced cells turn off cost comparison
@@ -361,11 +328,25 @@ resolved `quota_group`:
 1. **Quota-group exclusion.** Before evaluating usage percentages, if `quota_group` is listed
    in `agents.<name>.exclude_quota_groups` (for example `exclude_quota_groups = ["3p"]`), the
    model is excluded with `reason = "quota_group '<group>' is excluded in configuration"`.
-2. **Total window credit.** `resolve_effective_plan_credit` resolves the effective plan and
-   merges its preset credit with any explicit `agents.<name>.credit` overrides (or returns `""`
-   when `plan == ""` or when `plan == "auto"` and `detected_plan` is unknown). `total_5h_usd`
-   and `total_7d_usd` resolve from `effective_credit["tiers"][quota_group]`, falling back to
-   agent-level `effective_credit["session_5h_usd"]` and `effective_credit["weekly_7d_usd"]`.
+2. **Total window credit and empirical Bayes calibration.** `resolve_plan_credit_sources` separates
+   each agent's preset priors (`C_prior`) from explicit manual `[agents.<name>].credit` overrides.
+   Manual overrides remain exact (`manual_override = true`). For plan-preset pools, `agroute`
+   tracks quota snapshots per `(agent, effective_plan, pool_group, window)` in
+   `<state_root>/credit_calibration.json` (`format = "agroute-credit-calibration-v1"`):
+   - Windows with `<600s` `reset_at` jitter stay in the same window; `>=600s` `reset_at` shifts,
+     passed `reset_at` timestamps, or declining `used_pct` roll over `last_snapshot`.
+   - Non-resetting intervals `[t_prev, t_curr]` with `delta_used_pct >= 0.25`
+     (`delta_frac = delta_used_pct / 100.0`) match against completed `howhard` observations
+     (`outcomes.jsonl` and `pending.jsonl`, including `amends` / `measurement_corrections` and
+     `execution_usage` cost segments) for `(agent, pool_group)` in `(t_prev, t_curr]` when all
+     matched observations have `cost_usd > 0` and no unobserved or in-flight route in
+     `routes.jsonl` straddles `t_curr`.
+   - Intervals whose implied ceiling `interval_cost_usd / delta_frac` falls outside
+     `[0.1 * C_prior, 10.0 * C_prior]` are rejected as outliers; accepted intervals update
+     `(S_cost, S_frac)` with an exponential forgetting cap `F_max = 2.0` windows (`S_frac <= 2.0`)
+     and estimate `C_hat = (0.20 * C_prior + S_cost) / (0.20 + S_frac)`.
+   - `agroute usage clear` resets `last_snapshot` anchors for cleared agents while preserving
+     learned `(S_cost, S_frac)` statistics.
 3. **Remaining credit across 5-hour and weekly windows.** With `reserve = host_reserve_pct`
    when `agent == host` and `0.0` otherwise:
    - When `total_5h_usd` and `session_5h.used_pct` are known:
@@ -383,8 +364,13 @@ resolved `quota_group`:
      always receives uniformly priced candidates for credit-budget evaluation.
 
 `agroute usage show` and `agroute models` expose `agents.<name>.plan`,
-`agents.<name>.detected_plan`, `agents.<name>.effective_plan`, and per-model `credit_budget`
-under `agents.<name>.models.<model>`. `agroute config show` and
+`agents.<name>.detected_plan`, `agents.<name>.effective_plan`, `agents.<name>.credit_calibration`,
+and per-model `credit_budget` + `credit_calibration` (`prior_total_usd`, `calibrated_total_usd`,
+`effective_sample_windows`, `matched_intervals`) under `agents.<name>.models.<model>`.
+`candidates --json` and `inventory --json` expose top-level `credit_calibration` alongside
+calibrated per-cell `credit_budget`, and `inventory` TOML emits `# credit_calibration ...`
+header comments while keeping inline candidate cell tables strictly valid for `howhard`.
+`agroute config show` and
 `agroute config set-plan <agent> <plan> [--user | --project]` inspect and update
 `[agents.<agent>].plan`.
 
@@ -504,7 +490,8 @@ eligible candidate pool and emits an `agroute-execution-plan-v1` object:
   - `agy`, concrete model slug (for example `claude-opus-5-5-high`): `tool_name = "swarm"`
     with `action = "add"`, `name`, `model` (the slug, which already names its effort),
     `workspace`, and optional `brief` (the prompt). `name` is the `--role` reduced to a
-    lowercase roster slug matching `[a-z0-9]+(-[a-z0-9]+)*`, for example `Parser Builder`
+    lowercase roster slug matching `[a-z0-9]+(-[a-z0-9]+)*` and clamped to at most 24
+    characters without trailing hyphens, for example `Parser Builder`
     becomes `parser-builder`. An empty result or a reserved roster name (`all`,
     `coordinator`) becomes `task-worker`.
   - `agy`, configured `invoke_subagent` tier (`inherit`, `flash_lite`, `flash`, `pro`):

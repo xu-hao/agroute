@@ -83,6 +83,9 @@ skills:
 1. Inspect or refresh live agent quota state with `agroute usage`.
 2. Emit eligible provider-qualified candidates for this host with
    `agroute candidates --host <codex|claude|agy> --output /tmp/TASK-candidates.json --json`.
+   If `price_request` is non-null, look up official first-party provider pricing (or classify
+   internal harness models as `"alias"` or `"unlisted"`), run
+   `agroute prices resolve --file /tmp/TASK-prices.json --json`, and re-emit candidates once.
 3. Select a route with `howhard` (`context`/`retrieve`/`decide` with an independent
    stateless baseline forecast, or `pick`), then resolve the execution plan with
    `agroute plan --host <codex|claude|agy> --decision /tmp/TASK-decision.json --json`.
@@ -139,9 +142,10 @@ them. When configured as native candidates, each tier carries a labelled guess, 
 - `agy/flash_lite` is priced as `gemini-3.5-flash-lite`, the newest Flash-Lite on Google's
   pricing page.
 
-`gpt-oss-120b` on Antigravity has no first-party list price. It uses OpenRouter's
-third-party listed rate, which is not an official price: `input` 0.15, `output` 0.60 and
-`cache_read` 0.075 USD per million tokens, with writes at input.
+`gpt-oss-120b` on Antigravity has no first-party list price. It carries a published
+open-weight market estimate (`provider = "openai-oss"`), which is not an official first-party
+list price: `input` 0.15, `output` 0.60 and `cache_read` 0.075 USD per million tokens, with
+writes at input.
 
 ### Overriding a price
 
@@ -161,18 +165,35 @@ cache_write_1h = 2.0
 
 The rates shown are placeholders; replace them with your own price. agroute refuses a
 partial, unknown or negative entry when it loads the configuration. A price on a
-configured candidate beats a per-model price, and both beat refreshed and built-in prices.
-The [per-model price guide](docs/reference.md#per-model-user-prices) has the details.
+configured candidate beats a per-model price, and both beat calling-agent resolved and
+built-in prices. The [per-model price guide](docs/reference.md#per-model-user-prices) has
+the details.
 
-### Refreshing prices
+### Resolving newly discovered models offline (`agroute prices`)
 
-`agroute prices refresh` fetches OpenRouter's model listing and writes a local price
-snapshot. It prints the per-model drift against the prices in use. Routing never fetches.
-A refreshed price wins over a built-in price that took effect earlier, and a later
-scheduled built-in change wins over an older refresh. Re-run the refresh to pick up
-provider changes. Each refreshed card's `version` carries its fetch time. A failed refresh
-makes at most three attempts, then exits nonzero and leaves the previous snapshot intact. See
-[refreshing prices](docs/reference.md#refreshing-prices).
+`agroute` never fetches prices over the network. Whenever `agroute candidates --json`,
+`agroute inventory --json`, or `agroute prices pending --json` discovers a model whose
+catalog key is missing from configuration, the built-in catalog, and non-expired
+`<state_root>/prices.json` (or has expired), it emits a `price_request` payload listing the
+unknown model keys, sample slugs, and display names along with a resolution `contract`.
+The calling agent looks up official first-party provider pricing (or classifies an internal
+harness model as an `"alias"` of a known catalog key or `"unlisted"`) and persists the
+resolution locally via `agroute prices resolve --file <path> --json` (inspected with
+`agroute prices show --json`). `"priced"` and `"alias"` entries carry a 30-day default TTL,
+while `"unlisted"` negative-cache entries carry a 7-day default TTL so unpriced internal
+models do not re-prompt on every call. See
+[calling-agent price resolution](docs/reference.md#calling-agent-price-resolution).
+
+### Empirical credit-pool calibration
+
+Subscription plan presets supply prior USD ceilings (`C_prior`) for each agent's 5-hour
+(`session_5h`) and weekly (`weekly_7d`) quota pools. As `agroute` observes non-resetting
+quota intervals (`delta_used_pct >= 0.25`) alongside completed `howhard` execution costs
+(`cost_usd > 0`), it updates `<state_root>/credit_calibration.json` via empirical Bayes
+shrinkage (`C_hat = (0.20 * C_prior + S_cost) / (0.20 + S_frac)` with outlier rejection and
+an exponential forgetting cap of `2.0` windows) while keeping explicit `[agents.<name>].credit`
+overrides exact. Calibrated pool totals and `available_usd` budgets surface in `usage show`,
+`candidates`, and `inventory`.
 
 The [routing and storage contracts](docs/reference.md) and
 [configuration guide](docs/configuration.md) describe the CLI/API, live model discovery,
