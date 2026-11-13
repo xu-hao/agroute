@@ -22,6 +22,9 @@ gemini-4-carbon-low\tGemini 4 Carbon (Low)
 gemini-4-argon-medium\tGemini 4 Argon (Medium)
 gemini-4-argon-high\tGemini 4 Argon (High)
 gemini-4-argon-low\tGemini 4 Argon (Low)
+gemini-4-hydrogen-medium\tGemini 4 Hydrogen (Medium)
+gemini-4-hydrogen-high\tGemini 4 Hydrogen (High)
+gemini-4-hydrogen-low\tGemini 4 Hydrogen (Low)
 gemini-3.8-flash-high\tGemini 3.8 Flash (High)
 gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)
 gemini-3.8-flash-low\tGemini 3.8 Flash (Low)
@@ -66,6 +69,12 @@ def test_agy_host_candidates_are_the_concrete_agy_models_cells(tmp_path, capsys,
         assert card["rates"]["input"] == pytest.approx(2.00)
         assert card["rates"]["output"] == pytest.approx(10.00)
         assert card["rates"]["cache_read"] == pytest.approx(0.10)
+        assert not card["source"].startswith("guess:")
+        card = cells[f"agy/gemini-4-hydrogen-{effort}"]["rate_card"]
+        assert (card["provider"], card["model"]) == ("google", f"agy/gemini-4-hydrogen-{effort}")
+        assert card["rates"]["input"] == pytest.approx(1.50)
+        assert card["rates"]["output"] == pytest.approx(7.50)
+        assert card["rates"]["cache_read"] == pytest.approx(0.075)
         assert not card["source"].startswith("guess:")
         card = cells[f"agy/claude-opus-5-5-{effort}"]["rate_card"]
         assert (card["provider"], card["rates"]["input"]) == ("anthropic", 4)
@@ -162,9 +171,14 @@ def test_configured_native_candidate_rejects_a_non_slug(tmp_path):
         ("!!!", "task-worker"),
         ("all", "task-worker"),
         ("Coordinator", "task-worker"),
+        ("Empirical Credit Pool Calibration Worker", "empirical-credit-pool-ca"),
+        ("12345678901234567890123-trailing", "12345678901234567890123"),
+        ("a" * 30, "a" * 24),
     ],
 )
 def test_swarm_worker_name_is_a_clean_roster_slug(role, name):
     invocation = get_adapter("agy").build_native_invocation("gemini-4-argon-high", "high", role=role)
     assert invocation["parameters"]["name"] == name
+    assert len(invocation["parameters"]["name"]) <= 24
+    assert not invocation["parameters"]["name"].endswith("-")
     assert "brief" not in invocation["parameters"]

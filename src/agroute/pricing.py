@@ -1,16 +1,16 @@
-"""Per-token rate cards for emitted candidates: built-in catalog, refreshed snapshot, user prices.
+"""Per-token rate cards for emitted candidates: built-in catalog, resolved price store, user prices.
 
 The built-in catalog is a hardcoded snapshot of published list prices, verified against each
 provider's pricing page at ``VERIFIED_AT`` and updated in this package when prices are
 re-checked. A price in force at verification takes effect at ``VERIFIED_AT``; a published
-future change takes effect at its own start. Every card follows the ``howhard-rate-card-v1``
-contract: USD per million tokens in six categories. See docs/reference.md (built-in rate
-cards) for sources, category mappings, labelled guesses and precedence.
+future change takes effect at its own start. Unknown or newer discovered models are resolved
+offline by the calling agent into ``<state_root>/prices.json``. Every card follows the
+``howhard-rate-card-v1`` contract: USD per million tokens in six categories.
 """
 
 from copy import deepcopy
 
-from .validation import parse_timestamp
+from .validation import format_timestamp, parse_timestamp
 
 RATE_CARD_FORMAT = "howhard-rate-card-v1"
 RATE_CATEGORIES = ("input", "output", "cache_read", "cache_write", "cache_write_5m", "cache_write_1h")
@@ -18,7 +18,6 @@ VERIFIED_AT = "2026-11-12T02:18:20+00:00"
 GUESS_VERSION = "agroute-guess-2026-11-12"
 USER_SOURCE = "user config"
 USER_VERSION = "user-config"
-OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 
 _ANTHROPIC = {
     "provider": "anthropic",
@@ -35,30 +34,48 @@ _GOOGLE = {
     "source": "https://cloud.google.com/vertex-ai/generative-ai/pricing",
     "version": "google-cloud-list-2026-11-12",
 }
-_OPENROUTER_GPT_OSS = {
-    "provider": "openrouter",
-    "source": f"{OPENROUTER_MODELS_URL} (openrouter/openai/gpt-oss-120b)",
-    "version": "openrouter-listing-2026-11-12",
+_OPENAI_OSS = {
+    "provider": "openai-oss",
+    "source": "published open-weight market estimate (gpt-oss-120b)",
+    "version": "openai-oss-estimate-2026-11-12",
 }
 
 
 def anthropic_rates(base, output, cache_hit, write_5m, write_1h):
     """An unlabelled cache write is Anthropic's default 5-minute write."""
-    return {"input": base, "output": output, "cache_read": cache_hit, "cache_write": write_5m,
-            "cache_write_5m": write_5m, "cache_write_1h": write_1h}
+    return {
+        "input": base,
+        "output": output,
+        "cache_read": cache_hit,
+        "cache_write": write_5m,
+        "cache_write_5m": write_5m,
+        "cache_write_1h": write_1h,
+    }
 
 
 def openai_rates(base, output, cached_input, write_30m):
     """Codex writes at OpenAI's default 30-minute lifetime, and howhard counts every Codex
     write as ``cache_write``; the optional 12-hour write is not represented."""
-    return {"input": base, "output": output, "cache_read": cached_input, "cache_write": write_30m,
-            "cache_write_5m": write_30m, "cache_write_1h": write_30m}
+    return {
+        "input": base,
+        "output": output,
+        "cache_read": cached_input,
+        "cache_write": write_30m,
+        "cache_write_5m": write_30m,
+        "cache_write_1h": write_30m,
+    }
 
 
 def google_rates(base, output, cached_input):
     """Implicit caching bills writes as ordinary input; hourly storage is excluded."""
-    return {"input": base, "output": output, "cache_read": cached_input, "cache_write": base,
-            "cache_write_5m": base, "cache_write_1h": base}
+    return {
+        "input": base,
+        "output": output,
+        "cache_read": cached_input,
+        "cache_write": base,
+        "cache_write_5m": base,
+        "cache_write_1h": base,
+    }
 
 
 def unwritten_cache_rates(base, output, cached_input):
@@ -102,6 +119,7 @@ _CATALOG = {
     "gpt-6.1-terra": _entry(_OPENAI, (VERIFIED_AT, openai_rates(1.00, 5.00, 0.05, 1.25))),
     "gpt-6-luna": _entry(_OPENAI, (VERIFIED_AT, openai_rates(0.10, 0.50, 0.01, 0.125))),
     # Google Cloud Global Standard rates, with published scheduled changes.
+    "gemini-4-hydrogen": _entry(_GOOGLE, (VERIFIED_AT, google_rates(1.50, 7.50, 0.075))),
     "gemini-4-carbon": _entry(
         _GOOGLE,
         (VERIFIED_AT, google_rates(2.00, 10.00, 0.10)),
@@ -129,9 +147,8 @@ _CATALOG = {
     ),
     "gemini-3.5-flash-lite": _entry(_GOOGLE, (VERIFIED_AT, google_rates(0.30, 2.50, 0.03))),
     "gemini-3.1-pro": _entry(_GOOGLE, (VERIFIED_AT, google_rates(2.00, 12.00, 0.20))),
-    # No first-party list price exists for this open-weight model; this is OpenRouter's
-    # third-party listing, not an official price.
-    "gpt-oss-120b": _entry(_OPENROUTER_GPT_OSS, (VERIFIED_AT, unwritten_cache_rates(0.15, 0.60, 0.075))),
+    # Published open-weight market estimate when no first-party list price is published.
+    "gpt-oss-120b": _entry(_OPENAI_OSS, (VERIFIED_AT, unwritten_cache_rates(0.15, 0.60, 0.075))),
 }
 
 # Antigravity's native subagent tiers name no concrete model. Each exact `agy:<tier>` key
@@ -151,34 +168,88 @@ def _builtin(key, at):
     if not in_effect:
         return None
     effective, effective_at, rates = max(in_effect, key=lambda period: period[0])
-    return {"provider": entry["provider"], "source": entry["source"], "version": entry["version"],
-            "effective": effective, "effective_at": effective_at, "rates": rates}
+    return {
+        "provider": entry["provider"],
+        "source": entry["source"],
+        "version": entry["version"],
+        "effective": effective,
+        "effective_at": effective_at,
+        "rates": rates,
+    }
 
 
-def _refreshed(key, at, snapshot):
-    entry = snapshot["models"].get(key) if snapshot is not None else None
-    if entry is None or snapshot["fetched"] > at:
+def _active_snapshot_entry(key, at, snapshot):
+    if snapshot is None:
         return None
-    return {"provider": "openrouter", "source": f"{snapshot['source']} (openrouter/{entry['openrouter_id']})",
-            "version": snapshot["version"], "effective": snapshot["fetched"],
-            "effective_at": snapshot["fetched_at"], "rates": entry["rates"]}
+    entry = snapshot["models"].get(key)
+    if entry is None:
+        return None
+    if entry["resolved"] > at or at >= entry["expires"]:
+        return None
+    return entry
 
 
-def resolve_price(key, at, snapshot=None):
-    """The price for catalog ``key`` at ``at``: the later-effective of the refreshed snapshot
-    entry and the built-in period in effect, the built-in card on a tie; ``None`` if neither."""
+def resolve_price(key, at, snapshot=None, *, _seen=()):
+    """Resolve catalog ``key`` at ``at`` from ``prices.json`` (non-expired) and ``_CATALOG``."""
+    if key is None or key in _seen:
+        return None
     if key in _TIER_GUESSES:
         target, subject = _TIER_GUESSES[key]
-        base = resolve_price(target, at, snapshot)
+        base = resolve_price(target, at, snapshot, _seen=(*_seen, key))
         if base is None:
             return None
-        return {**base, "version": GUESS_VERSION,
-                "source": f"guess: no published price for {subject}; priced as {target} from {base['version']}"}
+        return {
+            **base,
+            "version": GUESS_VERSION,
+            "source": f"guess: no published price for {subject}; priced as {target} from {base['version']}",
+        }
+
     builtin = _builtin(key, at)
-    refreshed = _refreshed(key, at, snapshot)
-    if refreshed is not None and (builtin is None or refreshed["effective"] > builtin["effective"]):
-        return refreshed
+    entry = _active_snapshot_entry(key, at, snapshot)
+    if entry is None:
+        return builtin
+
+    status = entry["status"]
+    if status == "unlisted":
+        return None
+    if status == "alias":
+        target = entry["alias_of"]
+        base = resolve_price(target, at, snapshot, _seen=(*_seen, key))
+        if base is None:
+            return None
+        return {
+            **base,
+            "version": GUESS_VERSION,
+            "source": f"guess: {entry['reason']}; priced as {target} from {base['version']}",
+        }
+
+    resolved_card = {
+        "provider": entry["provider"],
+        "source": entry["source"],
+        "version": f"resolved-{format_timestamp(entry['resolved'])}",
+        "effective": entry["resolved"],
+        "effective_at": entry["resolved_at"],
+        "rates": entry["rates"],
+    }
+    if builtin is None or resolved_card["effective"] > builtin["effective"]:
+        return resolved_card
     return builtin
+
+
+def needs_price_resolution(key, at, snapshot=None, *, _seen=()):
+    """Return True when a discovered model key lacks a built-in/active entry or has an expired entry."""
+    if not key or key.startswith("agy:") or key in _seen:
+        return False
+    if snapshot is not None and key in snapshot["models"]:
+        raw_entry = snapshot["models"][key]
+        if at >= raw_entry["expires"]:
+            return True
+        if raw_entry["resolved"] <= at:
+            if raw_entry["status"] in ("priced", "unlisted"):
+                return False
+            if raw_entry["status"] == "alias":
+                return resolve_price(key, at, snapshot, _seen=_seen) is None
+    return _builtin(key, at) is None
 
 
 def rate_card(price, model):
@@ -198,5 +269,13 @@ def rate_card(price, model):
 
 def user_rate_card(rates, agent, model, at):
     """A card for a per-model user price, in effect at the evaluation time ``at``."""
-    return rate_card({"provider": agent, "source": USER_SOURCE, "version": USER_VERSION,
-                      "effective_at": at.isoformat(), "rates": rates}, model)
+    return rate_card(
+        {
+            "provider": agent,
+            "source": USER_SOURCE,
+            "version": USER_VERSION,
+            "effective_at": at.isoformat(),
+            "rates": rates,
+        },
+        model,
+    )

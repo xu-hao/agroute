@@ -24,6 +24,7 @@ KNOWN_STORE_ENTRIES = {
     "project.lock",
     "prices.json",
     "prices.lock",
+    "credit_calibration.json",
 }
 
 
@@ -48,7 +49,7 @@ def validate_store(path):
     names = {entry.name for entry in path.iterdir()}
     if names and not (names & KNOWN_STORE_ENTRIES):
         raise AgRouteError(f"state: refusing unrelated existing directory {path}")
-    unclaimed = sorted(names & {"usage.json", "prices.json"}) if "store.json" not in names else []
+    unclaimed = sorted(names & {"usage.json", "prices.json", "credit_calibration.json"}) if "store.json" not in names else []
     if unclaimed:
         raise AgRouteError(f"state: refusing unclaimed store {unclaimed} at {path}")
 

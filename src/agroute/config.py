@@ -272,26 +272,58 @@ def _merge_credit_dict(base_credit: dict, override_credit: dict) -> dict:
     return effective
 
 
+def resolve_plan_credit_sources(
+    agent_name: str,
+    agent_cfg: dict,
+    detected_plan: str | None,
+) -> tuple[str, dict, dict, dict]:
+    """Return `(effective_plan, preset_credit, manual_credit, effective_credit)` for `agent_name`."""
+    configured = (agent_cfg.get("plan") or "").strip().lower()
+    has_overrides_key = "credit_overrides" in agent_cfg
+    raw_credit = deepcopy(agent_cfg.get("credit") or {"tiers": {}})
+    raw_credit.setdefault("tiers", {})
+    if has_overrides_key:
+        manual_credit = deepcopy(agent_cfg.get("credit_overrides") or {"tiers": {}})
+        manual_credit.setdefault("tiers", {})
+    else:
+        manual_credit = deepcopy(raw_credit)
+
+    if configured in ("", "none"):
+        return "", {"tiers": {}}, manual_credit, _merge_credit_dict({"tiers": {}}, manual_credit)
+    if configured == "auto":
+        canonical = normalize_plan_slug(agent_name, detected_plan)
+        if canonical is None:
+            return "", {"tiers": {}}, manual_credit, _merge_credit_dict({"tiers": {}}, manual_credit)
+        preset = deepcopy(PLAN_PRESETS[agent_name][canonical])
+        preset.setdefault("tiers", {})
+        return canonical, preset, manual_credit, _merge_credit_dict(preset, manual_credit)
+
+    canonical = normalize_plan_slug(agent_name, configured) or configured
+    preset = deepcopy(PLAN_PRESETS.get(agent_name, {}).get(canonical, {"tiers": {}}))
+    preset.setdefault("tiers", {})
+    if not has_overrides_key:
+        # Infer manual overrides when a synthetic dict omitted `credit_overrides`.
+        inferred_manual: dict = {"tiers": {}}
+        for ck in ("session_5h_usd", "weekly_7d_usd"):
+            if ck in raw_credit and raw_credit[ck] != preset.get(ck):
+                inferred_manual[ck] = raw_credit[ck]
+        for tk, tv in (raw_credit.get("tiers") or {}).items():
+            p_tier = (preset.get("tiers") or {}).get(tk, {})
+            diff = {k: v for k, v in tv.items() if v != p_tier.get(k)}
+            if diff:
+                inferred_manual["tiers"][tk] = diff
+        manual_credit = inferred_manual
+    return canonical, preset, manual_credit, _merge_credit_dict(preset, manual_credit)
+
+
 def resolve_effective_plan_credit(
     agent_name: str,
     agent_cfg: dict,
     detected_plan: str | None,
 ) -> tuple[str, dict]:
     """Resolve effective canonical plan slug and merged credit table for an agent."""
-    configured = (agent_cfg.get("plan") or "").strip().lower()
-    explicit_credit = deepcopy(agent_cfg.get("credit") or {"tiers": {}})
-    explicit_credit.setdefault("tiers", {})
-    if configured in ("", "none"):
-        return "", explicit_credit
-    if configured == "auto":
-        canonical = normalize_plan_slug(agent_name, detected_plan)
-        if canonical is None:
-            return "", explicit_credit
-        preset = PLAN_PRESETS[agent_name][canonical]
-        return canonical, _merge_credit_dict(preset, explicit_credit)
-    canonical = normalize_plan_slug(agent_name, configured) or configured
-    preset = PLAN_PRESETS.get(agent_name, {}).get(canonical, {"tiers": {}})
-    return canonical, _merge_credit_dict(preset, explicit_credit)
+    canonical, _, _, merged = resolve_plan_credit_sources(agent_name, agent_cfg, detected_plan)
+    return canonical, merged
 
 
 def _validate_plan(raw, where, *, agent):
@@ -463,6 +495,7 @@ def _validate_merged(raw):
             "prices": _validate_prices(spec["prices"], f"{where}.prices"),
             "plan": plan_id,
             "credit": effective_credit,
+            "credit_overrides": deepcopy(override_credit),
             "exclude_quota_groups": exclude_quota_groups,
         }
     return default_host, epsilon, separator, agents

@@ -19,15 +19,25 @@ while `howhard` owns model/effort selection, execution accounting, and writable 
    known evidence and excludes a provider when bounded refresh fails.
 3. Follow [the routing and decision workflow](references/workflow.md):
    - Run `agroute candidates --host HOST --output /tmp/TASK-candidates.json --json` to emit
-     the full eligible inventory (`<agent>/<model>`, `<effort>`). When `target == host`,
-     `agroute` emits `native_candidates` supported by the host's native delegation tool; when
-     `target != host`, `agroute` emits `cli_candidates` supported by the target's non-interactive CLI.
-     When an agent resolves a subscription `plan` (`plan = "auto"` by default from native
+     the full eligible inventory (`<agent>/<model>`, `<effort>`). (Without `--json`,
+     `agroute candidates` prints the plain JSON candidate array directly for `howhard --candidates`.)
+     When `target == host`, `agroute` emits `native_candidates` supported by the host's native
+     delegation tool; when `target != host`, `agroute` emits `cli_candidates` supported by the
+     target's non-interactive CLI.
+   - **Check `price_request` before routing**: If `price_request` in the `candidates --json`
+     envelope (or `agroute prices pending --host HOST --json`) is non-null, follow its `contract`
+     once: look up official first-party provider token pricing (`status = "priced"`), map internal
+     harness/orchestrator wrappers backed by a known catalog model (`status = "alias"`), or mark
+     unpriced internal/experimental models (`status = "unlisted"`), write the JSON resolution file,
+     run `agroute prices resolve --file /tmp/TASK-prices.json --json`, and re-run
+     `agroute candidates --host HOST --output /tmp/TASK-candidates.json --json`.
+   - When an agent resolves a subscription `plan` (`plan = "auto"` by default from native
      `detected_plan`, or an explicit preset such as `"ultra-200"`, `"ultra-100"`, `"pro-20"`,
      `"max-20x"`, `"pro-200"` configurable via `agroute config set-plan <agent> <plan>`) or
-     `credit` table, `agroute` attaches `credit_budget` (`available_usd` across `session_5h`
-     and `weekly_7d` windows) to priced candidates, excludes unpriced models, and honors
-     `exclude_quota_groups` (such as `["3p"]`).
+     `credit` table, `agroute` attaches empirically calibrated `credit_budget` (`available_usd`
+     across `session_5h` and `weekly_7d` windows, anchored on plan priors and updated from
+     observed quota deltas + `howhard` execution `cost_usd` in `credit_calibration.json`) to
+     priced candidates, excludes unpriced models, and honors `exclude_quota_groups` (such as `["3p"]`).
    - Pass `--candidates /tmp/TASK-candidates.json` to `howhard context` (followed by independent
      baseline forecast, `retrieve`, and `decide`) or `howhard pick`, saving the decision JSON
      to `/tmp/TASK-decision.json`.

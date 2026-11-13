@@ -137,11 +137,12 @@ AGY_SUBAGENT_TIERS = ("inherit", "flash_lite", "flash", "pro")
 # Roster names the Antigravity swarm reserves for addressing.
 _SWARM_RESERVED_NAMES = frozenset({"all", "coordinator"})
 _SWARM_DEFAULT_NAME = "task-worker"
+_SWARM_MAX_NAME_LEN = 24
 
 
 def _swarm_worker_name(role: str) -> str:
-    """A short lowercase roster slug (`[a-z0-9]+(-[a-z0-9]+)*`) for a swarm worker role."""
-    name = "-".join(re.findall(r"[a-z0-9]+", role.lower()))[:48].strip("-")
+    """A short lowercase roster slug (`[a-z0-9]+(-[a-z0-9]+)*`, <=24 chars) for a swarm worker role."""
+    name = "-".join(re.findall(r"[a-z0-9]+", role.lower()))[:_SWARM_MAX_NAME_LEN].strip("-")
     if not name or name in _SWARM_RESERVED_NAMES:
         return _SWARM_DEFAULT_NAME
     return name
@@ -432,7 +433,7 @@ class AgyAdapter(AgentAdapter):
                 s5 = deepcopy(tiers["3p-5h"])
             if "3p-weekly" in tiers:
                 w7 = deepcopy(tiers["3p-weekly"])
-        elif any(t in ("gemini", "flash", "flash_lite", "pro", "argon") for t in tokens):
+        elif any(t in ("gemini", "flash", "flash_lite", "pro", "argon", "carbon", "hydrogen") for t in tokens):
             quota_group = "gemini"
             if "gemini-5h" in tiers:
                 s5 = deepcopy(tiers["gemini-5h"])

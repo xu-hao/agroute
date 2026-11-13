@@ -709,7 +709,15 @@ def ensure_fresh_usage(config, targets, *, now=None):
         # Another provider's probe may cross this provider's reset or age
         # boundary. Recheck everyone without renewing any attempt budget.
         store = read_store(config)
-    return read_store(config), failures
+    final_store = read_store(config)
+    if (config.state_root / "store.json").exists():
+        from .calibration import record_usage_calibration_snapshot
+
+        now_cal = _now_utc(now)
+        with _usage_locked(config):
+            for name in names:
+                record_usage_calibration_snapshot(config, name, final_store["agents"][name], now_cal)
+    return final_store, failures
 
 
 def effective_agent_state(agent_state, now_dt, *, project_rejections=True):
@@ -796,7 +804,16 @@ def evaluate_candidate_tier(agent_cfg, effective_state, candidate):
     return True, None
 
 
-def resolve_model_quota(agent_name, agent_cfg, effective_state, candidate, *, is_host=False, surface="cli"):
+def resolve_model_quota(
+    agent_name,
+    agent_cfg,
+    effective_state,
+    candidate,
+    *,
+    is_host=False,
+    surface="cli",
+    calibration_store=None,
+):
     """Resolve effective 5h/7d quota windows and eligibility for a specific model."""
     model_id = str(candidate["model"])
     from .adapters import get_adapter
@@ -809,44 +826,21 @@ def resolve_model_quota(agent_name, agent_cfg, effective_state, candidate, *, is
         w7 = deepcopy(effective_state["weekly_7d"])
         quota_group = "shared"
 
-    from .config import resolve_effective_plan_credit
+    from .calibration import resolve_calibrated_quota_credit
 
     reserve = agent_cfg["host_reserve_pct"] if is_host else 0.0
-    _, effective_credit = resolve_effective_plan_credit(
-        agent_name, agent_cfg, effective_state.get("detected_plan")
+    credit_budget, credit_calibration = resolve_calibrated_quota_credit(
+        agent_name,
+        agent_cfg,
+        effective_state,
+        quota_group,
+        s5,
+        w7,
+        reserve_pct=reserve,
+        calibration_store=calibration_store,
     )
-    credit_tiers = effective_credit.get("tiers") or {}
-    tier_spec = credit_tiers.get(quota_group)
-    if tier_spec is None and "-" in quota_group:
-        tier_spec = credit_tiers.get(quota_group.split("-", 1)[0])
-    if tier_spec is None and agent_name == "agy" and quota_group == "argon":
-        tier_spec = credit_tiers.get("gemini")
-    if tier_spec is None:
-        tier_spec = {}
-
-    total_5h_usd = tier_spec.get("session_5h_usd", effective_credit.get("session_5h_usd"))
-    total_7d_usd = tier_spec.get("weekly_7d_usd", effective_credit.get("weekly_7d_usd"))
-
-    if total_5h_usd is not None and s5["used_pct"] is not None:
-        pct_left_5h = max(0.0, 100.0 - reserve - s5["used_pct"])
-        rem_5h = round((pct_left_5h / 100.0) * total_5h_usd, 6)
-    else:
-        rem_5h = None
-
-    if total_7d_usd is not None and w7["used_pct"] is not None:
-        pct_left_7d = max(0.0, 100.0 - reserve - w7["used_pct"])
-        rem_7d = round((pct_left_7d / 100.0) * total_7d_usd, 6)
-    else:
-        rem_7d = None
-
-    credit_budget = None
-    present = [x for x in (rem_5h, rem_7d) if x is not None]
-    if present:
-        credit_budget = {"available_usd": min(present)}
-        if rem_5h is not None:
-            credit_budget["session_5h_remaining_usd"] = rem_5h
-        if rem_7d is not None:
-            credit_budget["weekly_7d_remaining_usd"] = rem_7d
+    rem_5h = credit_budget.get("session_5h_remaining_usd") if credit_budget else None
+    rem_7d = credit_budget.get("weekly_7d_remaining_usd") if credit_budget else None
 
     def _result(eligible, exclusion_reason):
         res = {
@@ -860,6 +854,8 @@ def resolve_model_quota(agent_name, agent_cfg, effective_state, candidate, *, is
         }
         if credit_budget is not None:
             res["credit_budget"] = deepcopy(credit_budget)
+        if credit_calibration is not None:
+            res["credit_calibration"] = deepcopy(credit_calibration)
         return res
 
     if not agent_cfg["enabled"]:
@@ -1558,6 +1554,10 @@ def apply_usage_patch(config, agent, patch, *, source="ingest", now=None):
             current["probe"].pop("failed_at", None)
         store["agents"][agent] = current
         write_store(config, store)
+        if source in ("probe", "ingest", "set"):
+            from .calibration import record_usage_calibration_snapshot
+
+            record_usage_calibration_snapshot(config, agent, current, now_dt)
         if source in ("probe", "ingest"):
             _write_shared_probe_cache(agent, current)
         return effective_agent_state(current, now_dt)
@@ -1572,6 +1572,9 @@ def clear_usage(config, agent=None):
         for name in targets:
             store["agents"][name] = _empty_agent_state()
         write_store(config, store)
+        from .calibration import reset_calibration_snapshots
+
+        reset_calibration_snapshots(config, targets)
         # The shared cache would otherwise repopulate the cleared state on read.
         _clear_shared_probe_cache(targets)
         return store["agents"][agent] if agent is not None else store["agents"]
