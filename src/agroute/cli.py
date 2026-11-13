@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 
 from . import __version__
+from .config import set_agent_plan_in_config
 from .files import atomic_write
 from .price_refresh import format_report as format_price_report
 from .router import Router
@@ -38,6 +39,32 @@ def _build_parser():
     # paths
     p_paths = subparsers.add_parser("paths", help="Show resolved capture and state roots")
     _add_common_flags(p_paths)
+
+    # config
+    p_config = subparsers.add_parser("config", help="Inspect or update agroute configuration")
+    _add_common_flags(p_config)
+    config_sub = p_config.add_subparsers(dest="config_command")
+
+    p_c_show = config_sub.add_parser("show", help="Show active merged configuration and plan resolution")
+    _add_common_flags(p_c_show)
+
+    p_c_set_plan = config_sub.add_parser(
+        "set-plan", help="Set subscription plan preset ('auto', 'none', or preset name) for an agent"
+    )
+    p_c_set_plan.add_argument("agent", help="Target agent (codex|claude|agy)")
+    p_c_set_plan.add_argument("plan", help="Plan name ('auto', 'none'/'', or preset/alias)")
+    scope_group = p_c_set_plan.add_mutually_exclusive_group()
+    scope_group.add_argument(
+        "--user",
+        action="store_true",
+        help="Write to user config ~/.config/agroute/config.toml (default)",
+    )
+    scope_group.add_argument(
+        "--project",
+        action="store_true",
+        help="Write to project agroute.toml in the capture root",
+    )
+    _add_common_flags(p_c_set_plan)
 
     # usage
     p_usage = subparsers.add_parser("usage", help="Inspect or update native agent quota and rate-limit state")
@@ -171,11 +198,36 @@ def main(argv=None):
         return 2
 
     try:
+        if args.command == "config" and args.config_command == "set-plan":
+            scope = "project" if args.project else "user"
+            project_root = None
+            if scope == "project" and args.config is None:
+                project_root = Router(
+                    None,
+                    state_directory=args.state_dir,
+                    include_user_config=not args.no_user_config,
+                ).config.capture_root
+            res = set_agent_plan_in_config(
+                args.agent,
+                args.plan,
+                config_path=args.config,
+                project=project_root,
+                scope=scope,
+            )
+            _emit(res, as_json=True)
+            return 0
+
         router = Router(
             args.config,
             state_directory=args.state_dir,
             include_user_config=not args.no_user_config,
         )
+
+        if args.command == "config":
+            sub = args.config_command or "show"
+            if sub == "show":
+                _emit(router.config_show(now=args.now), as_json=True)
+                return 0
 
         if args.command == "paths":
             _emit(router.paths(), as_json=True)

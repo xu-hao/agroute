@@ -5,7 +5,7 @@ import json
 import re
 
 from .adapters import get_adapter
-from .config import load_config
+from .config import load_config, resolve_effective_plan_credit, set_agent_plan_in_config
 from .discovery import discover_agent_candidates
 from .price_refresh import read_snapshot, refresh as refresh_prices
 from .pricing import rate_card, resolve_price, user_rate_card
@@ -183,12 +183,17 @@ class Router:
             cfg = self.config.agents[name]
             warnings.extend(usage_warnings(name, store["agents"][name], cfg, now_dt))
             eff = visible_agent_state(name, store["agents"][name], cfg, now_dt)
+            effective_plan, _ = resolve_effective_plan_credit(
+                name, cfg, eff.get("detected_plan")
+            )
             ok_target, reason_target = evaluate_agent_quota(name, cfg, eff, is_host=False)
             ok_host, reason_host = evaluate_agent_quota(name, cfg, eff, is_host=True)
             agents_out[name] = {
                 **eff,
                 "enabled": cfg["enabled"],
                 "plan": cfg["plan"],
+                "detected_plan": eff.get("detected_plan"),
+                "effective_plan": effective_plan,
                 "eligible_as_target": ok_target,
                 "target_exclusion_reason": reason_target,
                 "eligible_as_host_native": ok_host,
@@ -711,11 +716,16 @@ class Router:
         for name in AGENTS:
             cfg = self.config.agents[name]
             eff = effective_agent_state(store["agents"][name], now_dt)
+            effective_plan, _ = resolve_effective_plan_credit(
+                name, cfg, eff.get("detected_plan")
+            )
             nat_cfg = cfg["native_candidates"]
             cli_cfg = cfg["cli_candidates"]
             out[name] = {
                 "enabled": cfg["enabled"],
                 "plan": cfg["plan"],
+                "detected_plan": eff.get("detected_plan"),
+                "effective_plan": effective_plan,
                 "native_source": "configured" if nat_cfg else "discovered",
                 "native_candidates": deepcopy(nat_cfg) if nat_cfg else discover_agent_candidates(name, "native", refresh=refresh),
                 "cli_source": "configured" if cli_cfg else "discovered",
@@ -726,3 +736,47 @@ class Router:
             "format": "agroute-models-v1",
             "agents": out,
         }
+
+    def config_show(self, *, now=None):
+        now_dt = _now_utc(now)
+        store = read_store(self.config)
+        agents_out = {}
+        for name in AGENTS:
+            cfg = deepcopy(self.config.agents[name])
+            eff = effective_agent_state(store["agents"][name], now_dt)
+            effective_plan, effective_credit = resolve_effective_plan_credit(
+                name, cfg, eff.get("detected_plan")
+            )
+            agents_out[name] = {
+                **cfg,
+                "detected_plan": eff.get("detected_plan"),
+                "effective_plan": effective_plan,
+                "effective_credit": effective_credit,
+            }
+        return {
+            "format": "agroute-config-v1",
+            "config_path": str(self.config.config_path) if self.config.config_path else None,
+            "user_config_path": str(self.config.user_config_path) if self.config.user_config_path else None,
+            "routing": {
+                "default_host": self.config.default_host,
+                "host_affinity_epsilon": self.config.host_affinity_epsilon,
+                "namespace_separator": self.config.namespace_separator,
+            },
+            "agents": agents_out,
+        }
+
+    def config_set_plan(self, agent, plan, *, scope="user", config_path=None):
+        res = set_agent_plan_in_config(
+            agent,
+            plan,
+            config_path=config_path,
+            project=self.config.capture_root,
+            scope=scope,
+        )
+        self.config = load_config(
+            self.config.config_path,
+            project=self.config.capture_root,
+            state_directory=self.config.state_root if self.config.explicit_state else None,
+            include_user_config=True,
+        )
+        return res

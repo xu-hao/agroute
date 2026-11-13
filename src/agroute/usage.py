@@ -51,6 +51,7 @@ def _empty_agent_state():
         "tiers": {},
         "updated_at": None,
         "source": None,
+        "detected_plan": None,
         "availability": _empty_window(),
         "scope_availability": {},
         "probe": {},
@@ -127,7 +128,7 @@ def _validate_store_payload(payload):
         keys(
             raw,
             ["session_5h", "weekly_7d", "rate_limited", "cooldown_until", "tiers", "updated_at", "source"],
-            ["availability", "scope_availability", "probe"],
+            ["availability", "scope_availability", "probe", "detected_plan"],
             where=where,
         )
         s5 = _validate_window(raw["session_5h"], f"{where}.session_5h")
@@ -151,6 +152,11 @@ def _validate_store_payload(payload):
         src = raw["source"]
         if src is not None:
             src = text(src, f"{where}.source", max_length=64)
+        det_plan = raw.get("detected_plan")
+        if det_plan is not None:
+            det_plan = text(det_plan, f"{where}.detected_plan", max_length=64)
+            from .config import normalize_plan_slug
+            det_plan = normalize_plan_slug(name, det_plan) or det_plan
         normalized["agents"][name] = {
             "session_5h": s5,
             "weekly_7d": w7,
@@ -159,6 +165,7 @@ def _validate_store_payload(payload):
             "tiers": tiers,
             "updated_at": updated,
             "source": src,
+            "detected_plan": det_plan,
             "availability": _validate_window(raw.get("availability", _empty_window()), f"{where}.availability"),
             "scope_availability": scoped,
             "probe": _validate_probe(raw.get("probe", {}), f"{where}.probe"),
@@ -408,13 +415,15 @@ def read_store(config):
                 if cached:
                     for key, win in _patch_windows(cached):
                         _put_window(ag, key, _validate_window(win, f"cached.claude.{key}"))
-                    for key in ("updated_at", "source", "rate_limited", "cooldown_until", "probe"):
+                    for key in ("updated_at", "source", "rate_limited", "cooldown_until", "probe", "detected_plan"):
                         if key in cached:
                             ag[key] = deepcopy(cached[key])
                     if "availability" not in cached and "probe" not in cached:
                         _migrate_legacy_claude_state(ag)
             for key, win in _patch_windows(patch):
                 _put_window(ag, key, _merge_window(_get_window(ag, key), win))
+            if patch.get("detected_plan") is not None:
+                ag["detected_plan"] = patch["detected_plan"]
             times = [win["observed_at"] for _, win in _patch_windows(ag) if win.get("observed_at")]
             if times:
                 ag["updated_at"] = max(times + ([ag["updated_at"]] if ag["updated_at"] else []), key=parse_timestamp)
@@ -442,7 +451,7 @@ def read_store(config):
                     for tk, tv in patch["tiers"].items():
                         if isinstance(tv, dict):
                             ag["tiers"][tk] = _validate_window(tv, f"discovered.{name}.tiers.{tk}")
-                for key in ("updated_at", "probe"):
+                for key in ("updated_at", "probe", "detected_plan"):
                     if key in patch:
                         ag[key] = deepcopy(patch[key])
                 times = [win["observed_at"] for _, win in _patch_windows(ag) if win.get("observed_at")]
@@ -705,6 +714,7 @@ def ensure_fresh_usage(config, targets, *, now=None):
 
 def effective_agent_state(agent_state, now_dt, *, project_rejections=True):
     state = deepcopy(agent_state)
+    state.setdefault("detected_plan", None)
     for win_key in ("session_5h", "weekly_7d", "availability"):
         win = state.setdefault(win_key, _empty_window())
         if win["reset_at"] is not None and now_dt >= parse_timestamp(win["reset_at"]):
@@ -799,8 +809,12 @@ def resolve_model_quota(agent_name, agent_cfg, effective_state, candidate, *, is
         w7 = deepcopy(effective_state["weekly_7d"])
         quota_group = "shared"
 
+    from .config import resolve_effective_plan_credit
+
     reserve = agent_cfg["host_reserve_pct"] if is_host else 0.0
-    effective_credit = agent_cfg.get("credit") or {}
+    _, effective_credit = resolve_effective_plan_credit(
+        agent_name, agent_cfg, effective_state.get("detected_plan")
+    )
     credit_tiers = effective_credit.get("tiers") or {}
     tier_spec = credit_tiers.get(quota_group)
     if tier_spec is None and "-" in quota_group:
@@ -926,6 +940,12 @@ def _extract_window_dict(obj, where):
 def _apply_rate_limits_dict(rl_obj, patch, where="rate_limits"):
     table(rl_obj, where)
     changed = False
+    raw_plan_type = rl_obj.get("planType", rl_obj.get("plan_type"))
+    if isinstance(raw_plan_type, str) and raw_plan_type.strip():
+        from .config import normalize_plan_slug
+        canonical = normalize_plan_slug("codex", raw_plan_type)
+        if canonical is not None:
+            patch["detected_plan"] = canonical
     for slot in ("primary", "secondary", "session_5h", "weekly_7d"):
         if slot in rl_obj and isinstance(rl_obj[slot], dict):
             sub = rl_obj[slot]
@@ -1153,6 +1173,83 @@ def _apply_claude_event(obj, patch):
     return changed
 
 
+def _apply_agy_status_line(obj: dict, patch: dict) -> bool:
+    """Normalize an Antigravity `statusLine` JSON payload (`plan_tier` and/or `quota`)."""
+    raw_plan = obj.get("plan_tier")
+    if isinstance(raw_plan, str) and raw_plan.strip():
+        from .config import normalize_plan_slug
+        canonical = normalize_plan_slug("agy", raw_plan)
+        if canonical is not None:
+            patch["detected_plan"] = canonical
+    quota_obj = obj.get("quota")
+    if not isinstance(quota_obj, dict) or not quota_obj:
+        return False
+    changed = False
+    complete = True
+    tiers = patch.setdefault("tiers", {})
+    for raw_bid, bkt in quota_obj.items():
+        if not isinstance(bkt, dict):
+            complete = False
+            continue
+        bid = str(raw_bid or "").strip().lower()
+        if not bid:
+            complete = False
+            continue
+        if "remaining_fraction" in bkt and bkt["remaining_fraction"] is not None:
+            frac = float(bkt["remaining_fraction"])
+            percentage(frac * 100.0, f"agy.quota.{bid}.remaining_fraction")
+            used_pct = round((1.0 - frac) * 100.0, 6)
+            reset_raw = bkt.get("reset_at", bkt.get("resets_at", bkt.get("resetsAt", bkt.get("reset_time"))))
+            reset_at = (
+                format_timestamp(parse_timestamp(reset_raw, f"agy.quota.{bid}.reset_time"))
+                if reset_raw is not None
+                else None
+            )
+            win = {"used_pct": used_pct, "reset_at": reset_at}
+            for key in ("observed_at", "measured_at"):
+                if bkt.get(key) is not None:
+                    win[key] = format_timestamp(parse_timestamp(bkt[key], f"agy.quota.{bid}.{key}"))
+        else:
+            win = _extract_window_dict(bkt, f"agy.quota.{bid}")
+        if win["used_pct"] is None and win["reset_at"] is None:
+            complete = False
+            continue
+        changed = True
+        tiers[bid] = win
+        if bid == "gemini-5h":
+            patch["session_5h"] = win
+        elif bid == "gemini-weekly":
+            patch["weekly_7d"] = win
+        elif "argon" in bid:
+            tiers["argon"] = win
+            if bid.endswith("-5h"):
+                tiers["argon-5h"] = win
+            else:
+                tiers["argon-weekly"] = win
+    if changed:
+        patch.setdefault("rate_limited", False)
+        if complete:
+            patch[COMPLETE_REPORT] = True
+    return changed
+
+
+def _extract_claude_detected_plan(obj: dict) -> str | None:
+    """Normalize `claude auth status` `planTier` / `subscriptionType` to canonical `claude` plan."""
+    from .config import normalize_plan_slug
+
+    plan_tier = obj.get("planTier")
+    if isinstance(plan_tier, str) and plan_tier.strip():
+        canonical = normalize_plan_slug("claude", plan_tier)
+        if canonical is not None:
+            return canonical
+    sub_type = obj.get("subscriptionType")
+    if isinstance(sub_type, str) and sub_type.strip():
+        canonical = normalize_plan_slug("claude", sub_type)
+        if canonical is not None:
+            return canonical
+    return None
+
+
 def _parse_json_events(raw_text, patch):
     lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
     if not lines:
@@ -1183,6 +1280,8 @@ def _parse_json_events(raw_text, patch):
     for obj in parsed_objects:
         event_patch = {}
         recognized = _parse_json_object(obj, event_patch)
+        if event_patch.get("detected_plan"):
+            patch["detected_plan"] = event_patch["detected_plan"]
         changed = recognized or changed
         observed = obj.get("timestamp", obj.get("updated_at"))
         if recognized and observed is not None:
@@ -1250,6 +1349,11 @@ def _parse_json_object(obj, patch):
     if isinstance(cmd_obj, dict) and cmd_obj.get("name") == "usage" and isinstance(cmd_obj.get("data"), dict):
         if _apply_agy_usage_command(cmd_obj["data"], patch, successful=obj.get("status") == "SUCCESS"):
             changed = True
+    if _apply_agy_status_line(obj, patch):
+        changed = True
+    claude_plan = _extract_claude_detected_plan(obj)
+    if claude_plan is not None:
+        patch["detected_plan"] = claude_plan
     usage_rep = obj.get("usage_report")
     if isinstance(usage_rep, dict):
         if _apply_claude_usage_report(usage_rep, patch, obj.get("timestamp")):
@@ -1431,6 +1535,11 @@ def apply_usage_patch(config, agent, patch, *, source="ingest", now=None):
             current["cooldown_until"] = format_timestamp(parse_timestamp(cd, "cooldown_until")) if cd is not None else None
             if cd is not None and "rate_limited" not in patch:
                 current["rate_limited"] = True
+        if patch.get("detected_plan"):
+            from .config import normalize_plan_slug
+            canonical_plan = normalize_plan_slug(agent, patch["detected_plan"])
+            if canonical_plan is not None:
+                current["detected_plan"] = canonical_plan
         # Snapshot time describes quota evidence; failures never refresh it.
         if source in ("ingest", "probe", "set"):
             times = [win["observed_at"] for _, win in _patch_windows(current) if win.get("observed_at")]
