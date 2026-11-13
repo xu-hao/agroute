@@ -131,6 +131,16 @@ class AgentAdapter(abc.ABC):
 
         return quota_group, s5, w7
 
+    def resolve_quota_pools(
+        self,
+        model_id: str,
+        candidate: dict,
+        effective_state: dict,
+    ) -> list[tuple[str, dict, dict]]:
+        """Return all `(quota_group, session_5h, weekly_7d)` pools consumed by `model_id` (primary first)."""
+        primary_group, s5, w7 = self.resolve_quota_group(model_id, candidate, effective_state)
+        return [(primary_group, s5, w7)]
+
 
 # Antigravity `invoke_subagent` model enum: abstract tiers that name no concrete model.
 AGY_SUBAGENT_TIERS = ("inherit", "flash_lite", "flash", "pro")
@@ -567,6 +577,23 @@ class ClaudeAdapter(AgentAdapter):
                 elif key.endswith("-weekly"):
                     w7, group = deepcopy(win), key[:-7]
         return group, s5, w7
+
+    def resolve_quota_pools(
+        self,
+        model_id: str,
+        candidate: dict,
+        effective_state: dict,
+    ) -> list[tuple[str, dict, dict]]:
+        """Return primary plus overlapping `shared` pool for tier-specific Claude models."""
+        primary_group, s5, w7 = self.resolve_quota_group(model_id, candidate, effective_state)
+        pools = [(primary_group, s5, w7)]
+        if primary_group != "shared":
+            pools.append((
+                "shared",
+                deepcopy(effective_state["session_5h"]),
+                deepcopy(effective_state["weekly_7d"]),
+            ))
+        return pools
 
     def probe_plan_tier(self, cwd: Path) -> str | None:
         if not shutil.which("claude"):
