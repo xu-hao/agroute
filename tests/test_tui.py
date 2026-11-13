@@ -336,9 +336,9 @@ def test_dynamic_discovery_and_howhard_correlation(tmp_path):
     )
     agy_cands = parse_agy_models_output(raw_agy)
     assert agy_cands == [
-        {"model": "gemini-4-argon-high", "effort": "high", "tier": "pro"},
-        {"model": "gemini-3.8-flash-low", "effort": "low", "tier": "flash"},
-        {"model": "claude-opus-5-5-high", "effort": "high", "tier": "pro"},
+        {"model": "gemini-4-argon-high", "effort": "high", "tier": "pro", "display_name": "Gemini 4 Argon (High)"},
+        {"model": "gemini-3.8-flash-low", "effort": "low", "tier": "flash", "display_name": "Gemini 3.8 Flash (Low)"},
+        {"model": "claude-opus-5-5-high", "effort": "high", "tier": "pro", "display_name": "Claude Opus 5.5 (High)"},
     ]
 
     # 4. End-to-end correlation between agroute plan, howhard decisions, and howhard pending.jsonl

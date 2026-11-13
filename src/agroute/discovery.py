@@ -107,11 +107,16 @@ def discover_codex_candidates(*, codex_home: Path | None = None) -> list[dict]:
                 elif isinstance(entry, str):
                     supported.append(entry)
         default_eff = m.get("default_reasoning_level") if isinstance(m.get("default_reasoning_level"), str) else None
+        raw_disp = m.get("display_name")
+        disp = raw_disp.strip() if isinstance(raw_disp, str) and raw_disp.strip() else None
         for eff in _ordered_efforts(supported, default_eff):
             pair = (slug, eff)
             if pair not in seen:
                 seen.add(pair)
-                candidates.append({"model": slug, "effort": eff})
+                cell: dict = {"model": slug, "effort": eff}
+                if disp:
+                    cell["display_name"] = disp
+                candidates.append(cell)
     return candidates
 
 
@@ -179,6 +184,8 @@ def discover_claude_candidates(*, claude_home: Path | None = None) -> list[dict]
         ]
         default_eff = runtime.get("default_effort") if isinstance(runtime.get("default_effort"), str) else "medium"
         tier = _infer_claude_tier(m)
+        raw_disp = m.get("display_name") or m.get("name") or m.get("short_name")
+        disp = raw_disp.strip() if isinstance(raw_disp, str) and raw_disp.strip() else None
         efforts = _ordered_efforts(supported, default_eff)
         for eff in efforts:
             pair = (model_id, eff)
@@ -187,6 +194,8 @@ def discover_claude_candidates(*, claude_home: Path | None = None) -> list[dict]
                 cell: dict = {"model": model_id, "effort": eff}
                 if tier:
                     cell["tier"] = tier
+                if disp:
+                    cell["display_name"] = disp
                 candidates.append(cell)
     return candidates
 
@@ -233,7 +242,10 @@ def parse_agy_models_output(raw_text: str) -> list[dict]:
         pair = (slug, effort)
         if pair not in seen:
             seen.add(pair)
-            candidates.append({"model": slug, "effort": effort, "tier": tier})
+            cell: dict = {"model": slug, "effort": effort, "tier": tier}
+            if display:
+                cell["display_name"] = display
+            candidates.append(cell)
     return candidates
 
 

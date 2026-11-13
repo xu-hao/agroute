@@ -19,11 +19,31 @@ missing, stale, or expired known quota evidence; a provider whose refresh fails 
 bounded attempts is excluded with a retry reason. Inspect or retry the provider before
 using it; independently fresh providers remain available.
 
-Emitted cells carry a per-token `rate_card` when agroute can price their model. The price comes
-from the configuration, a snapshot written by `agroute prices refresh`, or the built-in catalog.
-Some cards are labelled guesses, with a `source` starting `guess:`. One unpriced cell turns
-`howhard`'s cost comparison off for the whole inventory. To price or exclude such cells, see the
-rate-card contract in `docs/reference.md`. Routing never fetches prices.
+Emitted cells carry a per-token `rate_card` when agroute can price their model. `agroute` is
+100% offline for pricing and never fetches rates over the network: prices come from user/project
+configuration, `<state_root>/prices.json` written via `agroute prices resolve --file <path>`, or
+the built-in catalog. Some cards are labelled guesses, with a `source` starting `guess:`.
+Whenever `agroute candidates --host HOST --json` (or `agroute prices pending --host HOST --json`)
+returns a non-null `price_request`, inspect `price_request.unpriced_models` and fulfill
+`price_request.contract` once before calling `howhard`:
+
+```sh
+# 1. Inspect pending unknown models (if not already read from `candidates --json`)
+agroute prices pending --host agy --json
+
+# 2. Write resolutions (`"priced"`, `"alias"`, or `"unlisted"`) and persist locally
+agroute prices resolve --file /tmp/task-price-resolutions.json --json
+
+# 3. Re-emit candidates now that prices.json is populated
+agroute candidates --host agy --output /tmp/task-candidates.json --json
+```
+
+Note that `agroute candidates --host agy` WITHOUT `--json` prints the plain JSON candidate array
+directly to stdout (matching `--output`) for `howhard --candidates` compatibility, whereas `--json`
+prints the full `agroute-candidates-v1` envelope (`candidates`, `excluded`, `price_request`,
+`credit_calibration`, and `warnings`). One unpriced cell turns `howhard`'s cost comparison off for
+the whole inventory (or is excluded automatically when `credit_budget` is active). See the
+rate-card and calling-agent callback contracts in `docs/reference.md`.
 
 To generate a named `[inventories]` section for `howhard.toml` (`howhard` 2.1+ `--inventory`):
 
