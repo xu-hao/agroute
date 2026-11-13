@@ -897,3 +897,84 @@ def test_cli_config_set_plan_and_show_preserve_comments_and_subtables(tmp_path, 
     assert main(["config", "set-plan", "agy", "invalid-tier", "--json"]) == 1
     capsys.readouterr()
     assert 'plan = "auto"' in user_cfg.read_text(encoding="utf-8")
+
+
+def test_overlapping_shared_pool_bounds_tier_model_eligibility_and_credit_budget(tmp_path):
+    """Models in a tier-specific pool (e.g. claude fable) also consume the overlapping shared pool."""
+    _write_claude_catalog(["claude-opus-5-5", "claude-fable-5-2"])
+    _write_codex_cache(["gpt-6.1-sol"])
+
+    cfg_path = tmp_path / "agroute.toml"
+    cfg_path.write_text(
+        '[agents.agy]\nenabled = false\n\n'
+        '[agents.claude]\nplan = "max-20x"\n\n'
+        '[agents.codex]\nplan = "plus-20"\n',
+        encoding="utf-8",
+    )
+    router = Router(cfg_path, project=tmp_path)
+    router.usage_set("codex", session_used_pct=10.0, now=NOW)
+
+    # Case 1: shared weekly_7d is 94% used (54.0 USD left of 900), while fable is 63% used (111.0 USD left of 300).
+    # Overlapping shared pool is tighter (54.0 < 111.0), so fable's available_usd must be capped at 54.0.
+    router.usage_set(
+        "claude",
+        session_used_pct=10.0,
+        weekly_used_pct=94.0,
+        tier="fable",
+        tier_used_pct=63.0,
+        now=NOW,
+    )
+    cands = router.candidates("codex", now=NOW)
+    by_model = {c["model"]: c for c in cands["candidates"]}
+    assert "claude/claude-fable-5-2" in by_model
+    assert by_model["claude/claude-fable-5-2"]["credit_budget"] == {
+        "available_usd": 54.0,
+        "session_5h_remaining_usd": 324.0,
+        "weekly_7d_remaining_usd": 54.0,
+    }
+
+    # Case 2: shared weekly_7d is 100% used (0 USD left), while fable is still 63% used.
+    # fable must be ineligible in usage_show and excluded from candidates because the overlapping shared pool is exhausted.
+    router.usage_set(
+        "claude",
+        session_used_pct=0.0,
+        weekly_used_pct=100.0,
+        tier="fable",
+        tier_used_pct=63.0,
+        now=NOW,
+    )
+    usage = router.usage_show("claude", now=NOW)["agents"]["claude"]["models"]
+    assert usage["claude-fable-5-2"]["eligible"] is False
+    assert "exhausted" in usage["claude-fable-5-2"]["exclusion_reason"] or "shared" in usage["claude-fable-5-2"]["exclusion_reason"]
+
+    cands_exhausted = router.candidates("codex", now=NOW)
+    assert all(c["model"] != "claude/claude-fable-5-2" for c in cands_exhausted["candidates"])
+    assert any(e["agent"] == "claude" for e in cands_exhausted["excluded"])
+
+    # Case 3: excluding the overlapping "shared" quota group also excludes fable models.
+    cfg_excl = tmp_path / "agroute_excl.toml"
+    cfg_excl.write_text(
+        '[agents.agy]\nenabled = false\n\n'
+        '[agents.claude]\nplan = "max-20x"\nexclude_quota_groups = ["shared"]\n\n'
+        '[agents.codex]\nplan = "plus-20"\n',
+        encoding="utf-8",
+    )
+    router_excl = Router(cfg_excl, project=tmp_path)
+    router_excl.usage_set("codex", session_used_pct=10.0, now=NOW)
+    router_excl.usage_set(
+        "claude",
+        session_used_pct=10.0,
+        weekly_used_pct=10.0,
+        tier="fable",
+        tier_used_pct=10.0,
+        now=NOW,
+    )
+    cands_excl = router_excl.candidates("codex", now=NOW)
+    assert all(c["model"] != "claude/claude-fable-5-2" for c in cands_excl["candidates"])
+    assert any(
+        e["agent"] == "claude"
+        and e["model"] == "claude-fable-5-2"
+        and e["reason"] == "quota_group 'shared' is excluded in configuration"
+        for e in cands_excl["excluded"]
+    )
+

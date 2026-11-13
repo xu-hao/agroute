@@ -470,18 +470,18 @@ def _model_pool_groups(agent_name: str, model_id: str, agent_state: dict, preset
     """Return all pool `quota_group`s on `agent_name` whose quota `model_id` consumes."""
     try:
         adapter = get_adapter(agent_name)
-        primary, _, _ = adapter.resolve_quota_group(model_id, {"model": model_id}, agent_state)
+        pools = adapter.resolve_quota_pools(model_id, {"model": model_id}, agent_state)
     except Exception:
-        primary = "shared"
+        pools = [("shared", {}, {})]
 
     p_tiers = preset_credit.get("tiers") or {}
-    groups = {primary}
-    if "-" in primary:
-        groups.add(primary.split("-", 1)[0])
-    if agent_name == "agy" and primary in ("argon", "carbon", "hydrogen") and primary not in p_tiers:
-        groups.add("gemini")
-    if agent_name == "claude":
-        groups.add("shared")
+    groups: set[str] = set()
+    for grp, _, _ in pools:
+        groups.add(grp)
+        if "-" in grp:
+            groups.add(grp.split("-", 1)[0])
+        if agent_name == "agy" and grp in ("argon", "carbon", "hydrogen") and grp not in p_tiers:
+            groups.add("gemini")
     return groups
 
 
@@ -732,54 +732,78 @@ def resolve_calibrated_quota_credit(
     *,
     reserve_pct: float = 0.0,
     calibration_store: dict | None = None,
+    quota_pools: list[tuple[str, dict, dict]] | None = None,
 ) -> tuple[dict | None, dict | None]:
     """Return `(credit_budget, credit_calibration_meta)` for `(agent_name, quota_group)`."""
     effective_plan, preset_credit, manual_credit, _ = resolve_plan_credit_sources(
         agent_name, agent_cfg, effective_state.get("detected_plan")
     )
     pools = (calibration_store or {}).get("pools") or {}
+    consumed_pools = quota_pools if quota_pools else [(quota_group, s5_win, w7_win)]
 
     windows_meta: dict[str, dict] = {}
     rem_by_win: dict[str, float | None] = {"session_5h": None, "weekly_7d": None}
 
-    for window, win_dict in (("session_5h", s5_win), ("weekly_7d", w7_win)):
-        pool_group, prior_usd, manual_usd = _canonical_pool_group_for_window(
-            agent_name, quota_group, window, preset_credit, manual_credit
-        )
-        if manual_usd is not None:
-            total_usd = manual_usd
-            s_frac = 0.0
-            matched = 0
-            is_manual = True
-        elif prior_usd is not None:
-            pkey = make_pool_key(agent_name, effective_plan, pool_group, window) if effective_plan else ""
-            pool = pools.get(pkey)
-            s_cost = float(pool["s_cost"]) if pool else 0.0
-            s_frac = float(pool["s_frac"]) if pool else 0.0
-            matched = int(pool["matched_intervals"]) if pool else 0
-            total_usd = posterior_ceiling_usd(prior_usd, s_cost, s_frac)
-            is_manual = False
-        else:
+    for window, win_idx in (("session_5h", 1), ("weekly_7d", 2)):
+        best_rem: float | None = None
+        best_meta: dict | None = None
+        seen_pool_groups: set[str] = set()
+
+        for pool_entry in consumed_pools:
+            q_group = pool_entry[0]
+            win_dict = pool_entry[win_idx]
+            pool_group, prior_usd, manual_usd = _canonical_pool_group_for_window(
+                agent_name, q_group, window, preset_credit, manual_credit
+            )
+            if pool_group in seen_pool_groups:
+                continue
+            seen_pool_groups.add(pool_group)
+
+            if manual_usd is not None:
+                total_usd = manual_usd
+                s_frac = 0.0
+                matched = 0
+                is_manual = True
+            elif prior_usd is not None:
+                pkey = make_pool_key(agent_name, effective_plan, pool_group, window) if effective_plan else ""
+                pool = pools.get(pkey)
+                s_cost = float(pool["s_cost"]) if pool else 0.0
+                s_frac = float(pool["s_frac"]) if pool else 0.0
+                matched = int(pool["matched_intervals"]) if pool else 0
+                total_usd = posterior_ceiling_usd(prior_usd, s_cost, s_frac)
+                is_manual = False
+            else:
+                continue
+
+            used_pct = win_dict.get("used_pct") if isinstance(win_dict, dict) else None
+            if used_pct is not None:
+                pct_left = max(0.0, 100.0 - reserve_pct - float(used_pct))
+                rem = round((pct_left / 100.0) * total_usd, 6)
+            else:
+                rem = None
+
+            meta = {
+                "pool_group": pool_group,
+                "prior_total_usd": prior_usd,
+                "calibrated_total_usd": total_usd,
+                "effective_sample_windows": round(s_frac, 6),
+                "matched_intervals": matched,
+                "manual_override": is_manual,
+                "used_pct": used_pct,
+                "remaining_usd": rem,
+            }
+
+            if best_meta is None:
+                best_rem = rem
+                best_meta = meta
+            elif rem is not None and (best_rem is None or rem < best_rem):
+                best_rem = rem
+                best_meta = meta
+
+        if best_meta is None:
             continue
-
-        used_pct = win_dict.get("used_pct") if isinstance(win_dict, dict) else None
-        if used_pct is not None:
-            pct_left = max(0.0, 100.0 - reserve_pct - float(used_pct))
-            rem = round((pct_left / 100.0) * total_usd, 6)
-        else:
-            rem = None
-        rem_by_win[window] = rem
-
-        windows_meta[window] = {
-            "pool_group": pool_group,
-            "prior_total_usd": prior_usd,
-            "calibrated_total_usd": total_usd,
-            "effective_sample_windows": round(s_frac, 6),
-            "matched_intervals": matched,
-            "manual_override": is_manual,
-            "used_pct": used_pct,
-            "remaining_usd": rem,
-        }
+        rem_by_win[window] = best_rem
+        windows_meta[window] = best_meta
 
     if not windows_meta:
         return None, None
