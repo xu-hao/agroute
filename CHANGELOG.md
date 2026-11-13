@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Auto-detect native subscription plans (`plan = "auto"` default across `agy`, `claude`, and
+  `codex`), expand `agy` presets with `"ultra-100"`, `"plus-8"`, and `"free"`, persist
+  `detected_plan` in `usage.json` and the shared probe cache (from Antigravity `statusLine`
+  `plan_tier`, Claude `claude auth status` `planTier` / `subscriptionType`, and Codex
+  `rateLimits.planType`), expose `detected_plan` and `effective_plan` in `usage show` and
+  `models`, and add `agroute config show` and `agroute config set-plan <agent> <plan> [--user | --project]` (#39).
 - Add subscription plan presets (`plan = "pro-20" | "ultra-200"` on `agy`,
   `"pro-20" | "max-5x" | "max-20x"` on `claude`, and `"plus-20" | "pro-200"` on `codex`,
   with aliases), optional `[agents.<name>.credit]` overrides, and `exclude_quota_groups`

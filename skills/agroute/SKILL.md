@@ -22,10 +22,12 @@ while `howhard` owns model/effort selection, execution accounting, and writable 
      the full eligible inventory (`<agent>/<model>`, `<effort>`). When `target == host`,
      `agroute` emits `native_candidates` supported by the host's native delegation tool; when
      `target != host`, `agroute` emits `cli_candidates` supported by the target's non-interactive CLI.
-     When an agent configures a subscription `plan` (such as `"ultra-200"`, `"pro-20"`,
-     `"max-20x"`, `"pro-200"`) or `credit` table, `agroute` attaches `credit_budget`
-     (`available_usd` across `session_5h` and `weekly_7d` windows) to priced candidates,
-     excludes unpriced models, and honors `exclude_quota_groups` (such as `["3p"]`).
+     When an agent resolves a subscription `plan` (`plan = "auto"` by default from native
+     `detected_plan`, or an explicit preset such as `"ultra-200"`, `"ultra-100"`, `"pro-20"`,
+     `"max-20x"`, `"pro-200"` configurable via `agroute config set-plan <agent> <plan>`) or
+     `credit` table, `agroute` attaches `credit_budget` (`available_usd` across `session_5h`
+     and `weekly_7d` windows) to priced candidates, excludes unpriced models, and honors
+     `exclude_quota_groups` (such as `["3p"]`).
    - Pass `--candidates /tmp/TASK-candidates.json` to `howhard context` (followed by independent
      baseline forecast, `retrieve`, and `decide`) or `howhard pick`, saving the decision JSON
      to `/tmp/TASK-decision.json`.

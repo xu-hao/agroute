@@ -15,6 +15,8 @@ def test_default_config_loads_in_plain_directory(tmp_path):
     assert cfg.capture_root == tmp_path.resolve()
     assert cfg.state_root == (tmp_path / ".agroute").resolve()
     assert set(cfg.agents) == {"codex", "claude", "agy"}
+    for agent in ("codex", "claude", "agy"):
+        assert cfg.agents[agent]["plan"] == "auto"
 
 
 def test_layered_user_and_project_config_override(tmp_path, monkeypatch):
