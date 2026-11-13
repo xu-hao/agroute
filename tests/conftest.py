@@ -27,6 +27,7 @@ def isolated_env(monkeypatch, tmp_path, request):
     monkeypatch.setattr(price_refresh, "_http_get", unexpected_price_fetch)
     for agent in ("codex", "claude", "agy"):
         monkeypatch.setattr(get_adapter(agent), "probe_usage", probe)
+        monkeypatch.setattr(get_adapter(agent), "probe_plan_tier", lambda cwd: None)
 
     work_cwd = tmp_path / "cwd"
     work_cwd.mkdir(parents=True, exist_ok=True)
