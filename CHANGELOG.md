@@ -1,7 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — 2026-11-13
 
+- Enforce all overlapping quota pools generically via `AgentAdapter.resolve_quota_pools`
+  (returning primary plus overlapping `shared` pool on `ClaudeAdapter`), enforcing
+  `exclude_quota_groups`, window rejections, and session/weekly usage caps across every
+  consumed pool in `resolve_model_quota` and capping `credit_budget` to the tightest
+  `remaining_usd` across all consumed pools in `resolve_calibrated_quota_credit` (#43).
 - Replace third-party network price snapshots with a 100% offline calling-agent pricing
   callback (`price_request` in `candidates --json`, `inventory --json`, and
   `agroute prices pending`, fulfilled via `agroute prices resolve --file <path>` and inspected
