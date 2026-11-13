@@ -10,12 +10,12 @@ Run these commands from the project where you want to use `agroute`:
 ```sh
 python3 -m venv .venv-agroute
 . .venv-agroute/bin/activate
-python -m pip install "agroute==0.3.1" "howhard>=2.1.0"
+python -m pip install "agroute==0.4.0" "howhard>=2.1.0"
 agroute --version
 ```
 
-Expect `agroute 0.3.1`. The Python package is available on
-[PyPI](https://pypi.org/project/agroute/0.3.1/).
+Expect `agroute 0.4.0`. The Python package is available on
+[PyPI](https://pypi.org/project/agroute/0.4.0/).
 
 Keep this environment active and start your coding agent from the same shell so it
 can find `agroute` and `howhard`. If an existing GUI session cannot find it, configure
