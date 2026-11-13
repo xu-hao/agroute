@@ -24,8 +24,8 @@ CATEGORIES = {"input", "output", "cache_read", "cache_write", "cache_write_5m", 
 ANTHROPIC = ("anthropic", "https://platform.claude.com/docs/en/about-claude/pricing", "anthropic-list-2026-11-12")
 OPENAI = ("openai", "https://developers.openai.com/api/docs/pricing", "openai-list-2026-11-12")
 GOOGLE = ("google", "https://cloud.google.com/vertex-ai/generative-ai/pricing", "google-cloud-list-2026-11-12")
-OPENROUTER = ("openrouter", "https://openrouter.ai/api/v1/models (openrouter/openai/gpt-oss-120b)",
-              "openrouter-listing-2026-11-12")
+OPENAI_OSS = ("openai-oss", "published open-weight market estimate (gpt-oss-120b)",
+              "openai-oss-estimate-2026-11-12")
 
 # Anthropic model pricing table, in its column order:
 # base input, 5m cache write, 1h cache write, cache hit, output ($/MTok).
@@ -65,6 +65,7 @@ OPENAI_ROWS = {
 GOOGLE_PERIODS = {
     "gemini-4-carbon": [(VERIFIED, 2.00, 10.00, 0.10), ("2026-12-01T00:00:00+00:00", 4.00, 20.00, 0.20)],
     "gemini-4-argon": [(VERIFIED, 2.00, 10.00, 0.10), ("2026-12-01T00:00:00+00:00", 4.00, 20.00, 0.20)],
+    "gemini-4-hydrogen": [(VERIFIED, 1.50, 7.50, 0.075)],
     "gemini-3.8-flash": [(VERIFIED, 0.75, 3.75, 0.075), ("2027-01-01T00:00:00+00:00", 1.50, 7.50, 0.15)],
     "gemini-3.7-flash": [(VERIFIED, 0.75, 3.75, 0.075), ("2027-01-01T00:00:00+00:00", 1.50, 7.50, 0.15)],
     "gemini-3.6-flash": [(VERIFIED, 0.75, 3.75, 0.075), ("2027-01-01T00:00:00+00:00", 1.50, 7.50, 0.15)],
@@ -78,9 +79,9 @@ AGY_TIER_GUESSES = {"pro": "gemini-4-argon", "flash": "gemini-3.8-flash", "flash
 # `invoke_subagent` tiers are native candidates only when configured explicitly.
 AGY_TIER_CONFIG = "".join(f'[[agents.agy.native_candidates]]\nmodel = "{tier}"\neffort = "standard"\n\n'
                           for tier in AGY_TIER_GUESSES)
-# A third-party listing, not an official price: prompt, completion and cache read; writes at input.
-GPT_OSS_LISTED = {"input": 0.15, "output": 0.60, "cache_read": 0.075, "cache_write": 0.15,
-                  "cache_write_5m": 0.15, "cache_write_1h": 0.15}
+# Published open-weight market estimate, not a first-party list price: input, output and cache read; writes at input.
+GPT_OSS_ESTIMATE = {"input": 0.15, "output": 0.60, "cache_read": 0.075, "cache_write": 0.15,
+                    "cache_write_5m": 0.15, "cache_write_1h": 0.15}
 
 # Verbatim `agy models` listing from a host with Antigravity installed.
 AGY_MODELS = """Fetching available models...
@@ -90,6 +91,9 @@ gemini-4-carbon-low\tGemini 4 Carbon (Low)
 gemini-4-argon-medium\tGemini 4 Argon (Medium)
 gemini-4-argon-high\tGemini 4 Argon (High)
 gemini-4-argon-low\tGemini 4 Argon (Low)
+gemini-4-hydrogen-medium\tGemini 4 Hydrogen (Medium)
+gemini-4-hydrogen-high\tGemini 4 Hydrogen (High)
+gemini-4-hydrogen-low\tGemini 4 Hydrogen (Low)
 gemini-3.8-flash-high\tGemini 3.8 Flash (High)
 gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)
 gemini-3.8-flash-low\tGemini 3.8 Flash (Low)
@@ -237,16 +241,16 @@ def test_codex_cells_use_short_context_rows_and_the_default_30m_write(tmp_path, 
 def test_agy_cli_cells_strip_the_effort_suffix_and_reuse_anthropic_cards(tmp_path, capsys):
     write_agy_cache(parse_agy_models_output(AGY_MODELS))
     cells, payload = cli_candidates(tmp_path, capsys, "claude", "agy")
-    assert len(payload["candidates"]) == 31
+    assert len(payload["candidates"]) == 34
     for effort in ("low", "medium", "high"):
-        for model in ("gemini-4-carbon", "gemini-4-argon", "gemini-3.8-flash",
+        for model in ("gemini-4-carbon", "gemini-4-argon", "gemini-4-hydrogen", "gemini-3.8-flash",
                       "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.1-pro"):
             effective_at, rates = google_card_fields(model, NOW)
             assert_card(cells[f"agy/{model}-{effort}"], GOOGLE, rates, effective_at)
         for model in ("claude-opus-5-5", "claude-opus-4-5", "claude-sonnet-5-5", "claude-sonnet-4-5"):
             assert_card(cells[f"agy/{model}-{effort}"], ANTHROPIC, anthropic_rates(model))
-    # The open-weight model has no first-party list price; it carries OpenRouter's listed rate.
-    assert_card(cells["agy/gpt-oss-120b-medium"], OPENROUTER, GPT_OSS_LISTED)
+    # The open-weight model has no first-party list price; it carries a published open-weight market estimate.
+    assert_card(cells["agy/gpt-oss-120b-medium"], OPENAI_OSS, GPT_OSS_ESTIMATE)
 
 
 @pytest.mark.parametrize(

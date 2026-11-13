@@ -8,7 +8,11 @@ import sys
 from . import __version__
 from .config import set_agent_plan_in_config
 from .files import atomic_write
-from .price_refresh import format_report as format_price_report
+from .price_store import (
+    format_pending_report,
+    format_resolve_report,
+    format_show_report,
+)
 from .router import Router
 from . import tui
 from .validation import AgRouteError
@@ -112,13 +116,27 @@ def _build_parser():
     _add_common_flags(p_cands)
 
     # prices
-    p_prices = subparsers.add_parser("prices", help="Manage refreshed per-token price snapshots")
+    p_prices = subparsers.add_parser("prices", help="Manage calling-agent resolved model price entries")
     _add_common_flags(p_prices)
     prices_sub = p_prices.add_subparsers(dest="prices_command")
-    p_p_refresh = prices_sub.add_parser(
-        "refresh", help="Fetch the OpenRouter model listing into the local price snapshot"
+
+    p_p_pending = prices_sub.add_parser(
+        "pending", help="Show discovered models awaiting calling-agent price resolution"
     )
-    _add_common_flags(p_p_refresh)
+    p_p_pending.add_argument("--host", default=None, help="Current host agent (codex|claude|agy)")
+    p_p_pending.add_argument("--include-agents", default=None, help="Comma-separated subset of agents to consider")
+    _add_common_flags(p_p_pending)
+
+    p_p_resolve = prices_sub.add_parser(
+        "resolve", help="Validate and store calling-agent model price resolutions in <state_root>/prices.json"
+    )
+    p_p_resolve.add_argument("--file", required=True, help="Path to JSON resolution payload")
+    _add_common_flags(p_p_resolve)
+
+    p_p_show = prices_sub.add_parser(
+        "show", help="Inspect stored calling-agent model price entries in <state_root>/prices.json"
+    )
+    _add_common_flags(p_p_show)
 
     # inventory
     p_inv = subparsers.add_parser("inventory", help="Emit howhard.toml [inventories] block for howhard 2.1+")
@@ -283,15 +301,28 @@ def main(argv=None):
             res = router.candidates(args.host, include_agents=include, now=args.now)
             if args.output:
                 atomic_write(args.output, json.dumps(res["candidates"], indent=2) + "\n")
-            _emit(res, as_json=True)
+            _emit(res if args.json else res["candidates"], as_json=True)
             return 0
 
         if args.command == "prices":
-            if args.prices_command != "refresh":
-                raise AgRouteError("prices: expected the 'refresh' subcommand")
-            report = router.prices_refresh(now=args.now)
-            _emit(report if args.json else format_price_report(report), as_json=args.json)
-            return 0
+            if args.prices_command == "pending":
+                include = _parse_include_agents(args.include_agents)
+                report = router.prices_pending(args.host, include_agents=include, now=args.now)
+                _emit(report if args.json else format_pending_report(report), as_json=args.json)
+                return 0
+            if args.prices_command == "resolve":
+                try:
+                    payload = json.loads(Path(args.file).read_text(encoding="utf-8"))
+                except (OSError, ValueError, UnicodeError) as exc:
+                    raise AgRouteError(f"prices resolve: invalid JSON file {args.file}: {exc}") from exc
+                report = router.prices_resolve(payload, now=args.now)
+                _emit(report if args.json else format_resolve_report(report), as_json=args.json)
+                return 0
+            if args.prices_command == "show":
+                report = router.prices_show(now=args.now)
+                _emit(report if args.json else format_show_report(report), as_json=args.json)
+                return 0
+            raise AgRouteError("prices: expected one of 'pending', 'resolve', or 'show'")
 
         if args.command == "inventory":
             include = _parse_include_agents(args.include_agents)

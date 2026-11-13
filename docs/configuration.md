@@ -29,8 +29,9 @@ Prices follow the {ref}`rate-card precedence <price-precedence>`:
 - Otherwise a per-model entry under `[agents.<agent>.prices."<model>"]` applies. It holds
   either `usd_per_mtok` alone or all six rate categories, and works alongside discovery.
   See {ref}`per-model user prices <per-model-prices>`.
-- Otherwise the refreshed snapshot from `agroute prices refresh` or the built-in catalog
-  prices the cell, whichever took effect later.
+- Otherwise the non-expired snapshot entry from `agroute prices resolve --file <path>`
+  (`<state_root>/prices.json`) or the built-in catalog prices the cell, whichever took effect
+  later (or via a labelled `"alias"` guess; see {ref}`calling-agent price resolution <calling-agent-price-resolution>`).
 
 A candidate `rate_card`'s `model` must be the qualified cell model, for example
 `agy/gpt-oss-120b-medium`, because `howhard` rejects a mismatch.
@@ -119,7 +120,9 @@ Each `[agents.<name>]` section accepts:
 - `credit = {}`: optional table overriding `session_5h_usd`, `weekly_7d_usd`, or
   `tiers.<quota_group>.{session_5h_usd, weekly_7d_usd}` (positive numbers). Across configuration
   layers (`default -> user -> project`), `plan` replaces an earlier `plan`, and `credit`
-  deep-merges on top of the resolved `plan` preset.
+  deep-merges on top of the resolved `plan` preset. Plan preset values act as priors (`C_prior`)
+  for empirical Bayes pool calibration in `<state_root>/credit_calibration.json`, whereas explicit
+  `[agents.<name>].credit` overrides remain exact and uncalibrated.
 - `exclude_quota_groups = []`: list of quota-group labels (for example `["3p"]` under
   `[agents.agy]`) to exclude while keeping dynamic model discovery active for remaining groups.
   See {ref}`remaining credit budgets <remaining-credit-budgets>`.

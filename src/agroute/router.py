@@ -5,10 +5,18 @@ import json
 import re
 
 from .adapters import get_adapter
+from .calibration import build_agent_calibration_summary, read_calibration_store
 from .config import load_config, resolve_effective_plan_credit, set_agent_plan_in_config
 from .discovery import discover_agent_candidates
-from .price_refresh import read_snapshot, refresh as refresh_prices
-from .pricing import rate_card, resolve_price, user_rate_card
+from .price_store import (
+    PENDING_FORMAT,
+    build_price_request,
+    read_snapshot,
+    resolve_prices,
+    show_prices,
+    snapshot_path,
+)
+from .pricing import needs_price_resolution, rate_card, resolve_price, user_rate_card
 from .routes import build_snapshot, find_route, record_plan_route, register_repository
 from .usage import (
     _now_utc,
@@ -147,14 +155,22 @@ class Router:
             "user_config_path": str(self.config.user_config_path) if self.config.user_config_path else None,
         }
 
-    def _agent_model_quotas(self, name, cfg, eff):
+    def _agent_model_quotas(self, name, cfg, eff, *, calibration_store=None):
         nat_cands = deepcopy(cfg["native_candidates"]) if cfg["native_candidates"] else discover_agent_candidates(name, "native")
         cli_cands = deepcopy(cfg["cli_candidates"]) if cfg["cli_candidates"] else discover_agent_candidates(name, "cli")
         models_map = {}
         for surface, cands, is_host in (("cli", cli_cands, False), ("native", nat_cands, True)):
             for cand in cands:
                 mid = cand["model"]
-                q = resolve_model_quota(name, cfg, eff, cand, is_host=is_host, surface=surface)
+                q = resolve_model_quota(
+                    name,
+                    cfg,
+                    eff,
+                    cand,
+                    is_host=is_host,
+                    surface=surface,
+                    calibration_store=calibration_store,
+                )
                 if mid not in models_map:
                     entry = {
                         "surface": surface,
@@ -167,6 +183,8 @@ class Router:
                     }
                     if "credit_budget" in q:
                         entry["credit_budget"] = deepcopy(q["credit_budget"])
+                    if "credit_calibration" in q:
+                        entry["credit_calibration"] = deepcopy(q["credit_calibration"])
                     models_map[mid] = entry
                 else:
                     if cand["effort"] not in models_map[mid]["efforts"]:
@@ -176,6 +194,7 @@ class Router:
     def usage_show(self, agent=None, *, now=None):
         now_dt = _now_utc(now)
         store = read_store(self.config)
+        cal_store = read_calibration_store(self.config)
         names = [agent_id(agent, "agent")] if agent is not None else list(AGENTS)
         agents_out = {}
         warnings = []
@@ -194,11 +213,18 @@ class Router:
                 "plan": cfg["plan"],
                 "detected_plan": eff.get("detected_plan"),
                 "effective_plan": effective_plan,
+                "credit_calibration": build_agent_calibration_summary(
+                    name,
+                    cfg,
+                    eff,
+                    is_host=False,
+                    calibration_store=cal_store,
+                ),
                 "eligible_as_target": ok_target,
                 "target_exclusion_reason": reason_target,
                 "eligible_as_host_native": ok_host,
                 "host_native_exclusion_reason": reason_host,
-                "models": self._agent_model_quotas(name, cfg, eff),
+                "models": self._agent_model_quotas(name, cfg, eff, calibration_store=cal_store),
             }
         return {
             "format": "agroute-usage-snapshot-v1",
@@ -271,11 +297,14 @@ class Router:
 
         store, refresh_failures = ensure_fresh_usage(self.config, agent_order, now=now)
         now_dt = _now_utc(now)
+        cal_store = read_calibration_store(self.config)
 
         admitted = []
         admitted_meta = {}
         excluded = []
         warnings = []
+        pending_prices: dict[str, dict] = {}
+        credit_calibration_out: dict[str, dict] = {}
         # Execution planning needs eligibility only, so it never depends on price state.
         snapshot = read_snapshot(self.config) if priced else None
 
@@ -285,6 +314,15 @@ class Router:
             warnings.extend(usage_warnings(name, store["agents"][name], cfg, now_dt))
             eff = visible_agent_state(name, store["agents"][name], cfg, now_dt)
             is_host = name == host
+            cal_summary = build_agent_calibration_summary(
+                name,
+                cfg,
+                eff,
+                is_host=is_host,
+                calibration_store=cal_store,
+            )
+            if cal_summary:
+                credit_calibration_out[name] = cal_summary
             ok_agent, reason_agent = evaluate_agent_quota(name, cfg, eff, is_host=is_host)
             freshness = routing_freshness_reason(store["agents"][name], cfg, now_dt)
             if cfg["enabled"] and freshness and name not in refresh_failures:
@@ -306,9 +344,9 @@ class Router:
                 continue
 
             surface_name = "native" if is_host else "cli"
-            source_list = cfg["native_candidates"] if is_host else cfg["cli_candidates"]
-            if not source_list:
-                source_list = discover_agent_candidates(name, surface_name)
+            configured_list = cfg["native_candidates"] if is_host else cfg["cli_candidates"]
+            is_discovered = not configured_list
+            source_list = configured_list if configured_list else discover_agent_candidates(name, surface_name)
             if not source_list:
                 excluded.append(
                     {
@@ -322,7 +360,15 @@ class Router:
                 continue
 
             for cand in source_list:
-                mq = resolve_model_quota(name, cfg, eff, cand, is_host=is_host, surface=surface_name)
+                mq = resolve_model_quota(
+                    name,
+                    cfg,
+                    eff,
+                    cand,
+                    is_host=is_host,
+                    surface=surface_name,
+                    calibration_store=cal_store,
+                )
                 if not mq["eligible"]:
                     excluded.append(
                         {
@@ -337,6 +383,18 @@ class Router:
                 qualified = f"{name}{sep}{cand['model']}"
                 cell = {"model": qualified, "effort": cand["effort"]}
                 if priced:
+                    if is_discovered:
+                        self._record_pending_price(
+                            name,
+                            cfg,
+                            adapter,
+                            cand,
+                            surface_name,
+                            qualified,
+                            now_dt,
+                            snapshot,
+                            pending_prices,
+                        )
                     cell.update(self._price(name, cfg, adapter, cand, surface_name, qualified, now_dt, snapshot))
                     if mq.get("credit_budget") is not None:
                         if "rate_card" not in cell and "usd_per_mtok" not in cell:
@@ -359,12 +417,60 @@ class Router:
                     "credit_budget": deepcopy(mq.get("credit_budget")),
                 }
 
+        price_request = build_price_request(self.config, now_dt, pending_prices) if priced else None
         if not admitted:
             reasons = "; ".join(f"{e['agent']}: {e['reason']}" for e in excluded) or "none configured"
             error = AgRouteError(f"candidates: no eligible candidate routes available ({reasons})")
-            error.details = {"format": "agroute-candidates-v1", "host_agent": host, "evaluated_at": format_timestamp(now_dt), "candidates": [], "excluded": excluded, "warnings": warnings}
+            error.details = {
+                "format": "agroute-candidates-v1",
+                "host_agent": host,
+                "evaluated_at": format_timestamp(now_dt),
+                "candidates": [],
+                "price_request": price_request,
+                "credit_calibration": credit_calibration_out,
+                "excluded": excluded,
+                "warnings": warnings,
+            }
             raise error
-        return host, now_dt, admitted, admitted_meta, excluded, warnings
+        return (
+            host,
+            now_dt,
+            admitted,
+            admitted_meta,
+            excluded,
+            warnings,
+            price_request,
+            credit_calibration_out,
+        )
+
+    @staticmethod
+    def _record_pending_price(
+        name,
+        cfg,
+        adapter,
+        cand,
+        surface,
+        qualified,
+        now_dt,
+        snapshot,
+        pending_prices,
+    ):
+        if "usd_per_mtok" in cand or "rate_card" in cand or cand["model"] in cfg["prices"]:
+            return
+        rc_key = adapter.rate_card_key(cand["model"], cand["effort"], surface)
+        if not needs_price_resolution(rc_key, now_dt, snapshot):
+            return
+        slot = pending_prices.setdefault(
+            rc_key,
+            {"agents": set(), "sample_models": set(), "display_names": [], "expired_at": None},
+        )
+        slot["agents"].add(name)
+        slot["sample_models"].add(qualified)
+        disp = cand.get("display_name")
+        if isinstance(disp, str) and disp.strip():
+            slot["display_names"].append(disp.strip())
+        if snapshot is not None and rc_key in snapshot["models"] and now_dt >= snapshot["models"][rc_key]["expires"]:
+            slot["expired_at"] = snapshot["models"][rc_key]["expires_at"]
 
     @staticmethod
     def _price(name, cfg, adapter, cand, surface, qualified, now_dt, snapshot):
@@ -381,19 +487,79 @@ class Router:
         resolved = resolve_price(adapter.rate_card_key(cand["model"], cand["effort"], surface), now_dt, snapshot)
         return {"rate_card": rate_card(resolved, qualified)} if resolved is not None else {}
 
-    def prices_refresh(self, *, now=None):
-        """Fetch the price source once (bounded retries) and store a new snapshot."""
-        return refresh_prices(self.config, _now_utc(now))
+    def prices_pending(self, host=None, *, include_agents=None, now=None):
+        """Inspect unpriced or expired discovered models and emit a calling-agent `price_request`."""
+        host = agent_id(host or self.config.default_host, "host")
+        now_dt = _now_utc(now)
+        sep = self.config.namespace_separator
+        if include_agents is not None:
+            if not isinstance(include_agents, (list, tuple)) or not include_agents:
+                raise AgRouteError("include_agents: expected a non-empty list of agent IDs")
+            agent_order = [agent_id(a, "include_agents") for a in include_agents]
+        else:
+            agent_order = [host] + [a for a in AGENTS if a != host]
+
+        snapshot = read_snapshot(self.config)
+        pending_prices: dict[str, dict] = {}
+        for name in agent_order:
+            cfg = self.config.agents[name]
+            if not cfg["enabled"]:
+                continue
+            is_host = name == host
+            surface_name = "native" if is_host else "cli"
+            configured_list = cfg["native_candidates"] if is_host else cfg["cli_candidates"]
+            if configured_list:
+                continue
+            adapter = get_adapter(name)
+            for cand in discover_agent_candidates(name, surface_name):
+                qualified = f"{name}{sep}{cand['model']}"
+                self._record_pending_price(
+                    name,
+                    cfg,
+                    adapter,
+                    cand,
+                    surface_name,
+                    qualified,
+                    now_dt,
+                    snapshot,
+                    pending_prices,
+                )
+        req = build_price_request(self.config, now_dt, pending_prices)
+        return {
+            "format": PENDING_FORMAT,
+            "evaluated_at": format_timestamp(now_dt),
+            "host_agent": host,
+            "state_path": str(snapshot_path(self.config)),
+            "pending_count": len(req["unpriced_models"]) if req else 0,
+            "price_request": req,
+        }
+
+    def prices_resolve(self, payload, *, now=None):
+        """Validate and store calling-agent model price resolutions in `<state_root>/prices.json`."""
+        return resolve_prices(self.config, payload, _now_utc(now))
+
+    def prices_show(self, *, now=None):
+        """Show stored calling-agent price resolutions in `<state_root>/prices.json`."""
+        return show_prices(self.config, _now_utc(now))
 
     def candidates(self, host=None, *, include_agents=None, now=None):
-        host, now_dt, admitted, _, excluded, warnings = self._collect_eligible(
-            host, include_agents=include_agents, now=now
-        )
+        (
+            host,
+            now_dt,
+            admitted,
+            _,
+            excluded,
+            warnings,
+            price_request,
+            credit_calibration,
+        ) = self._collect_eligible(host, include_agents=include_agents, now=now)
         return {
             "format": "agroute-candidates-v1",
             "host_agent": host,
             "evaluated_at": format_timestamp(now_dt),
             "candidates": admitted,
+            "price_request": price_request,
+            "credit_calibration": credit_calibration,
             "excluded": excluded,
             "warnings": warnings,
         }
@@ -405,6 +571,8 @@ class Router:
             "host_agent": res["host_agent"],
             "inventory_name": name,
             "inventories": {name: res["candidates"]},
+            "price_request": res["price_request"],
+            "credit_calibration": res["credit_calibration"],
             "excluded": res["excluded"],
             "warnings": res["warnings"],
         }
@@ -412,7 +580,21 @@ class Router:
     def format_inventory_toml(self, host=None, *, name="router", include_agents=None, now=None):
         inv = self.inventory(host, name=name, include_agents=include_agents, now=now)
         cells = inv["inventories"][name]
-        lines = ["[inventories]", f"{name} = ["]
+        lines = []
+        for ag, groups in (inv.get("credit_calibration") or {}).items():
+            for grp, meta in groups.items():
+                parts = []
+                for win in ("session_5h", "weekly_7d"):
+                    if win in meta:
+                        w = meta[win]
+                        parts.append(
+                            f"{win}={w['calibrated_total_usd']:.6g} USD "
+                            f"(prior={w['prior_total_usd']}, n={w['matched_intervals']}, "
+                            f"windows={w['effective_sample_windows']:.3g})"
+                        )
+                avail = f", available_usd={meta['available_usd']:.6g}" if meta.get("available_usd") is not None else ""
+                lines.append(f"# credit_calibration {ag}.{grp}: {', '.join(parts)}{avail}")
+        lines.extend(["[inventories]", f"{name} = ["])
         for cell in cells:
             lines.append(f"  {_toml_value(cell)},")
         lines.append("]")
@@ -430,7 +612,7 @@ class Router:
         include_agents=None,
         now=None,
     ):
-        host, now_dt, _, admitted_meta, excluded, warnings = self._collect_eligible(
+        host, now_dt, _, admitted_meta, excluded, warnings, _, _ = self._collect_eligible(
             host, include_agents=include_agents, now=now, priced=False
         )
         table(decision, "decision")
@@ -712,6 +894,7 @@ class Router:
     def models(self, *, refresh=False, now=None):
         now_dt = _now_utc(now)
         store = read_store(self.config)
+        cal_store = read_calibration_store(self.config)
         out = {}
         for name in AGENTS:
             cfg = self.config.agents[name]
@@ -730,7 +913,7 @@ class Router:
                 "native_candidates": deepcopy(nat_cfg) if nat_cfg else discover_agent_candidates(name, "native", refresh=refresh),
                 "cli_source": "configured" if cli_cfg else "discovered",
                 "cli_candidates": deepcopy(cli_cfg) if cli_cfg else discover_agent_candidates(name, "cli", refresh=refresh),
-                "models": self._agent_model_quotas(name, cfg, eff),
+                "models": self._agent_model_quotas(name, cfg, eff, calibration_store=cal_store),
             }
         return {
             "format": "agroute-models-v1",
@@ -742,10 +925,14 @@ class Router:
         store = read_store(self.config)
         agents_out = {}
         for name in AGENTS:
-            cfg = deepcopy(self.config.agents[name])
+            cfg = {
+                k: v
+                for k, v in deepcopy(self.config.agents[name]).items()
+                if k != "credit_overrides"
+            }
             eff = effective_agent_state(store["agents"][name], now_dt)
             effective_plan, effective_credit = resolve_effective_plan_credit(
-                name, cfg, eff.get("detected_plan")
+                name, self.config.agents[name], eff.get("detected_plan")
             )
             agents_out[name] = {
                 **cfg,

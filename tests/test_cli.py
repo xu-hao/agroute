@@ -62,7 +62,27 @@ def test_cli_end_to_end_workflow(tmp_path, capsys):
     cands_envelope = json.loads(capsys.readouterr().out)
     cands_list = json.loads(cands_out.read_text(encoding="utf-8"))
     assert cands_envelope["candidates"] == cands_list
+    assert "price_request" in cands_envelope
+    assert "credit_calibration" in cands_envelope
     assert not any(c["model"].startswith("codex/") for c in cands_list)
+
+    # 3b. candidates without --json emits plain candidate JSON array for howhard --candidates
+    assert (
+        main(
+            [
+                "candidates",
+                "--host",
+                "agy",
+                "--state-dir",
+                str(state_dir),
+                "--no-user-config",
+                "--now",
+                "2026-11-08T17:05:00Z",
+            ]
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out) == cands_list
 
     # 4. inventory
     assert (

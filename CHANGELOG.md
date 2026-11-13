@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Replace third-party network price snapshots with a 100% offline calling-agent pricing
+  callback (`price_request` in `candidates --json`, `inventory --json`, and
+  `agroute prices pending`, fulfilled via `agroute prices resolve --file <path>` and inspected
+  via `agroute prices show` in `<state_root>/prices.json` `agroute-price-snapshot-v2` with
+  `"priced"` [30d TTL], `"alias"` [30d TTL], and `"unlisted"` [7d TTL]), preserve model
+  `display_name` during discovery, emit a plain JSON candidate list on `agroute candidates`
+  without `--json` for `howhard --candidates`, add built-in `gemini-4-hydrogen`
+  (`$1.50 / $7.50 / $0.075` per 1M tokens) and `openai-oss` `gpt-oss-120b` pricing, and clamp
+  Antigravity `swarm` worker `name` slugs to at most 24 characters without trailing hyphens (#41).
+- Calibrate 5-hour (`session_5h`) and weekly (`weekly_7d`) subscription credit-pool ceilings
+  empirically per `(agent, effective_plan, pool_group, window)` in
+  `<state_root>/credit_calibration.json` by matching non-resetting quota intervals
+  (`delta_used_pct >= 0.25`, `<600s` `reset_at` jitter tolerance) against completed `howhard`
+  observations (`cost_usd > 0`, no straddling in-flight routes) using empirical Bayes shrinkage
+  (`F0 = 0.20`, `[0.1 * C_prior, 10.0 * C_prior]` outlier filter, `F_max = 2.0` forgetting cap)
+  while keeping explicit `[agents.<name>].credit` overrides exact and surfacing calibration
+  metadata in `usage show`, `candidates`, and `inventory` (#41).
 - Auto-detect native subscription plans (`plan = "auto"` default across `agy`, `claude`, and
   `codex`), expand `agy` presets with `"ultra-100"`, `"plus-8"`, and `"free"`, persist
   `detected_plan` in `usage.json` and the shared probe cache (from Antigravity `statusLine`
