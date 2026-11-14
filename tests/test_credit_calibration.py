@@ -15,8 +15,8 @@ from agroute import AgRouteError, Router
 from agroute.cli import main
 from agroute.discovery import parse_agy_models_output
 
-HOWHARD_CELL_KEYS = {"model", "effort", "usd_per_mtok", "rate_card", "credit_budget"}
-HOWHARD_BUDGET_KEYS = {"available_usd", "session_5h_remaining_usd", "weekly_7d_remaining_usd"}
+HOWHARD_CELL_KEYS = {"model", "effort", "usd_per_mtok", "rate_card", "credit_budget", "cost_per_credit"}
+HOWHARD_BUDGET_KEYS = {"available_credit_usd", "session_5h_remaining_credit_usd", "weekly_7d_remaining_credit_usd"}
 
 
 def _seed_models() -> None:
@@ -134,12 +134,12 @@ def test_empirical_bayes_shrinkage_updates_5h_and_weekly_pools_and_surfaces_meta
     )
     u0 = router.usage_show(agent="agy", now=t0)["agents"]["agy"]
     m0 = u0["models"]["gemini-4-hydrogen-high"]
-    assert m0["credit_calibration"]["session_5h"]["prior_total_usd"] == pytest.approx(32.0)
-    assert m0["credit_calibration"]["session_5h"]["calibrated_total_usd"] == pytest.approx(32.0)
+    assert m0["credit_calibration"]["session_5h"]["prior_credit_usd"] == pytest.approx(32.0)
+    assert m0["credit_calibration"]["session_5h"]["calibrated_credit_usd"] == pytest.approx(32.0)
     assert m0["credit_calibration"]["session_5h"]["effective_sample_windows"] == pytest.approx(0.0)
-    assert m0["credit_budget"]["session_5h_remaining_usd"] == pytest.approx(0.90 * 32.0)
+    assert m0["credit_budget"]["session_5h_remaining_credit_usd"] == pytest.approx(0.90 * 32.0)
 
-    # Step 2: Record completed howhard execution ($3.00 cost) at 12:10, then probe at 12:15
+    # Step 2: Record completed howhard execution (3.00 USD quota credit) at 12:10, then probe at 12:15
     # with +5.0% 5h usage (`delta_frac = 0.05`) and +1.0% weekly usage (`delta_frac = 0.01`),
     # plus 120s (<600s) jitter on `reset_at`.
     _append_jsonl(
@@ -151,7 +151,7 @@ def test_empirical_bayes_shrinkage_updates_5h_and_weekly_pools_and_surfaces_meta
             "effort": "high",
             "outcome": "clean",
             "observed_at": "2026-11-12T12:10:00Z",
-            "cost_usd": 3.00,
+            "needed_credit_usd": 3.00,
         },
     )
     t1 = "2026-11-12T12:15:00Z"
@@ -173,23 +173,23 @@ def test_empirical_bayes_shrinkage_updates_5h_and_weekly_pools_and_surfaces_meta
     expected_7d_rem = round(0.79 * expected_7d_total, 6)
 
     cal_disk = json.loads((state_dir / "credit_calibration.json").read_text(encoding="utf-8"))
-    assert cal_disk["format"] == "agroute-credit-calibration-v1"
+    assert cal_disk["format"] == "agroute-credit-calibration-v2"
     assert cal_disk["pools"]["agy:pro-20:gemini:session_5h"]["matched_intervals"] == 1
     assert cal_disk["pools"]["agy:pro-20:gemini:weekly_7d"]["matched_intervals"] == 1
 
     # Verify `usage show` surfaces both pool summary and per-model calibrated totals
     u1 = router.usage_show(agent="agy", now=t1)["agents"]["agy"]
-    assert u1["credit_calibration"]["gemini"]["session_5h"]["calibrated_total_usd"] == pytest.approx(
+    assert u1["credit_calibration"]["gemini"]["session_5h"]["calibrated_credit_usd"] == pytest.approx(
         expected_5h_total
     )
-    assert u1["credit_calibration"]["gemini"]["weekly_7d"]["calibrated_total_usd"] == pytest.approx(
+    assert u1["credit_calibration"]["gemini"]["weekly_7d"]["calibrated_credit_usd"] == pytest.approx(
         expected_7d_total
     )
     m1 = u1["models"]["gemini-4-hydrogen-high"]
     assert m1["credit_budget"] == {
-        "available_usd": min(expected_5h_rem, expected_7d_rem),
-        "session_5h_remaining_usd": expected_5h_rem,
-        "weekly_7d_remaining_usd": expected_7d_rem,
+        "available_credit_usd": min(expected_5h_rem, expected_7d_rem),
+        "session_5h_remaining_credit_usd": expected_5h_rem,
+        "weekly_7d_remaining_credit_usd": expected_7d_rem,
     }
 
     # Verify `candidates --json` and `inventory` (JSON + TOML) keep strict howhard cell keys
@@ -200,8 +200,8 @@ def test_empirical_bayes_shrinkage_updates_5h_and_weekly_pools_and_surfaces_meta
         assert set(cell) <= HOWHARD_CELL_KEYS
         assert set(cell["credit_budget"]) <= HOWHARD_BUDGET_KEYS
     hyd_cell = next(c for c in cands_res["candidates"] if c["model"] == "agy/gemini-4-hydrogen-high")
-    assert hyd_cell["credit_budget"]["session_5h_remaining_usd"] == pytest.approx(expected_5h_rem)
-    assert hyd_cell["credit_budget"]["weekly_7d_remaining_usd"] == pytest.approx(expected_7d_rem)
+    assert hyd_cell["credit_budget"]["session_5h_remaining_credit_usd"] == pytest.approx(expected_5h_rem)
+    assert hyd_cell["credit_budget"]["weekly_7d_remaining_credit_usd"] == pytest.approx(expected_7d_rem)
 
     assert (
         main(
@@ -224,6 +224,10 @@ def test_empirical_bayes_shrinkage_updates_5h_and_weekly_pools_and_surfaces_meta
     )
     inv_toml_raw = capsys.readouterr().out
     assert "# credit_calibration agy.gemini:" in inv_toml_raw
+    assert "monthly_cost_usd=" in inv_toml_raw
+    assert "weekly_cost_usd=" in inv_toml_raw
+    assert "cost_per_credit=" in inv_toml_raw
+    assert "available_credit_usd=" in inv_toml_raw
     parsed_toml = tomllib.loads(inv_toml_raw)
     assert parsed_toml["inventories"]["router"] == cands_res["candidates"]
 
@@ -240,7 +244,7 @@ def test_sub_threshold_accumulation_and_window_rollover(tmp_path):
     cfg.write_text('[agents.codex]\nplan = "plus-20"\nhost_reserve_pct = 0.0\n', encoding="utf-8")
     router = Router(cfg, project=repo, state_directory=state_dir, include_user_config=False)
 
-    # `plus-20` codex priors: session_5h_usd = 20.0, weekly_7d_usd = 50.0
+    # `plus-20` codex priors: session_5h_credit_usd = 20.0, weekly_7d_credit_usd = 50.0
     router.usage_set(
         "codex",
         session_used_pct=10.0,
@@ -291,7 +295,7 @@ def test_sub_threshold_accumulation_and_window_rollover(tmp_path):
     u_acc = router.usage_show(agent="codex", now="2026-11-12T12:10:00Z")["agents"]["codex"]
     s5_cal = u_acc["credit_calibration"]["shared"]["session_5h"]
     assert s5_cal["matched_intervals"] == 1
-    assert s5_cal["calibrated_total_usd"] == pytest.approx((0.20 * 20.0 + 0.12) / (0.20 + 0.004))
+    assert s5_cal["calibrated_credit_usd"] == pytest.approx((0.20 * 20.0 + 0.12) / (0.20 + 0.004))
 
     # Window rollover when `reset_at` advances by >=600s (or `used_pct` drops): must NOT match across reset
     _append_jsonl(
@@ -327,7 +331,7 @@ def test_amends_measurement_corrections_and_execution_usage_fallback(tmp_path):
     cfg.write_text('[agents.claude]\nplan = "pro-20"\nhost_reserve_pct = 0.0\n', encoding="utf-8")
     router = Router(cfg, project=repo, state_directory=state_dir, include_user_config=False)
 
-    # `pro-20` claude session_5h_usd prior = 18.0
+    # `pro-20` claude session_5h_credit_usd prior = 18.0
     router.usage_set(
         "claude",
         session_used_pct=5.0,
@@ -383,7 +387,7 @@ def test_amends_measurement_corrections_and_execution_usage_fallback(tmp_path):
         "credit_calibration"
     ]["shared"]["session_5h"]
     assert s5["matched_intervals"] == 1
-    assert s5["calibrated_total_usd"] == pytest.approx((0.20 * 18.0 + 2.00) / (0.20 + 0.10))
+    assert s5["calibrated_credit_usd"] == pytest.approx((0.20 * 18.0 + 2.00) / (0.20 + 0.10))
 
 
 def test_straddling_routes_unpriced_observations_and_outliers_are_skipped(tmp_path):
@@ -502,11 +506,11 @@ def test_exponential_forgetting_cap_manual_override_and_clear_preservation(tmp_p
     hh_dir = repo / ".git" / "howhard"
     hh_dir.mkdir(parents=True)
 
-    # Explicit manual `session_5h_usd = 42.0` override on `plus-20`, leaving `weekly_7d_usd` ($50 prior) calibrated!
+    # Explicit manual `session_5h_credit_usd = 42.0` override on `plus-20`, leaving `weekly_7d_credit_usd` ($50 prior) calibrated!
     cfg = repo / "agroute.toml"
     cfg.write_text(
         '[agents.codex]\nplan = "plus-20"\nhost_reserve_pct = 0.0\n\n'
-        "[agents.codex.credit]\nsession_5h_usd = 42.0\n",
+        "[agents.codex.credit]\nsession_5h_credit_usd = 42.0\n",
         encoding="utf-8",
     )
     router = Router(cfg, project=repo, state_directory=state_dir, include_user_config=False)
@@ -552,18 +556,18 @@ def test_exponential_forgetting_cap_manual_override_and_clear_preservation(tmp_p
     u = router.usage_show(agent="codex", now="2026-11-26T03:00:00Z")["agents"]["codex"]
     m_cal = u["models"]["gpt-6.1-sol"]["credit_calibration"]
 
-    # Manual `session_5h_usd = 42.0` stays exact and uncalibrated
+    # Manual `session_5h_credit_usd = 42.0` stays exact and uncalibrated
     assert m_cal["session_5h"]["manual_override"] is True
-    assert m_cal["session_5h"]["calibrated_total_usd"] == pytest.approx(42.0)
+    assert m_cal["session_5h"]["calibrated_credit_usd"] == pytest.approx(42.0)
 
     # `weekly_7d` capped at `effective_sample_windows == 2.0` (`F_max = 2.0`) and converged near $100:
     # `(0.20 * 50 + 200) / (0.20 + 2.0) = 210 / 2.2 = 95.454545`
     assert m_cal["weekly_7d"]["manual_override"] is False
     assert m_cal["weekly_7d"]["effective_sample_windows"] == pytest.approx(2.0)
     assert m_cal["weekly_7d"]["matched_intervals"] == 6
-    assert m_cal["weekly_7d"]["calibrated_total_usd"] == pytest.approx(210.0 / 2.2)
+    assert m_cal["weekly_7d"]["calibrated_credit_usd"] == pytest.approx(210.0 / 2.2)
 
-    # `usage clear` resets `last_snapshot` while preserving learned `(s_cost, s_frac)`
+    # `usage clear` resets `last_snapshot` while preserving learned `(s_credit, s_frac)`
     router.usage_clear(agent="codex")
     cal_disk = json.loads((state_dir / "credit_calibration.json").read_text(encoding="utf-8"))
     w_pool = cal_disk["pools"]["codex:plus-20:shared:weekly_7d"]

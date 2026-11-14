@@ -243,6 +243,9 @@ def record_plan_route(config, plan: dict) -> str:
         record["credit_budget"] = deepcopy(plan["credit_budget"])
     if "needed_credit_usd" in plan and plan["needed_credit_usd"] is not None:
         record["needed_credit_usd"] = plan["needed_credit_usd"]
+    for key in ("session_cost_usd", "cost_per_credit", "monthly_cost_usd", "weekly_cost_usd"):
+        if plan.get(key) is not None:
+            record[key] = plan[key]
     with _usage_locked(config):
         claim(config)
         record["repository_id"] = config.project_identity or config.capture_root.name
@@ -402,6 +405,9 @@ def load_repository_routes(capture_root: Path, state_root: Path, repository_id: 
             route_entry["credit_budget"] = deepcopy(rec["credit_budget"])
         if type(rec.get("needed_credit_usd")) in (int, float):
             route_entry["needed_credit_usd"] = float(rec["needed_credit_usd"])
+        for key in ("session_cost_usd", "cost_per_credit", "monthly_cost_usd", "weekly_cost_usd"):
+            if type(rec.get(key)) in (int, float):
+                route_entry[key] = float(rec[key])
         routes.append(route_entry)
 
     for ev in hh_events:

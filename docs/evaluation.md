@@ -47,7 +47,7 @@ current calibrated ceiling, effective sample fraction, matched intervals, reject
 outliers and any manual override. Assess a frozen estimate against later eligible
 intervals; do not use an interval to both fit and independently validate that estimate.
 
-For a later matched interval with recorded cost {math}`c` and quota-fraction increase
+For a later matched interval with measured quota credit {math}`c` and quota-fraction increase
 {math}`f`, the estimate predicts:
 
 ```{math}
@@ -58,8 +58,8 @@ Compare predicted and observed fraction, and compare the calibrated estimate wit
 the unchanged plan-preset baseline on the same held-out intervals. Report absolute
 and signed errors, interval counts, sample coverage and results by pool/window.
 Stratify or annotate concurrent external activity, coarse reports, plan changes,
-missing execution costs and delayed feedback. These factors can change the relation
-between recorded dollars and native quota consumption.
+missing credit measurements and delayed feedback. These factors can change the relation
+between measured quota credit and native quota consumption.
 
 The calibration interval filters intentionally exclude some observations. Report
 how many intervals were usable and why others were skipped; apparent accuracy on a

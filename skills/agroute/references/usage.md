@@ -4,6 +4,14 @@
 model-tier windows) and rate-limit cooldowns per agent (`codex`, `claude`, `agy`). Post-task
 token and cost accounting remains in `howhard`.
 
+Subscription charges and quota credit use distinct fields. `monthly_cost_usd` is the plan's
+monthly cash charge and `weekly_cost_usd` is the 7-day amortized charge. `session_5h_credit_usd`,
+`weekly_7d_credit_usd`, and `credit_budget.*_credit_usd` describe list-price quota capacity.
+Candidate cells expose `cost_per_credit` so `howhard` can convert estimated quota credit to
+`session_cost_usd`; its `needed_credit_usd` remains the value checked against
+`credit_budget.available_credit_usd`. `usage show` reports subscription costs beside the
+per-model cost-per-credit, credit budget, and credit calibration metadata.
+
 ## Inspect current quota and eligibility
 
 ```sh

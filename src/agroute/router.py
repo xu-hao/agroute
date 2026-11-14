@@ -6,7 +6,7 @@ import re
 
 from .adapters import get_adapter
 from .calibration import build_agent_calibration_summary, read_calibration_store
-from .config import load_config, resolve_effective_plan_credit, set_agent_plan_in_config
+from .config import load_config, resolve_effective_plan_credit, resolve_plan_monthly_cost, set_agent_plan_in_config
 from .discovery import discover_agent_candidates
 from .price_store import (
     PENDING_FORMAT,
@@ -96,14 +96,45 @@ def _extract_cell_score(entry):
     return None
 
 
-def _extract_needed_credit(entry):
+def _extract_needed_credit(entry, *, allow_legacy_cost=False):
     if not isinstance(entry, dict):
         return None
-    for key in ("needed_credit_usd", "C_run"):
+    keys = ("needed_credit_usd", "C_run") if allow_legacy_cost else ("needed_credit_usd",)
+    for key in keys:
         val = entry.get(key)
         if type(val) in (int, float):
             return float(val)
     return None
+
+
+def _extract_session_cost(entry, *, allow_legacy_cost=False):
+    if not isinstance(entry, dict):
+        return None
+    keys = ("session_cost_usd", "C_run") if allow_legacy_cost else ("session_cost_usd",)
+    for key in keys:
+        val = entry.get(key)
+        if type(val) in (int, float):
+            return float(val)
+    return None
+
+
+def _decision_has_credit_cost_split(decision):
+    if decision.get("format") == "howhard-decision-v7":
+        return True
+    chosen = decision.get("chosen")
+    if isinstance(chosen, dict) and (
+        "needed_credit_usd" in chosen or "session_cost_usd" in chosen or "cost_per_credit" in chosen
+    ):
+        return True
+    for panel_key in ("cells", "candidates", "ranking"):
+        panel = decision.get(panel_key)
+        if isinstance(panel, list) and any(
+            isinstance(cell, dict)
+            and ("needed_credit_usd" in cell or "session_cost_usd" in cell or "cost_per_credit" in cell)
+            for cell in panel
+        ):
+            return True
+    return False
 
 
 def _find_panel_cell(decision, cell_key):
@@ -185,6 +216,9 @@ class Router:
                         entry["credit_budget"] = deepcopy(q["credit_budget"])
                     if "credit_calibration" in q:
                         entry["credit_calibration"] = deepcopy(q["credit_calibration"])
+                    for key in ("monthly_cost_usd", "weekly_cost_usd", "cost_per_credit"):
+                        if key in q:
+                            entry[key] = q[key]
                     models_map[mid] = entry
                 else:
                     if cand["effort"] not in models_map[mid]["efforts"]:
@@ -205,6 +239,7 @@ class Router:
             effective_plan, _ = resolve_effective_plan_credit(
                 name, cfg, eff.get("detected_plan")
             )
+            monthly_cost = resolve_plan_monthly_cost(name, cfg, eff.get("detected_plan"))
             ok_target, reason_target = evaluate_agent_quota(name, cfg, eff, is_host=False)
             ok_host, reason_host = evaluate_agent_quota(name, cfg, eff, is_host=True)
             agents_out[name] = {
@@ -213,6 +248,8 @@ class Router:
                 "plan": cfg["plan"],
                 "detected_plan": eff.get("detected_plan"),
                 "effective_plan": effective_plan,
+                "monthly_cost_usd": monthly_cost,
+                "weekly_cost_usd": monthly_cost * 7.0 / 30.0 if monthly_cost is not None else None,
                 "credit_calibration": build_agent_calibration_summary(
                     name,
                     cfg,
@@ -382,6 +419,7 @@ class Router:
                     continue
                 qualified = f"{name}{sep}{cand['model']}"
                 cell = {"model": qualified, "effort": cand["effort"]}
+                cell["cost_per_credit"] = mq.get("cost_per_credit", 1.0)
                 if priced:
                     if is_discovered:
                         self._record_pending_price(
@@ -415,6 +453,9 @@ class Router:
                     "surface": surface_name,
                     "candidate": deepcopy(cand),
                     "credit_budget": deepcopy(mq.get("credit_budget")),
+                    "monthly_cost_usd": mq.get("monthly_cost_usd"),
+                    "weekly_cost_usd": mq.get("weekly_cost_usd"),
+                    "cost_per_credit": mq.get("cost_per_credit", 1.0),
                 }
 
         price_request = build_price_request(self.config, now_dt, pending_prices) if priced else None
@@ -588,12 +629,26 @@ class Router:
                     if win in meta:
                         w = meta[win]
                         parts.append(
-                            f"{win}={w['calibrated_total_usd']:.6g} USD "
-                            f"(prior={w['prior_total_usd']}, n={w['matched_intervals']}, "
+                            f"{win}={w['calibrated_credit_usd']:.6g} USD credit "
+                            f"(prior={w['prior_credit_usd']}, n={w['matched_intervals']}, "
                             f"windows={w['effective_sample_windows']:.3g})"
                         )
-                avail = f", available_usd={meta['available_usd']:.6g}" if meta.get("available_usd") is not None else ""
-                lines.append(f"# credit_calibration {ag}.{grp}: {', '.join(parts)}{avail}")
+                        if w.get("weekly_cost_usd") is not None:
+                            parts.append(
+                                f"weekly_cost_usd={w['weekly_cost_usd']:.6g}, "
+                                f"cost_per_credit={w['cost_per_credit']:.6g}"
+                            )
+                summary = []
+                if meta.get("monthly_cost_usd") is not None:
+                    summary.extend(
+                        [
+                            f"monthly_cost_usd={meta['monthly_cost_usd']:.6g}",
+                            f"weekly_cost_usd={meta['weekly_cost_usd']:.6g}",
+                        ]
+                    )
+                if meta.get("available_credit_usd") is not None:
+                    summary.append(f"available_credit_usd={meta['available_credit_usd']:.6g}")
+                lines.append(f"# credit_calibration {ag}.{grp}: {', '.join(summary + parts)}")
         lines.extend(["[inventories]", f"{name} = ["])
         for cell in cells:
             lines.append(f"  {_toml_value(cell)},")
@@ -650,9 +705,14 @@ class Router:
         affinity_detail = None
 
         chosen_panel_item = _find_panel_cell(decision, chosen_key)
-        needed_credit = _extract_needed_credit(chosen_panel_item)
+        target_panel_item = chosen_panel_item
+        allow_legacy_cost = not _decision_has_credit_cost_split(decision)
+        needed_credit = _extract_needed_credit(chosen_panel_item, allow_legacy_cost=allow_legacy_cost)
         if needed_credit is None:
-            needed_credit = _extract_needed_credit(chosen)
+            needed_credit = _extract_needed_credit(chosen, allow_legacy_cost=allow_legacy_cost)
+        session_cost = _extract_session_cost(chosen_panel_item, allow_legacy_cost=allow_legacy_cost)
+        if session_cost is None:
+            session_cost = _extract_session_cost(chosen, allow_legacy_cost=allow_legacy_cost)
 
         epsilon = self.config.host_affinity_epsilon
         if epsilon > 0.0 and chosen_agent != host:
@@ -687,22 +747,24 @@ class Router:
                     ):
                         nat_meta = admitted_meta[(ag, nat_m, eff_raw)]
                         nat_budget = nat_meta.get("credit_budget")
-                        nat_needed = _extract_needed_credit(item)
+                        nat_needed = _extract_needed_credit(item, allow_legacy_cost=allow_legacy_cost)
                         if (
                             nat_budget is not None
                             and nat_needed is not None
-                            and nat_needed > nat_budget["available_usd"]
+                            and nat_needed > nat_budget["available_credit_usd"]
                         ):
                             continue
                         if best_native is None or score < best_native[0]:
-                            best_native = (score, ag, nat_m, eff_raw, nat_needed)
+                            best_native = (score, ag, nat_m, eff_raw, nat_needed, item)
                 if chosen_score is not None and best_native is not None:
-                    native_score, nat_ag, nat_m, nat_eff, nat_needed = best_native
+                    native_score, nat_ag, nat_m, nat_eff, nat_needed, nat_item = best_native
                     if native_score <= chosen_score + epsilon:
                         target_agent = nat_ag
                         target_model = nat_m
                         target_effort = nat_eff
                         needed_credit = nat_needed
+                        target_panel_item = nat_item
+                        session_cost = _extract_session_cost(nat_item, allow_legacy_cost=allow_legacy_cost)
                         host_affinity_applied = True
                         affinity_detail = {
                             "chosen_score": chosen_score,
@@ -715,21 +777,26 @@ class Router:
         qualified_target_model = meta["qualified_model"]
         live_budget = meta.get("credit_budget")
         if live_budget is not None and needed_credit is not None:
-            if needed_credit > live_budget["available_usd"]:
+            if needed_credit > live_budget["available_credit_usd"]:
                 window_parts = []
-                if "session_5h_remaining_usd" in live_budget:
+                if "session_5h_remaining_credit_usd" in live_budget:
                     window_parts.append(
-                        f"session_5h_remaining_usd={live_budget['session_5h_remaining_usd']:.6g}"
+                        f"session_5h_remaining_credit_usd={live_budget['session_5h_remaining_credit_usd']:.6g}"
                     )
-                if "weekly_7d_remaining_usd" in live_budget:
+                if "weekly_7d_remaining_credit_usd" in live_budget:
                     window_parts.append(
-                        f"weekly_7d_remaining_usd={live_budget['weekly_7d_remaining_usd']:.6g}"
+                        f"weekly_7d_remaining_credit_usd={live_budget['weekly_7d_remaining_credit_usd']:.6g}"
                     )
                 window_detail = f" ({', '.join(window_parts)})" if window_parts else ""
                 raise AgRouteError(
                     f"plan: chosen cell ({qualified_target_model!r}, {target_effort!r}) requires {needed_credit:.6g} USD credit, "
-                    f"exceeding remaining credit {live_budget['available_usd']:.6g} USD{window_detail}"
+                    f"exceeding remaining credit {live_budget['available_credit_usd']:.6g} USD{window_detail}"
                 )
+        cell_cost_per_credit = meta.get("cost_per_credit", 1.0)
+        if isinstance(target_panel_item, dict) and type(target_panel_item.get("cost_per_credit")) in (int, float):
+            cell_cost_per_credit = float(target_panel_item["cost_per_credit"])
+        if session_cost is None and needed_credit is not None:
+            session_cost = needed_credit * cell_cost_per_credit
         is_native = target_agent == host
         execution_mode = "native" if is_native else "cli"
 
@@ -847,6 +914,13 @@ class Router:
             result["credit_budget"] = deepcopy(live_budget)
         if needed_credit is not None:
             result["needed_credit_usd"] = needed_credit
+        if session_cost is not None:
+            result["session_cost_usd"] = session_cost
+        result["cost_per_credit"] = cell_cost_per_credit
+        if meta.get("monthly_cost_usd") is not None:
+            result["monthly_cost_usd"] = meta["monthly_cost_usd"]
+        if meta.get("weekly_cost_usd") is not None:
+            result["weekly_cost_usd"] = meta["weekly_cost_usd"]
         result["route_id"] = record_plan_route(self.config, result)
         return result
 

@@ -174,8 +174,8 @@ the host reserve percentage, applied only to the current host. Remaining credit 
 B_{q,w}=C_{q,w}\max\left(0,\frac{100-u_{q,w}-\rho}{100}\right).
 ```
 
-The candidate's `available_usd` is the minimum of the calculated balances across
-consumed pools and session/weekly windows. Terms with unknown inputs cannot
+The candidate's `available_credit_usd` is the minimum of the calculated quota-credit
+balances across consumed pools and session/weekly windows. Terms with unknown inputs cannot
 supply a calculated balance. Percentage eligibility caps are checked separately;
 the budget equation is not a replacement for those caps.
 
@@ -193,12 +193,13 @@ the emitted fields and policy behavior.
 ### Matching quota consumption to executions
 
 Credit calibration is separate from howhard's learning about task suitability.
-It estimates how much recorded execution cost corresponds to a full native quota
-window. Its state is keyed by agent, effective plan, pool group and window.
+It estimates the quota-credit ceiling for a full native quota window from recorded
+execution credit measurements. Its state is keyed by agent, effective plan, pool group and
+window. Subscription cash cost is reported separately and is not used as the credit budget.
 
 A qualifying interval joins two non-resetting quota snapshots and completed
 howhard observations for the same agent and consumed pool. It must have a quota
-increase of at least 0.25 percentage points, positive recorded costs for all matched
+increase of at least 0.25 percentage points, positive measured credit for all matched
 observations, and no relevant unobserved or in-flight route straddling the boundary.
 Reset changes, declining usage and missing measurements prevent an inappropriate
 interval update. Each interval boundary is advanced so the interval is not reused.
@@ -210,16 +211,17 @@ available for evaluation.
 
 ### Prior shrinkage estimator
 
-Let {math}`C_0` be a preset ceiling, {math}`S_c` accumulated execution cost from
-accepted calibration intervals and {math}`S_f` their consumed quota fraction. The implementation's
-empirical Bayes calibration uses fixed prior strength {math}`F_0=0.20`:
+Let {math}`C_0` be a preset credit ceiling, {math}`S_c` accumulated measured quota
+credit from accepted calibration intervals and {math}`S_f` their consumed quota fraction.
+The implementation's empirical Bayes calibration uses fixed prior strength
+{math}`F_0=0.20`:
 
 ```{math}
 \widehat C=\frac{F_0 C_0+S_c}{F_0+S_f}.
 ```
 
 With no accepted evidence it retains the preset. For {math}`S_f>0`, the same
-expression is a weighted average of the preset and the observed cost-per-window:
+expression is a weighted average of the preset and the observed quota-credit ceiling:
 
 ```{math}
 \widehat C=

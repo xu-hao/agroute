@@ -32,18 +32,22 @@ while `howhard` owns model/effort selection, execution accounting, and writable 
      run `agroute prices resolve --file /tmp/TASK-prices.json --json`, and re-run
      `agroute candidates --host HOST --output /tmp/TASK-candidates.json --json`.
    - When an agent resolves a subscription `plan` (`plan = "auto"` by default from native
-     `detected_plan`, or an explicit preset such as `"ultra-200"`, `"ultra-100"`, `"pro-20"`,
-     `"max-20x"`, `"pro-200"` configurable via `agroute config set-plan <agent> <plan>`) or
-     `credit` table, `agroute` attaches empirically calibrated `credit_budget` (`available_usd`
-     across `session_5h` and `weekly_7d` windows, anchored on plan priors and updated from
-     observed quota deltas + `howhard` execution `cost_usd` in `credit_calibration.json`) to
-     priced candidates, excludes unpriced models, and honors `exclude_quota_groups` (such as `["3p"]`).
+     `detected_plan`, or an explicit preset configurable via `agroute config set-plan <agent> <plan>`),
+     `agroute` keeps the plan's `monthly_cost_usd` / derived `weekly_cost_usd` separate from
+     its calibrated quota credits. Candidates carry `cost_per_credit` and a
+     `credit_budget.available_credit_usd` with `session_5h_remaining_credit_usd` and
+     `weekly_7d_remaining_credit_usd` when known. Calibration follows plan credit ceilings and
+     observed quota deltas; current measurements use `needed_credit_usd` or `credit_usd`, while
+     older `cost_usd` observations remain readable. Active budgets require priced candidates,
+     and `exclude_quota_groups` (such as `["3p"]`) is honored.
    - Pass `--candidates /tmp/TASK-candidates.json` to `howhard context` (followed by independent
      baseline forecast, `retrieve`, and `decide`) or `howhard pick`, saving the decision JSON
      to `/tmp/TASK-decision.json`.
    - Run `agroute plan --host HOST --decision /tmp/TASK-decision.json --json` to resolve the
      decision into an `agroute-execution-plan-v1` payload (which also verifies live
-     `needed_credit_usd <= credit_budget.available_usd` when present).
+     `needed_credit_usd <= credit_budget.available_credit_usd` when present. In a
+     `howhard-decision-v7` result, compare quota credit with `needed_credit_usd` and read
+     `session_cost_usd` as cost.
 4. Inspect `execution_mode`, `needs_review`, `invocation`, and `fallback` in the returned plan:
    - Honor `needs_review` before delegating or accepting silent-risk work.
    - When `execution_mode == "native"` (`target_agent == host_agent`), invoke the host's own

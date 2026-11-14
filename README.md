@@ -13,7 +13,7 @@ use the [evaluation guide](docs/evaluation.md) to measure it on real work.
 `agroute` routes delegated coding-agent tasks across Codex (`codex`), Claude Code
 (`claude`), and Antigravity (`agy`) within live subscription quota and rate-limit
 windows. It filters available `(agent, model, effort)` candidate routes, emits a
-[`howhard` 2.1+](https://github.com/xu-hao/howhard) candidate inventory with
+`howhard` 2.1+ candidate inventory with
 provider-qualified model identities (`<agent>/<model>`), and resolves a `howhard`
 decision into a deterministic execution plan.
 
@@ -190,16 +190,23 @@ while `"unlisted"` negative-cache entries carry a 7-day default TTL so unpriced 
 models do not re-prompt on every call. See
 [calling-agent price resolution](docs/reference.md#calling-agent-price-resolution).
 
-### Empirical credit-pool calibration
+### Subscription cost and quota credit
 
-Subscription plan presets supply prior USD ceilings (`C_prior`) for each agent's 5-hour
-(`session_5h`) and weekly (`weekly_7d`) quota pools. As `agroute` observes non-resetting
-quota intervals (`delta_used_pct >= 0.25`) alongside completed `howhard` execution costs
-(`cost_usd > 0`), it updates `<state_root>/credit_calibration.json` via empirical Bayes
-shrinkage (`C_hat = (0.20 * C_prior + S_cost) / (0.20 + S_frac)` with outlier rejection and
-an exponential forgetting cap of `2.0` windows) while keeping explicit `[agents.<name>].credit`
-overrides exact. Calibrated pool totals and `available_usd` budgets surface in `usage show`,
-`candidates`, and `inventory`.
+Plan presets expose monthly subscription cost (`monthly_cost_usd`) and derive the 7-day
+amortized cost (`weekly_cost_usd`) separately from session and weekly quota-credit ceilings.
+For multi-tier plans, weekly subscription cost is allocated across pools by calibrated weekly
+credit ceiling; candidates carry `cost_per_credit` for backend cost ranking. After a decision,
+`session_cost_usd` reports estimated session cost while `needed_credit_usd` is the amount
+checked against the live credit budget.
+
+Calibration estimates each plan's quota-credit ceiling from completed observations and
+non-resetting quota intervals. New measurements use `needed_credit_usd` or `credit_usd`;
+older `cost_usd` records remain readable as list-price credit evidence. Explicit
+`[agents.<name>].credit` overrides remain exact. The emitted `credit_budget` names its
+available balance `available_credit_usd` and provides the separate
+`session_5h_remaining_credit_usd` / `weekly_7d_remaining_credit_usd` values when known. See
+[configuration](docs/configuration.md) and the [routing reference](docs/reference.md) for
+preset values, migration details and exact output fields.
 
 The [routing and storage contracts](docs/reference.md) and
 [configuration guide](docs/configuration.md) describe the CLI/API, live model discovery,

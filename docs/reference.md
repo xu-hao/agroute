@@ -318,68 +318,67 @@ cells instead, use one of these:
   (`"model has no known price required for credit_budget evaluation"`).
 
 (remaining-credit-budgets)=
-### Subscription plan presets, quota-group exclusions, and remaining credit budgets
+### Subscription costs and remaining quota credit
 
-When an agent resolves a subscription `plan` preset — either automatically via `plan = "auto"`
-from `detected_plan` (detected from Antigravity `statusLine` `plan_tier`, Claude `claude auth status`
-`planTier` / `subscriptionType`, or Codex `rateLimits.planType`), or from an explicit preset
-(such as `plan = "ultra-200"` or `plan = "ultra-100"` on `agy`, `plan = "max-20x"` on `claude`,
-or `plan = "pro-200"` on `codex`) — or a `[agents.<name>.credit]` override table (see
-{ref}`subscription-plan-presets`), `resolve_model_quota` computes the remaining schedulable USD
-credit across both 5-hour (`session_5h`) and weekly (`weekly_7d`) windows for the model's
-resolved `quota_group`:
+A subscription's cash cost and its provider quota capacity are separate values. Plan presets
+supply `monthly_cost_usd`; `weekly_cost_usd` is `monthly_cost_usd * 7 / 30`. Quota capacity
+uses `session_5h_credit_usd` and `weekly_7d_credit_usd`, with values in USD at the provider's
+list-price basis. A manual `[agents.<name>.credit]` override changes quota capacity only.
 
-1. **Quota-group exclusion.** Before evaluating usage percentages, if any consumed
-   quota pool's group is listed in `agents.<name>.exclude_quota_groups` (for example
-   `exclude_quota_groups = ["3p"]`), the
-   model is excluded with `reason = "quota_group '<group>' is excluded in configuration"`.
-2. **Total window credit and empirical Bayes calibration.** `resolve_plan_credit_sources` separates
-   each agent's preset priors (`C_prior`) from explicit manual `[agents.<name>].credit` overrides.
-   Manual overrides remain exact (`manual_override = true`). For plan-preset pools, `agroute`
-   tracks quota snapshots per `(agent, effective_plan, pool_group, window)` in
-   `<state_root>/credit_calibration.json` (`format = "agroute-credit-calibration-v1"`):
-   - Windows with `<600s` `reset_at` jitter stay in the same window; `>=600s` `reset_at` shifts,
-     passed `reset_at` timestamps, or declining `used_pct` roll over `last_snapshot`.
-   - Non-resetting intervals `[t_prev, t_curr]` with `delta_used_pct >= 0.25`
-     (`delta_frac = delta_used_pct / 100.0`) match against completed `howhard` observations
-     (`outcomes.jsonl` and `pending.jsonl`, including `amends` / `measurement_corrections` and
-     `execution_usage` cost segments) for `(agent, pool_group)` in `(t_prev, t_curr]` when all
-     matched observations have `cost_usd > 0` and no unobserved or in-flight route in
-     `routes.jsonl` straddles `t_curr`.
-   - Intervals whose implied ceiling `interval_cost_usd / delta_frac` falls outside
-     `[0.1 * C_prior, 10.0 * C_prior]` are rejected as outliers; accepted intervals update
-     `(S_cost, S_frac)` with an exponential forgetting cap `F_max = 2.0` windows (`S_frac <= 2.0`)
-     and estimate `C_hat = (0.20 * C_prior + S_cost) / (0.20 + S_frac)`.
-   - `agroute usage clear` resets `last_snapshot` anchors for cleared agents while preserving
-     learned `(S_cost, S_frac)` statistics.
-3. **Remaining credit across 5-hour and weekly windows.** With `reserve = host_reserve_pct`
-   when `agent == host` and `0.0` otherwise:
-   - When `total_5h_usd` and `session_5h.used_pct` are known:
-     `rem_5h = round((max(0.0, 100.0 - reserve - session_5h.used_pct) / 100.0) * total_5h_usd, 6)`.
-   - When `total_7d_usd` and `weekly_7d.used_pct` are known:
-     `rem_7d = round((max(0.0, 100.0 - reserve - weekly_7d.used_pct) / 100.0) * total_7d_usd, 6)`.
-   - For a model that consumes overlapping pools, compute remaining credit for every
-     consumed pool and retain the tightest known remaining balance for each window.
-   - When at least one window has a known remaining credit, `credit_budget` is attached with
-     `available_usd = min(present)` and the non-null `session_5h_remaining_usd` /
-     `weekly_7d_remaining_usd` fields (never emitting `None` inside `credit_budget`, so
-     `agroute inventory` renders valid inline TOML tables).
-   - If `credit_budget["available_usd"] <= 0.0`, the model is excluded naming the exhausted
-     credit window (`0 USD remaining`).
-   - When `credit_budget` is active on a candidate cell during `candidates` / `inventory`
-     emission, any candidate without a `rate_card` or `usd_per_mtok` is excluded so `howhard`
-     always receives uniformly priced candidates for credit-budget evaluation.
+When a subscription plan is active, `agroute` allocates its weekly cost across quota pools in
+proportion to their calibrated weekly credit ceilings. Each pool reports its allocated
+`weekly_cost_usd`, `calibrated_weekly_credit_usd`, and `cost_per_credit` (allocated weekly
+cost divided by calibrated weekly credit). A free plan reports `0.0`; a pay-as-you-go agent
+without a subscription plan reports `1.0`.
 
-`agroute usage show` and `agroute models` expose `agents.<name>.plan`,
-`agents.<name>.detected_plan`, `agents.<name>.effective_plan`, `agents.<name>.credit_calibration`,
-and per-model `credit_budget` + `credit_calibration` (`prior_total_usd`, `calibrated_total_usd`,
-`effective_sample_windows`, `matched_intervals`) under `agents.<name>.models.<model>`.
-`candidates --json` and `inventory --json` expose top-level `credit_calibration` alongside
-calibrated per-cell `credit_budget`, and `inventory` TOML emits `# credit_calibration ...`
-header comments while keeping inline candidate cell tables strictly valid for `howhard`.
-`agroute config show` and
-`agroute config set-plan <agent> <plan> [--user | --project]` inspect and update
-`[agents.<agent>].plan`.
+Plan credit ceilings are calibrated empirically per `(agent, effective_plan, pool_group,
+window)` in `<state_root>/credit_calibration.json` (`format = "agroute-credit-calibration-v2"`).
+The v1 store is read and normalized by treating its `s_cost` sufficient statistic as the
+historically measured credit amount. The next calibration write emits v2 with `s_credit`.
+
+- Windows with `<600s` `reset_at` jitter stay in the same window; `>=600s` shifts, passed
+  `reset_at` timestamps, or declining `used_pct` roll over `last_snapshot`.
+- Non-resetting intervals `[t_prev, t_curr]` with `delta_used_pct >= 0.25`
+  (`delta_frac = delta_used_pct / 100.0`) match completed `howhard` observations in
+  `outcomes.jsonl` / `pending.jsonl`, including amendments and execution usage, when all
+  matched observations have positive measured credit and no unobserved or in-flight route in
+  `routes.jsonl` straddles `t_curr`. New observations use `needed_credit_usd` or `credit_usd`;
+  older `cost_usd` measurements remain readable as credit evidence.
+- Intervals whose implied credit ceiling falls outside `[0.1 * prior_credit_usd,
+  10.0 * prior_credit_usd]` are rejected as outliers. Accepted intervals update `(s_credit,
+  s_frac)` with an exponential forgetting cap of `2.0` windows and estimate
+  `(0.20 * prior_credit_usd + s_credit) / (0.20 + s_frac)`.
+- `agroute usage clear` resets `last_snapshot` anchors for cleared agents while preserving
+  learned credit statistics.
+
+For a known credit ceiling `C_credit` and usage percentage `u`, remaining credit after host
+reserve `rho` is `round(C_credit * max(0, 100 - u - rho) / 100, 6)`. `rho` is
+`host_reserve_pct` for the current host and `0.0` for other agents. For models consuming
+overlapping pools, `agroute` retains the tightest known remaining balance per window. Unknown
+windows do not contribute a calculated balance.
+
+When at least one window has a known remaining credit, `credit_budget` uses this explicit
+schema (omitting any unknown window instead of emitting `None`):
+
+```json
+{
+  "available_credit_usd": 12.0,
+  "session_5h_remaining_credit_usd": 14.0,
+  "weekly_7d_remaining_credit_usd": 12.0
+}
+```
+
+`available_credit_usd` is the minimum of known remaining session and weekly credits. A model
+with no available credit is excluded. When a budget is active, candidates without a rate card
+or `usd_per_mtok` are excluded so `howhard` can evaluate candidate costs uniformly.
+
+`agroute usage show` and `agroute models` expose agent-level `monthly_cost_usd` and
+`weekly_cost_usd`, plus per-model `cost_per_credit`, `credit_budget`, and `credit_calibration`.
+The calibration metadata labels quota amounts as `prior_credit_usd`, `calibrated_credit_usd`,
+`remaining_credit_usd`, and `available_credit_usd`. `candidates --json` and
+`inventory --json` expose per-cell `cost_per_credit` and top-level `credit_calibration`;
+`inventory` TOML adds explanatory `# credit_calibration` comments and emits candidate cells
+with the fields supported by the current `howhard` candidate contract.
 
 (native-quota-tracking)=
 ## Native quota and rate-limit tracking
@@ -537,18 +536,21 @@ it after the worker finishes and record it with the execution outcome.
 
 When `routing.host_affinity_epsilon > 0.0` and `howhard` chose a cross-agent route, `agroute plan`
 checks whether an eligible native host route in the decision's scored panel (`candidates`,
-`cells`, or `ranking`) has `cap_met != false`, fits within its live `credit_budget["available_usd"]`
-when `needed_credit_usd` (or `C_run`) is present, and has expected cost `J_native <= J_chosen + epsilon`.
+`cells`, or `ranking`) has `cap_met != false`, fits within its live
+`credit_budget["available_credit_usd"]` when `needed_credit_usd` is present, and has expected
+cost `J_native <= J_chosen + epsilon`.
 When that condition holds, `agroute plan` selects the native host cell, sets
 `host_affinity_applied = true`, and sets `feedback.mode = "raw_native"` so the caller records
 `howhard observe ... --native` instead of attaching the unexecuted cross-agent receipt.
 
-For the final resolved target cell, `agroute plan` extracts `needed_credit_usd` (falling back to
-`C_run`) from the decision's `cells` / `candidates` / `ranking` panel. When the target cell has a
-live `credit_budget` and `needed_credit_usd > credit_budget["available_usd"]`, `agroute plan`
-refuses with `AgRouteError` naming the required credit, remaining `available_usd`, and the
-`session_5h_remaining_usd` / `weekly_7d_remaining_usd` breakdown. When resolved, the execution
-plan and persisted route record include `credit_budget` and `needed_credit_usd` when present.
+For a `howhard-decision-v7` panel, `agroute plan` reads `session_cost_usd` as cost and
+`needed_credit_usd` as quota credit. It validates `needed_credit_usd` against
+`credit_budget["available_credit_usd"]`, refusing an over-budget target with the separate
+`session_5h_remaining_credit_usd` / `weekly_7d_remaining_credit_usd` breakdown. It does not
+use `session_cost_usd` as quota credit. Older decision formats without the explicit split
+retain their legacy `C_run` compatibility. The resolved execution plan and persisted route
+record include `session_cost_usd`, `needed_credit_usd`, `cost_per_credit`, and `credit_budget`
+when available.
 
 (worktree-state-contract)=
 ## Worktree-aware state ownership

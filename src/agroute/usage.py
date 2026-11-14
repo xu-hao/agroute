@@ -842,8 +842,8 @@ def resolve_model_quota(
         calibration_store=calibration_store,
         quota_pools=quota_pools,
     )
-    rem_5h = credit_budget.get("session_5h_remaining_usd") if credit_budget else None
-    rem_7d = credit_budget.get("weekly_7d_remaining_usd") if credit_budget else None
+    rem_5h = credit_budget.get("session_5h_remaining_credit_usd") if credit_budget else None
+    rem_7d = credit_budget.get("weekly_7d_remaining_credit_usd") if credit_budget else None
 
     def _result(eligible, exclusion_reason):
         res = {
@@ -859,6 +859,8 @@ def resolve_model_quota(
             res["credit_budget"] = deepcopy(credit_budget)
         if credit_calibration is not None:
             res["credit_calibration"] = deepcopy(credit_calibration)
+            for key in ("monthly_cost_usd", "weekly_cost_usd", "cost_per_credit"):
+                res[key] = credit_calibration[key]
         return res
 
     if not agent_cfg["enabled"]:
@@ -887,7 +889,7 @@ def resolve_model_quota(
     if effective_state["cooldown_until"] is not None:
         return _result(False, f"agent is in cooldown until {effective_state['cooldown_until']}")
 
-    if credit_budget is not None and credit_budget["available_usd"] <= 0.0:
+    if credit_budget is not None and credit_budget["available_credit_usd"] <= 0.0:
         exhausted_win = "session_5h" if (rem_5h is not None and rem_5h <= 0.0) else "weekly_7d"
         return _result(False, f"{exhausted_win} credit_budget exhausted (0 USD remaining)")
 

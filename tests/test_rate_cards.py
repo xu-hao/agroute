@@ -372,8 +372,14 @@ def test_configured_prices_win_and_unpriced_configured_cells_get_builtin_cards(t
         encoding="utf-8",
     )
     cells, _ = cli_candidates(tmp_path, capsys, "claude", "claude", "--config", str(config))
-    assert cells["claude/claude-opus-5-5"] == {"model": "claude/claude-opus-5-5", "effort": "high", "usd_per_mtok": 1.67}
-    assert cells["claude/claude-sonnet-5-5"] == {"model": "claude/claude-sonnet-5-5", "effort": "high", "rate_card": user_card}
+    assert cells["claude/claude-opus-5-5"] == {
+        "model": "claude/claude-opus-5-5", "effort": "high", "usd_per_mtok": 1.67,
+        "cost_per_credit": 1.0,
+    }
+    assert cells["claude/claude-sonnet-5-5"] == {
+        "model": "claude/claude-sonnet-5-5", "effort": "high", "rate_card": user_card,
+        "cost_per_credit": 1.0,
+    }
     assert_card(cells["claude/claude-haiku-5-5"], ANTHROPIC, anthropic_rates("claude-haiku-5-5"))
 
 
@@ -386,10 +392,16 @@ def test_configured_prices_win_over_guessed_cards(tmp_path, capsys):
         encoding="utf-8",
     )
     cells, _ = cli_candidates(tmp_path, capsys, "agy", "agy", "--config", str(config))
-    assert cells["agy/pro"] == {"model": "agy/pro", "effort": "standard", "usd_per_mtok": 0.9}
+    assert cells["agy/pro"] == {
+        "model": "agy/pro", "effort": "standard", "usd_per_mtok": 0.9,
+        "cost_per_credit": 1.0,
+    }
     assert_guess(cells["agy/flash"], "google", google_card_fields("gemini-3.8-flash", NOW)[1], "gemini-3.8-flash")
     cells, _ = cli_candidates(tmp_path, capsys, "claude", "agy", "--config", str(config))
-    assert cells["agy/gpt-oss-120b-medium"] == {"model": "agy/gpt-oss-120b-medium", "effort": "medium", "usd_per_mtok": 0.2}
+    assert cells["agy/gpt-oss-120b-medium"] == {
+        "model": "agy/gpt-oss-120b-medium", "effort": "medium", "usd_per_mtok": 0.2,
+        "cost_per_credit": 1.0,
+    }
 
 
 def test_card_model_follows_the_namespace_separator(tmp_path, capsys):
@@ -447,7 +459,10 @@ def test_user_price_replaces_a_guess_and_prices_an_unknown_model(tmp_path, capsy
     config.write_text(AGY_TIER_CONFIG + price_entry("agy", "flash", {"usd_per_mtok": 0.9})
                       + price_entry("claude", "claude-current-0", USER_RATES), encoding="utf-8")
     cells, _ = cli_candidates(tmp_path, capsys, "agy", "agy", "--config", str(config))
-    assert cells["agy/flash"] == {"model": "agy/flash", "effort": "standard", "usd_per_mtok": 0.9}
+    assert cells["agy/flash"] == {
+        "model": "agy/flash", "effort": "standard", "usd_per_mtok": 0.9,
+        "cost_per_credit": 1.0,
+    }
     assert_guess(cells["agy/pro"], "google", google_card_fields("gemini-4-argon", NOW)[1], "gemini-4-argon")
     cells, _ = cli_candidates(tmp_path, capsys, "claude", "claude", "--config", str(config))
     assert_user_card(cells["claude/claude-current-0"], "claude")
@@ -465,7 +480,10 @@ def test_price_precedence_levels(tmp_path, capsys):
     )
     cells, _ = cli_candidates(tmp_path, capsys, "claude", "claude", "--config", str(config))
     # 1. A per-candidate price beats a per-model price.
-    assert cells["claude/claude-opus-5-5"] == {"model": "claude/claude-opus-5-5", "effort": "high", "usd_per_mtok": 1.67}
+    assert cells["claude/claude-opus-5-5"] == {
+        "model": "claude/claude-opus-5-5", "effort": "high", "usd_per_mtok": 1.67,
+        "cost_per_credit": 1.0,
+    }
     # 2. A per-model price beats the built-in card.
     assert_user_card(cells["claude/claude-sonnet-5-5"], "claude")
     # 3. The built-in card applies when no configured price exists.

@@ -71,8 +71,8 @@ def _make_snapshot() -> dict:
                 "decision_id": "dec-alpha-1",
                 "status": "routed",
                 "execution_mode": "cli",
-                "repository": "/repos/pm-harness",
-                "repository_id": "repo-pm",
+                "repository": "example-project",
+                "repository_id": "repo-example",
                 "host_agent": "codex",
                 "target_agent": "claude",
                 "model": "claude-opus-5-5",
@@ -81,7 +81,7 @@ def _make_snapshot() -> dict:
                 "task_type": "specified-implementation",
                 "risk_class": "standard",
                 "role": "Worker",
-                "label": "#5609 Implement Project-scoped positions",
+                "label": "Implement example feature",
                 "cap_met": True,
                 "needs_review": False,
                 "host_affinity_applied": False,
@@ -92,6 +92,12 @@ def _make_snapshot() -> dict:
                 "tokens": None,
                 "seconds": None,
                 "cost_usd": None,
+                "session_cost_usd": 0.22,
+                "needed_credit_usd": 0.3,
+                "credit_budget": {"available_credit_usd": 1.5},
+                "cost_per_credit": 0.75,
+                "monthly_cost_usd": 20.0,
+                "weekly_cost_usd": 20.0 * 7.0 / 30.0,
                 "invocation": {
                     "kind": "cli_command",
                     "argv": ["claude", "-p", "--model", "claude-opus-5-5", "--effort", "high"],
@@ -100,15 +106,15 @@ def _make_snapshot() -> dict:
                     {"model": "claude/claude-opus-5-5", "effort": "high", "clean": 0.96, "loud": 0.03, "silent": 0.01}
                 ],
                 "note": None,
-                "task_text": "#5609 Implement Project-scoped positions\nFull details here.",
+                "task_text": "Implement example feature\nFull details here.",
             },
             {
                 "route_id": "route-beta0000002",
                 "decision_id": "dec-beta-2",
                 "status": "review",
                 "execution_mode": "cli",
-                "repository": "/repos/pm-harness",
-                "repository_id": "repo-pm",
+                "repository": "example-project",
+                "repository_id": "repo-example",
                 "host_agent": "codex",
                 "target_agent": "agy",
                 "model": "gemini-4-argon-high",
@@ -117,7 +123,7 @@ def _make_snapshot() -> dict:
                 "task_type": "contract-change",
                 "risk_class": "contract",
                 "role": "Reviewer",
-                "label": "#5610 Contract audit for billing seam",
+                "label": "Review example API contract",
                 "cap_met": False,
                 "needs_review": True,
                 "host_affinity_applied": False,
@@ -205,6 +211,12 @@ async def test_tui_renders_routes_modals_and_filters():
         show_body = app.screen.query_one("#show-body", Static)
         assert "Route ID: route-alpha000001" in str(show_body.render())
         assert "Forecast panel" in str(show_body.render())
+        assert "Session cost USD: 0.22" in str(show_body.render())
+        assert "Needed credit USD: 0.3" in str(show_body.render())
+        assert "Available credit USD: 1.5" in str(show_body.render())
+        assert "Cost per credit: 0.75" in str(show_body.render())
+        assert "Monthly subscription cost USD: 20.0" in str(show_body.render())
+        assert "Observed cost USD: —" in str(show_body.render())
         await pilot.press("escape")
         await pilot.pause()
 
