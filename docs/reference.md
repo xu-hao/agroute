@@ -3,6 +3,10 @@
 `agroute` is a plan-only router that connects native agent quota state to `howhard` 2.1+
 candidate selection and host execution surfaces.
 
+The [technical report](technical-report.md) connects these contracts into one
+workflow. The [evaluation guide](evaluation.md) describes how to assess routing
+and credit estimates on genuine work.
+
 (candidate-qualification)=
 ## Candidate qualification, dynamic model discovery, and surface separation
 
@@ -325,8 +329,9 @@ or `plan = "pro-200"` on `codex`) — or a `[agents.<name>.credit]` override tab
 credit across both 5-hour (`session_5h`) and weekly (`weekly_7d`) windows for the model's
 resolved `quota_group`:
 
-1. **Quota-group exclusion.** Before evaluating usage percentages, if `quota_group` is listed
-   in `agents.<name>.exclude_quota_groups` (for example `exclude_quota_groups = ["3p"]`), the
+1. **Quota-group exclusion.** Before evaluating usage percentages, if any consumed
+   quota pool's group is listed in `agents.<name>.exclude_quota_groups` (for example
+   `exclude_quota_groups = ["3p"]`), the
    model is excluded with `reason = "quota_group '<group>' is excluded in configuration"`.
 2. **Total window credit and empirical Bayes calibration.** `resolve_plan_credit_sources` separates
    each agent's preset priors (`C_prior`) from explicit manual `[agents.<name>].credit` overrides.
@@ -353,6 +358,8 @@ resolved `quota_group`:
      `rem_5h = round((max(0.0, 100.0 - reserve - session_5h.used_pct) / 100.0) * total_5h_usd, 6)`.
    - When `total_7d_usd` and `weekly_7d.used_pct` are known:
      `rem_7d = round((max(0.0, 100.0 - reserve - weekly_7d.used_pct) / 100.0) * total_7d_usd, 6)`.
+   - For a model that consumes overlapping pools, compute remaining credit for every
+     consumed pool and retain the tightest known remaining balance for each window.
    - When at least one window has a known remaining credit, `credit_budget` is attached with
      `available_usd = min(present)` and the non-null `session_5h_remaining_usd` /
      `weekly_7d_remaining_usd` fields (never emitting `None` inside `credit_budget`, so
@@ -386,6 +393,12 @@ header comments while keeping inline candidate cell tables strictly valid for `h
 - `models`: resolved per-model quota windows and eligibility (`session_5h`, `weekly_7d`,
   `quota_group`, `eligible`, `exclusion_reason`) for every available native and CLI model.
 - `rate_limited` and `cooldown_until`: active rate-limit state and expiry timestamp.
+
+An agent adapter can resolve more than one consumed quota pool for a model, such as
+a Claude model-specific pool and a shared pool. Eligibility checks exclusions,
+rejections and session/weekly limits across every consumed pool. Remaining credit
+is capped by the tightest calculated balance across those pools and windows; a
+healthy model-specific pool cannot override an exhausted shared pool.
 
 Window evaluation is time-aware: any window or cooldown with `now >= reset_at` expires
 automatically at evaluation time. Unknown windows remain `null` and are never treated as `0.0`.

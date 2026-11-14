@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"
+     role="img" aria-labelledby="route-title route-description">
+  <title id="route-title">agroute branching-route mark</title>
+  <desc id="route-description">One input route branches toward three destinations, drawn in solid black on white.</desc>
+  <rect width="512" height="512" fill="#ffffff"/>
+  <path d="M 256 416 V 96
+           M 256 272 C 256 232 224 216 192 184 L 128 120
+           M 256 272 C 256 232 288 216 320 184 L 384 120"
+        fill="none" stroke="#000000" stroke-width="17"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <g fill="#000000">
+    <circle cx="256" cy="416" r="22"/>
+    <circle cx="128" cy="120" r="22"/>
+    <circle cx="256" cy="96" r="22"/>
+    <circle cx="384" cy="120" r="22"/>
+  </g>
+</svg>

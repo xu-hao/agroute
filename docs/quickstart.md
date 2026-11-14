@@ -97,8 +97,17 @@ the decision into an `agroute-execution-plan-v1` payload (`agroute plan --host H
 ```sh
 agroute usage show --json
 agroute candidates --host agy --output /tmp/task-candidates.json --json
-howhard context task --text-file /tmp/task.txt --candidates /tmp/task-candidates.json --llm off --json > /tmp/task-context.json
-# After independent baseline forecast, optional retrieval, and decide:
+```
+
+Before passing candidates to howhard, inspect the `candidates --json` envelope.
+If `price_request` is non-null, follow its resolution contract, apply the response
+with `agroute prices resolve --file PRICE_RESPONSE.json --json`, and emit candidates
+again. The {ref}`price resolution contract <calling-agent-price-resolution>` defines
+priced, alias and unlisted responses.
+
+```sh
+howhard context task --text-file /tmp/task.txt --candidates /tmp/task-candidates.json --json > /tmp/task-context.json
+# Complete the returned independent baseline/reader stages with howhard decide:
 agroute plan --host agy --decision /tmp/task-decision.json --prompt-file /tmp/task.txt --json
 ```
 
