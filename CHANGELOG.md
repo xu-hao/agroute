@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Restore the routing logo's three first-level branches and split only the middle
+  branch into three more, retaining its abstract black-and-white style (#54).
+
 - Extend the branching-route logo to two levels: one input, two routing nodes and
   four destinations, retaining its geometric black-and-white styling (#52).
 
