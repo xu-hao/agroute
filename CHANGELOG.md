@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Remove the routing logo's center dot while preserving its branches and endpoint
+  dots (#56).
+
 - Restore the routing logo's three first-level branches and split only the middle
   branch into three more, retaining its abstract black-and-white style (#54).
 

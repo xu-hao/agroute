@@ -14,14 +14,14 @@ The artwork uses exactly two colors: solid black (`#000000`) and solid white
 (`#ffffff`). It has no shading, gradients, texture, fonts, embedded raster image
 or external dependencies. No third-party artwork was used.
 
-The source has a 512 by 512 view box, a 17-unit uniform line and seven circular nodes
+The source has a 512 by 512 view box, a 17-unit uniform line and six circular endpoints
 of radius 22. Smooth curves connect the outer branches to the trunk and the three
 upper branches to the middle stem.
 The plain white background keeps the black mark legible in light and dark interfaces.
 Browsers may antialias edges; the vector artwork itself defines only the two colors.
 
 The SVG's SHA-256 checksum is
-`a0431e43555f9b12fc3f86fd160322268f9e36cde4455323a24c3f5eb76b36fa`.
+`dce7301c1371069c081f54a0c4981d4553e6158dbbc4ca1621efffe85d491e55`.
 
 [Issue #48](https://github.com/xu-hao/agroute/issues/48) tracks the branching-route
 mark and documentation organization.
@@ -31,3 +31,6 @@ to two branching levels while preserving its geometric style, line weight and tw
 
 [Issue #54](https://github.com/xu-hao/agroute/issues/54) tracks restoring the three
 first-level branches and adding a three-way split only to the middle branch.
+
+[Issue #56](https://github.com/xu-hao/agroute/issues/56) tracks removing the dot
+midway up the central trunk while retaining the paths and endpoint dots.
