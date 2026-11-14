@@ -1,17 +1,26 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"
      role="img" aria-labelledby="route-title route-description">
   <title id="route-title">agroute branching-route mark</title>
-  <desc id="route-description">One input route branches toward three destinations, drawn in solid black on white.</desc>
+  <desc id="route-description">One input branches to two routing nodes, each branching to two destinations, in solid black on white.</desc>
   <rect width="512" height="512" fill="#ffffff"/>
-  <path d="M 256 416 V 96
-           M 256 272 C 256 232 224 216 192 184 L 128 120
-           M 256 272 C 256 232 288 216 320 184 L 384 120"
+  <path d="M 256 408 V 344
+           M 256 344 C 256 312 192 292 144 248
+           M 256 344 C 256 312 320 292 368 248
+           M 144 248 V 208
+           M 144 208 C 144 184 124 168 108 148 L 80 104
+           M 144 208 C 144 184 164 168 180 148 L 208 104
+           M 368 248 V 208
+           M 368 208 C 368 184 348 168 332 148 L 304 104
+           M 368 208 C 368 184 388 168 404 148 L 432 104"
         fill="none" stroke="#000000" stroke-width="17"
         stroke-linecap="round" stroke-linejoin="round"/>
   <g fill="#000000">
-    <circle cx="256" cy="416" r="22"/>
-    <circle cx="128" cy="120" r="22"/>
-    <circle cx="256" cy="96" r="22"/>
-    <circle cx="384" cy="120" r="22"/>
+    <circle cx="256" cy="408" r="22"/>
+    <circle cx="144" cy="248" r="22"/>
+    <circle cx="368" cy="248" r="22"/>
+    <circle cx="80" cy="104" r="22"/>
+    <circle cx="208" cy="104" r="22"/>
+    <circle cx="304" cy="104" r="22"/>
+    <circle cx="432" cy="104" r="22"/>
   </g>
 </svg>
