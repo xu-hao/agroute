@@ -2,29 +2,25 @@
 
 ## Unreleased
 
-- Rename the installed console command to `agr`, while keeping the Python package/module
-  and plugin name `agroute`. Issue #58 tracks this installed-command rename and the
-  compatibility boundaries that remain unchanged.
+## 0.5.0 (2026-11-14)
 
-- Remove the routing logo's center dot while preserving its branches and endpoint
-  dots (#56).
-
-- Restore the routing logo's three first-level branches and split only the middle
-  branch into three more, retaining its abstract black-and-white style (#54).
-
-- Extend the branching-route logo to two levels: one input, two routing nodes and
-  four destinations, retaining its geometric black-and-white styling (#52).
-
-- Separate subscription cash costs (`monthly_cost_usd`, amortized `weekly_cost_usd`, and
-  `cost_per_credit`) from quota-credit ceilings and budgets; add Codex `pro-500` / `promax`,
-  emit the `howhard-decision-v7` credit budget schema, and migrate calibration state to explicit
-  credit names. Issue #50 tracks this cost-versus-credit contract across configuration, routing,
+- Release agroute 0.5.0 with synchronized package and plugin versions. Issue #60 tracks the
+  release metadata, distribution validation, PyPI publication, and GitHub release.
+- **Breaking:** Rename the installed console command from `agroute` to `agr`, while keeping
+  the Python package/module and native plugin/skill name `agroute`. Issue #58 tracks the
+  command rename and its compatibility boundaries.
+- Separate metered quota feasibility (`credit_budget` and `needed_credit_usd`) from full
+  session-cost comparison (`session_cost_usd`) in `howhard-decision-v7` receipts supported by
+  howhard 3.2+. Issue #50 tracks this cost-versus-credit contract across configuration, routing,
   calibration, user interfaces, and documentation.
-- Add a geometric black-and-white branching-route logo to the README and docs, with
-  asset provenance. Group documentation into Getting started, Technical deep dive,
-  Reference and Project; add a technical report and real-work evaluation guide,
-  clarify overlapping quota pools, and update the quickstart's howhard command and
-  price-resolution guidance (#48).
+- Add routing and usage guides, a technical report, a real-work evaluation guide, and the
+  initial two-color geometric branching mark. Issue #48 tracks that documentation and mark work.
+- Extend the mark to two levels with a geometric black-and-white branching route. Issue #52
+  tracks the two-level mark.
+- Restore the routing logo's three first-level branches and split only the middle branch into
+  three more. Issue #54 tracks that logo revision.
+- Remove the routing logo's center dot while preserving its branches and endpoint dots. Issue
+  #56 tracks that logo revision.
 
 ## 0.4.0 — 2026-11-13
 
