@@ -14,7 +14,7 @@ Unknown keys, out-of-range percentages, negative `host_affinity_epsilon`, bare m
 
 Packaged defaults in `agroute/data/default_config.toml` set `native_candidates = []` and
 `cli_candidates = []` for every agent. `agroute` discovers each agent's available models and
-supported reasoning efforts dynamically at runtime from its local installation (`agroute models`),
+supported reasoning efforts dynamically at runtime from its local installation (`agr models`),
 so configuration files do not need static model lists as providers release new models and
 retire older ones. Discovery retains every current model and supported effort, without
 numeric caps; see the {ref}`selection rules <candidate-qualification>`.
@@ -29,7 +29,7 @@ Prices follow the {ref}`rate-card precedence <price-precedence>`:
 - Otherwise a per-model entry under `[agents.<agent>.prices."<model>"]` applies. It holds
   either `usd_per_mtok` alone or all six rate categories, and works alongside discovery.
   See {ref}`per-model user prices <per-model-prices>`.
-- Otherwise the non-expired snapshot entry from `agroute prices resolve --file <path>`
+- Otherwise the non-expired snapshot entry from `agr prices resolve --file <path>`
   (`<state_root>/prices.json`) or the built-in catalog prices the cell, whichever took effect
   later (or via a labelled `"alias"` guess; see {ref}`calling-agent price resolution <calling-agent-price-resolution>`).
 
@@ -132,10 +132,10 @@ Inspect or persist `[agents.<agent>].plan` from the CLI while preserving existin
 keys, and subtables:
 
 ```sh
-agroute config show --json
-agroute config set-plan agy ultra-100 --json
-agroute config set-plan claude max-20x --project --json
-agroute config set-plan codex promax --json
+agr config show --json
+agr config set-plan agy ultra-100 --json
+agr config set-plan claude max-20x --project --json
+agr config set-plan codex promax --json
 ```
 
 - `exclude_quota_groups = []`: list of quota-group labels (for example `["3p"]` under
@@ -150,8 +150,8 @@ agroute config set-plan codex promax --json
 table for the current host with:
 
 ```sh
-agroute inventory --host agy --name router
+agr inventory --host agy --name router
 ```
 
 When availability changes dynamically with live usage windows, pass the fresh candidate list
-from `agroute candidates --host HOST --output FILE` to `howhard ... --candidates FILE`.
+from `agr candidates --host HOST --output FILE` to `howhard ... --candidates FILE`.

@@ -32,10 +32,10 @@ def _add_common_flags(parser):
 
 def _build_parser():
     parser = argparse.ArgumentParser(
-        prog="agroute",
+        prog="agr",
         description="Configurable local agent router across Codex, Claude Code, and Antigravity.",
     )
-    parser.add_argument("--version", action="version", version=f"agroute {__version__}")
+    parser.add_argument("--version", action="version", version=f"agr {__version__}")
     _add_common_flags(parser)
 
     subparsers = parser.add_subparsers(dest="command")

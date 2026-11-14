@@ -26,12 +26,12 @@ Add the following instruction to your project's persistent agent instructions (`
 ```text
 Before delegating an authorized task to a worker, use the installed agroute and howhard
 skills:
-1. Inspect or refresh live agent quota state with `agroute usage`.
+1. Inspect or refresh live agent quota state with `agr usage`.
 2. Emit eligible provider-qualified candidates for this host with
-   `agroute candidates --host <codex|claude|agy> --output /tmp/TASK-candidates.json --json`.
+   `agr candidates --host <codex|claude|agy> --output /tmp/TASK-candidates.json --json`.
 3. Select a route with `howhard` (`context`/`retrieve`/`decide` with an independent
    stateless baseline forecast, or `pick`), then resolve the execution plan with
-   `agroute plan --host <codex|claude|agy> --decision /tmp/TASK-decision.json --json`.
+   `agr plan --host <codex|claude|agy> --decision /tmp/TASK-decision.json --json`.
 4. Honor `needs_review`. Execute native plans (`target_agent == host_agent`) with the
    host's native subagent tool and cross-agent plans (`target_agent != host_agent`) with
    the returned non-interactive CLI command.

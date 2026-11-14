@@ -1,4 +1,4 @@
-"""Calling-agent offline pricing callback (`price_request` and `agroute prices`) (#41)."""
+"""Calling-agent offline pricing callback (`price_request` and `agr prices`) (#41)."""
 
 from __future__ import annotations
 
@@ -129,7 +129,7 @@ def test_price_request_surfaces_unpriced_models_and_display_names(tmp_path, caps
     req = cands_env["price_request"]
     assert req is not None
     assert req["format"] == "agroute-price-request-v1"
-    assert req["resolve_command"] == "agroute prices resolve --file <path> --json"
+    assert req["resolve_command"] == "agr prices resolve --file <path> --json"
     assert "priced" in req["contract"] and "alias" in req["contract"] and "unlisted" in req["contract"]
     by_key = {row["key"]: row for row in req["unpriced_models"]}
     assert set(by_key) == {"claude-next-6-0", "gemini-pro-orchestrator", "gpt-7-nova"}
@@ -142,7 +142,7 @@ def test_price_request_surfaces_unpriced_models_and_display_names(tmp_path, caps
     assert by_key["claude-next-6-0"]["display_names"] == ["Claude Next 6.0"]
     assert by_key["gpt-7-nova"]["display_names"] == ["GPT-7 Nova"]
 
-    # 2. `inventory --json` and `agroute prices pending --json` emit the same pending keys
+    # 2. `inventory --json` and `agr prices pending --json` emit the same pending keys
     assert (
         main(
             [
@@ -442,7 +442,7 @@ def test_corrupt_or_unclaimed_prices_snapshot_refusal_and_repair(tmp_path):
         now=NOW,
     )
     (state_dir / "prices.json").write_text("{corrupt json", encoding="utf-8")
-    with pytest.raises(AgRouteError, match="agroute prices resolve --file"):
+    with pytest.raises(AgRouteError, match="agr prices resolve --file"):
         router.candidates("agy", include_agents=["agy"], now=NOW)
 
     repaired = router.prices_resolve(

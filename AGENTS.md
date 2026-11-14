@@ -25,6 +25,8 @@ contributor workflow for this repository.
 - Keep the package independent of a parent application or sibling checkout.
   Put project-specific assumptions in optional configuration; the ordinary workflow
   must work with packaged defaults and explicit CLI/API inputs.
+- Keep the installed console command `agr`; the Python package/module, config/state names,
+  JSON format identifiers, and native plugin/skill name remain `agroute`.
 - For every other change after bootstrap, route checks and publication through the local
   coordinator, declare every scarce resource, and never submit coordinated work from an
   admitted job. Gate and publish through one `agc land` request; never bypass or separate

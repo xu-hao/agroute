@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Rename the installed console command to `agr`, while keeping the Python package/module
+  and plugin name `agroute`. Issue #58 tracks this installed-command rename and the
+  compatibility boundaries that remain unchanged.
+
 - Remove the routing logo's center dot while preserving its branches and endpoint
   dots (#56).
 

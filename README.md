@@ -36,12 +36,12 @@ project directory:
 python3 -m venv .venv-agroute
 . .venv-agroute/bin/activate
 python -m pip install "agroute==0.4.0" "howhard>=2.1.0"
-agroute --version
+agr --version
 ```
 
-Expect `agroute 0.4.0`. Keep the environment active and start your agent from the same
-shell so it can find `agroute` and `howhard`. An existing GUI session may need the
-absolute path to `.venv-agroute/bin/agroute` in your project.
+Expect `agr 0.4.0`. Keep the environment active and start your agent from the same
+shell so it can find `agr` and `howhard`. An existing GUI session may need the
+absolute path to `.venv-agroute/bin/agr` in your project.
 
 Install the native plugin for your host:
 
@@ -67,7 +67,7 @@ The plugin supplies the `agroute` routing skill. Backend and plugin updates are
 separate; the [native installation guide](docs/skills.md) covers scopes and lifecycle
 commands.
 
-Ask your coordinating agent to use `agroute` and `howhard` on a real, authorized task
+Ask your coordinating agent to use the installed `agroute` skill and `howhard` on a real, authorized task
 before starting a worker:
 
 > Use agroute and howhard to choose the target agent, model and reasoning effort for
@@ -86,15 +86,15 @@ into your repository's `AGENTS.md` or `CLAUDE.md` (see
 ```text
 Before delegating an authorized task to a worker, use the installed agroute and howhard
 skills:
-1. Inspect or refresh live agent quota state with `agroute usage`.
+1. Inspect or refresh live agent quota state with `agr usage`.
 2. Emit eligible provider-qualified candidates for this host with
-   `agroute candidates --host <codex|claude|agy> --output /tmp/TASK-candidates.json --json`.
+   `agr candidates --host <codex|claude|agy> --output /tmp/TASK-candidates.json --json`.
    If `price_request` is non-null, look up official first-party provider pricing (or classify
    internal harness models as `"alias"` or `"unlisted"`), run
-   `agroute prices resolve --file /tmp/TASK-prices.json --json`, and re-emit candidates once.
+   `agr prices resolve --file /tmp/TASK-prices.json --json`, and re-emit candidates once.
 3. Select a route with `howhard` (`context`/`retrieve`/`decide` with an independent
    stateless baseline forecast, or `pick`), then resolve the execution plan with
-   `agroute plan --host <codex|claude|agy> --decision /tmp/TASK-decision.json --json`.
+   `agr plan --host <codex|claude|agy> --decision /tmp/TASK-decision.json --json`.
 4. Honor `needs_review`. Execute native plans (`target_agent == host_agent`) with the
    host's native subagent tool and cross-agent plans (`target_agent != host_agent`) with
    the returned non-interactive CLI command.
@@ -111,13 +111,13 @@ Inspect local state, discovered models, effective quota windows, eligible candid
 routes, and realtime routing decisions with:
 
 ```sh
-agroute paths --json
-agroute models --json
-agroute usage show --json
-agroute candidates --host agy --json
-agroute list
-agroute show <id>
-agroute tui
+agr paths --json
+agr models --json
+agr usage show --json
+agr candidates --host agy --json
+agr list
+agr show <id>
+agr tui
 ```
 
 `agroute` ships with no hardcoded model list in its packaged defaults: unless
@@ -175,17 +175,17 @@ configured candidate beats a per-model price, and both beat calling-agent resolv
 built-in prices. The [per-model price guide](docs/reference.md#per-model-user-prices) has
 the details.
 
-### Resolving newly discovered models offline (`agroute prices`)
+### Resolving newly discovered models offline (`agr prices`)
 
-`agroute` never fetches prices over the network. Whenever `agroute candidates --json`,
-`agroute inventory --json`, or `agroute prices pending --json` discovers a model whose
+`agroute` never fetches prices over the network. Whenever `agr candidates --json`,
+`agr inventory --json`, or `agr prices pending --json` discovers a model whose
 catalog key is missing from configuration, the built-in catalog, and non-expired
 `<state_root>/prices.json` (or has expired), it emits a `price_request` payload listing the
 unknown model keys, sample slugs, and display names along with a resolution `contract`.
 The calling agent looks up official first-party provider pricing (or classifies an internal
 harness model as an `"alias"` of a known catalog key or `"unlisted"`) and persists the
-resolution locally via `agroute prices resolve --file <path> --json` (inspected with
-`agroute prices show --json`). `"priced"` and `"alias"` entries carry a 30-day default TTL,
+resolution locally via `agr prices resolve --file <path> --json` (inspected with
+`agr prices show --json`). `"priced"` and `"alias"` entries carry a 30-day default TTL,
 while `"unlisted"` negative-cache entries carry a 7-day default TTL so unpriced internal
 models do not re-prompt on every call. See
 [calling-agent price resolution](docs/reference.md#calling-agent-price-resolution).

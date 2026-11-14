@@ -3,7 +3,7 @@
 `agroute` never fetches prices from the network. When model discovery surfaces a model key
 missing from user configuration, the built-in catalog, and non-expired `<state_root>/prices.json`
 (or whose `prices.json` entry has expired), `agroute` emits a deterministic `price_request`
-payload for the calling agent to fulfill via `agroute prices resolve --file <path>`.
+payload for the calling agent to fulfill via `agr prices resolve --file <path>`.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ VALID_STATUSES = ("priced", "alias", "unlisted")
 PRICE_REQUEST_CONTRACT = (
     "Resolve every entry in `unpriced_models` and write a JSON object "
     '`{"models": {"<key>": <resolution>, ...}}` to a local file, then run '
-    "`agroute prices resolve --file <path> --json`. "
+    "`agr prices resolve --file <path> --json`. "
     "Each `<resolution>` must use one of three statuses:\n"
     '1. `"priced"`: official first-party provider list pricing in USD per 1M tokens across all six '
     "categories (`input`, `output`, `cache_read`, `cache_write`, `cache_write_5m`, `cache_write_1h`; "
@@ -219,12 +219,12 @@ def read_snapshot(config) -> dict | None:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, UnicodeError) as exc:
         raise AgRouteError(
-            f"price snapshot: invalid JSON at {path}: {exc}; repair with agroute prices resolve --file <path>"
+            f"price snapshot: invalid JSON at {path}: {exc}; repair with agr prices resolve --file <path>"
         ) from exc
     try:
         return _validate_snapshot(raw, path)
     except AgRouteError as exc:
-        raise AgRouteError(f"{exc}; repair with agroute prices resolve --file <path>") from exc
+        raise AgRouteError(f"{exc}; repair with agr prices resolve --file <path>") from exc
 
 
 @contextmanager
@@ -260,7 +260,7 @@ def build_price_request(config, now_dt: datetime, pending_by_key: dict[str, dict
         "format": REQUEST_FORMAT,
         "evaluated_at": format_timestamp(now_dt),
         "state_path": str(snapshot_path(config)),
-        "resolve_command": "agroute prices resolve --file <path> --json",
+        "resolve_command": "agr prices resolve --file <path> --json",
         "unpriced_models": unpriced_models,
         "contract": PRICE_REQUEST_CONTRACT,
     }

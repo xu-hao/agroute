@@ -364,7 +364,7 @@ class Router:
             freshness = routing_freshness_reason(store["agents"][name], cfg, now_dt)
             if cfg["enabled"] and freshness and name not in refresh_failures:
                 refresh_failures[name] = (f"{name} quota refresh infrastructure incident at admission: {freshness}; "
-                                          f"retry with agroute usage probe --agent {name}")
+                                          f"retry with agr usage probe --agent {name}")
             if name in refresh_failures:
                 ok_agent, reason_agent = False, refresh_failures[name]
                 warnings.append(reason_agent)

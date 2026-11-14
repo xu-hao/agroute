@@ -14,7 +14,7 @@ surface actually enforces.
 ## Provider-qualified identities for `howhard`
 
 `howhard` 2.1+ evaluates `(model, effort)` cells and treats provider-qualified model IDs as
-opaque identities. `agroute candidates` prefixes every bare model ID with its agent ID:
+opaque identities. `agr candidates` prefixes every bare model ID with its agent ID:
 
 - `agy/gemini-4-carbon-high` (`effort = "high"`) for `agy` on either surface: the native
   `swarm` tool and `agy -p` both run every slug listed by `agy models`
@@ -23,7 +23,7 @@ opaque identities. `agroute candidates` prefixes every bare model ID with its ag
 - `codex/gpt-5.4` (`effort = "high"`)
 - `claude/claude-sonnet-4-6` (`effort = "high"`)
 
-`agroute plan` verifies the qualified cell against the current host's active eligible pool,
+`agr plan` verifies the qualified cell against the current host's active eligible pool,
 strips the `<agent>/` prefix for `invocation.parameters` or `invocation.argv`, and retains
 the exact `<agent>/<model>` string in `howhard_cell` and `feedback` so `howhard observe`
 matches the decision receipt.

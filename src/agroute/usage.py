@@ -685,7 +685,7 @@ def ensure_fresh_usage(config, targets, *, now=None):
                     exc = AgRouteError(f"usage probe: refresh budget exhausted with {reason}")
                     _record_probe_failure(config, name, exc, now)
                     failures[name] = (f"{name} quota refresh infrastructure incident after {REFRESH_ATTEMPTS} attempts: "
-                                      f"{exc}; retry with agroute usage probe --agent {name}")
+                                      f"{exc}; retry with agr usage probe --agent {name}")
             break
         for name in pending:
             if attempts[name] >= REFRESH_ATTEMPTS:
@@ -703,7 +703,7 @@ def ensure_fresh_usage(config, targets, *, now=None):
             except AgRouteError as exc:
                 _record_probe_failure(config, name, exc, now)
                 failures[name] = (f"{name} quota refresh infrastructure incident after {REFRESH_ATTEMPTS} attempts: "
-                                  f"{exc}; retry with agroute usage probe --agent {name}")
+                                  f"{exc}; retry with agr usage probe --agent {name}")
             else:
                 failures.pop(name, None)
         # Another provider's probe may cross this provider's reset or age

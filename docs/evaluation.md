@@ -93,7 +93,7 @@ For howhard's forecast and delayed-outcome evaluation, follow its
 
 ## Reporting limits
 
-Use `agroute list`, `agroute show` and the TUI to inspect the recorded route history,
+Use `agr list`, `agr show` and the TUI to inspect the recorded route history,
 and retain the underlying evidence for analysis. Report the number of tasks and
 intervals, missing measurements, follow-up coverage, price basis and changes in
 account or provider conditions.

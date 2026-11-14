@@ -34,7 +34,7 @@ from the locally installed agents at runtime:
   (`opus`, `fable`, `sonnet`, `haiku`), and emits every `runtime.effort_levels` value.
 - **Antigravity (`agy`)**: queries `agy models` (cached in
   `${AGROUTE_SPOOL_DIR:-~/.local/share/agroute}/agy_models_cache.json`, refreshable via
-  `agroute models --refresh`) for both surfaces, retaining every listed model. Each listed slug
+  `agr models --refresh`) for both surfaces, retaining every listed model. Each listed slug
   names one `(model, effort)` cell, for example `gemini-4-carbon-high` at effort `high`. The
   native `swarm` tool runs any listed slug, so `native_candidates` and `cli_candidates` hold
   the same discovered cells. Antigravity's `invoke_subagent` tool accepts only the abstract
@@ -43,11 +43,11 @@ from the locally installed agents at runtime:
   Explicit Antigravity `native_candidates` must be either a concrete model slug or one of
   those four tiers.
 
-Inspect discovered or configured models per agent and surface with `agroute models [--refresh] [--json]`.
+Inspect discovered or configured models per agent and surface with `agr models [--refresh] [--json]`.
 Explicit `[[agents.<name>.native_candidates]]` or `[[agents.<name>.cli_candidates]]` entries in
 `agroute.toml` or `~/.config/agroute/config.toml` override runtime discovery for that surface.
 
-`agroute candidates --host HOST` evaluates enabled agents, selects `native_candidates` for
+`agr candidates --host HOST` evaluates enabled agents, selects `native_candidates` for
 `agent == HOST` and `cli_candidates` for `agent != HOST`, filters out quota-blocked agents
 and model tiers, and prefixes every bare model ID with `<agent>/` (or `<agent>:` when
 `namespace_separator = ":"`). `model_default`, `null`, and empty effort controls are refused.
@@ -56,7 +56,7 @@ Efforts appear in canonical order (`low`, `medium`, `high`, `xhigh`, `max`), fol
 additional efforts in their declared order. Missing effort catalogs retain the declared
 default effort (or `medium`). Use `--include-agents` to restrict agents by policy.
 Quota exclusions remain visible in `excluded` with their reasons. Without `--json`,
-`agroute candidates` writes the plain JSON candidate array directly to stdout (matching
+`agr candidates` writes the plain JSON candidate array directly to stdout (matching
 `--output`) for `howhard --candidates` compatibility; with `--json`, it emits the full
 `agroute-candidates-v1` envelope (`candidates`, `excluded`, `price_request`,
 `credit_calibration`, and `warnings`). If all routes are
@@ -248,19 +248,19 @@ cell, or a candidate card with another basis such as `charge`, next to `estimate
 cards turns the comparison off. Prefer six-rate entries.
 
 (calling-agent-price-resolution)=
-### Calling-agent price resolution (`price_request` and `agroute prices`)
+### Calling-agent price resolution (`price_request` and `agr prices`)
 
 `agroute` never fetches prices over the network. Instead, whenever model discovery surfaces a
 catalog key that has no configured price, no active built-in catalog card, and no active entry in
 `<state_root>/prices.json` (or whose `<state_root>/prices.json` entry has expired),
-`agroute candidates --json`, `agroute inventory --json`, and
-`agroute prices pending [--host HOST] [--include-agents ...] [--json]` emit a deterministic
+`agr candidates --json`, `agr inventory --json`, and
+`agr prices pending [--host HOST] [--include-agents ...] [--json]` emit a deterministic
 `price_request` (`format = "agroute-price-request-v1"`, or `null` when nothing is pending):
 
 - `unpriced_models`: sorted list of `{key, agents, sample_models, display_names[, expired_at]}`,
   preserving human-readable `display_names` from discovery (such as `"Orchestrator (Carbon)"` from
   `agy models`, `short_name` from Claude's catalog, or `display_name` from Codex's cache).
-- `resolve_command = "agroute prices resolve --file <path> --json"`.
+- `resolve_command = "agr prices resolve --file <path> --json"`.
 - `contract`: instructions for the calling agent to write `{"models": {"<key>": <resolution>, ...}}`
   using one of three validated statuses:
   1. **`"priced"`** (`default TTL = 30 days`): official first-party provider list rates across all
@@ -275,12 +275,12 @@ catalog key that has no configured price, no active built-in catalog card, and n
      `resolved_at` / `expires_at`) keeping an internal or experimental model unpriced without
      re-requesting it in `price_request` until `expires_at` passes.
 
-`agroute prices resolve --file <path> [--json]` validates incoming entries, merges them into
+`agr prices resolve --file <path> [--json]` validates incoming entries, merges them into
 `<state_root>/prices.json` (`format = "agroute-price-snapshot-v2"`) atomically under the store
-identity lock, and repairs an unreadable snapshot if one existed. `agroute prices show [--json]`
+identity lock, and repairs an unreadable snapshot if one existed. `agr prices show [--json]`
 inspects stored entries with active/expired status annotations. `candidates`, `inventory`, and
 `prices show` refuse an unreadable or unclaimed `prices.json` and direct the caller to
-`agroute prices resolve --file <path>`. `plan` never reads `prices.json`.
+`agr prices resolve --file <path>`. `plan` never reads `prices.json`.
 
 (pricing-unpriced-cells)=
 ### Unpriced cells turn off cost comparison
@@ -348,7 +348,7 @@ historically measured credit amount. The next calibration write emits v2 with `s
   10.0 * prior_credit_usd]` are rejected as outliers. Accepted intervals update `(s_credit,
   s_frac)` with an exponential forgetting cap of `2.0` windows and estimate
   `(0.20 * prior_credit_usd + s_credit) / (0.20 + s_frac)`.
-- `agroute usage clear` resets `last_snapshot` anchors for cleared agents while preserving
+- `agr usage clear` resets `last_snapshot` anchors for cleared agents while preserving
   learned credit statistics.
 
 For a known credit ceiling `C_credit` and usage percentage `u`, remaining credit after host
@@ -372,7 +372,7 @@ schema (omitting any unknown window instead of emitting `None`):
 with no available credit is excluded. When a budget is active, candidates without a rate card
 or `usd_per_mtok` are excluded so `howhard` can evaluate candidate costs uniformly.
 
-`agroute usage show` and `agroute models` expose agent-level `monthly_cost_usd` and
+`agr usage show` and `agr models` expose agent-level `monthly_cost_usd` and
 `weekly_cost_usd`, plus per-model `cost_per_credit`, `credit_budget`, and `credit_calibration`.
 The calibration metadata labels quota amounts as `prior_credit_usd`, `calibrated_credit_usd`,
 `remaining_credit_usd`, and `available_credit_usd`. `candidates --json` and
@@ -423,7 +423,7 @@ carries quota evidence) replaces the agent's stored quota-window set, dropping t
 older plan (such as `argon`, `argon-weekly`, and `gemini-argon-wtu-weekly`) when the new plan
 reports only `"Gemini Models"` and `"Claude and GPT models"`. Without a separate Argon bucket,
 Argon models resolve against the combined Gemini quota (`gemini-weekly` / `gemini-5h`). A
-partial or failed report keeps existing valid tiers. `agroute usage clear` (with `--agent X`
+partial or failed report keeps existing valid tiers. `agr usage clear` (with `--agent X`
 or across all agents) also removes the cleared agent entries from the shared live usage cache
 (`$XDG_DATA_HOME/agroute/live_usage_cache.json`).
 
@@ -494,7 +494,7 @@ Unknown windows remain null; admission follows the refresh contract above for al
 (execution-plan-resolution)=
 ## Execution plan resolution and host affinity
 
-`agroute plan --host HOST --decision FILE` validates a `howhard` decision JSON (`decision_id`,
+`agr plan --host HOST --decision FILE` validates a `howhard` decision JSON (`decision_id`,
 `chosen.model`, `chosen.effort`, `cap_met`, `needs_review`) against the current host's active
 eligible candidate pool and emits an `agroute-execution-plan-v1` object:
 
@@ -521,7 +521,7 @@ eligible candidate pool and emits an `agroute-execution-plan-v1` object:
   - `agy`: `agy --output-format stream-json --model <model> --effort <effort> -p <prompt>`,
     `output_capture_adapter = "agy-print-v1"`.
 
-When `execution_mode = "native"`, `agroute plan` also attaches a `fallback` CLI command object
+When `execution_mode = "native"`, `agr plan` also attaches a `fallback` CLI command object
 (`argv`, `output_capture_adapter`, `prompt_delivery`) for the target model and effort. If native
 tool delegation fails at launch (for example, if a host client reaches its local concurrent subagent
 limit), the host agent can immediately execute `fallback` via CLI and record the outcome as raw native
@@ -534,16 +534,16 @@ recorded in the worker's own conversation transcript,
 for one model generation. The worker's usage is the sum of those fields over its steps; read
 it after the worker finishes and record it with the execution outcome.
 
-When `routing.host_affinity_epsilon > 0.0` and `howhard` chose a cross-agent route, `agroute plan`
+When `routing.host_affinity_epsilon > 0.0` and `howhard` chose a cross-agent route, `agr plan`
 checks whether an eligible native host route in the decision's scored panel (`candidates`,
 `cells`, or `ranking`) has `cap_met != false`, fits within its live
 `credit_budget["available_credit_usd"]` when `needed_credit_usd` is present, and has expected
 cost `J_native <= J_chosen + epsilon`.
-When that condition holds, `agroute plan` selects the native host cell, sets
+When that condition holds, `agr plan` selects the native host cell, sets
 `host_affinity_applied = true`, and sets `feedback.mode = "raw_native"` so the caller records
 `howhard observe ... --native` instead of attaching the unexecuted cross-agent receipt.
 
-For a `howhard-decision-v7` panel, `agroute plan` reads `session_cost_usd` as cost and
+For a `howhard-decision-v7` panel, `agr plan` reads `session_cost_usd` as cost and
 `needed_credit_usd` as quota credit. It validates `needed_credit_usd` against
 `credit_budget["available_credit_usd"]`, refusing an over-budget target with the separate
 `session_5h_remaining_credit_usd` / `weekly_7d_remaining_credit_usd` breakdown. It does not
@@ -555,7 +555,7 @@ when available.
 (worktree-state-contract)=
 ## Worktree-aware state ownership
 
-`agroute paths --json` reports `capture_root`, `state_root`, `identity_path`, `project_identity`,
+`agr paths --json` reports `capture_root`, `state_root`, `identity_path`, `project_identity`,
 and `config_path`. Fresh zero-config Git worktrees share `<git-common-dir>/agroute` while
 capturing the current checkout root. Plain folders use local `.agroute`. `--state-dir PATH`
 (or `AGROUTE_STATE_DIR`) selects an intentional store and enforces `agroute-project-v1` and
@@ -585,20 +585,20 @@ and queried with `get_adapter(name)`.
 (realtime-route-monitoring)=
 ## Realtime route monitoring (`tui`, `list`, `show`)
 
-Every `agroute plan` resolution appends a record to `<state_root>/routes.jsonl` and registers
+Every `agr plan` resolution appends a record to `<state_root>/routes.jsonl` and registers
 the repository in `${AGROUTE_SPOOL_DIR:-~/.local/share/agroute}/repositories.json`. `agroute`
 correlates `<state_root>/routes.jsonl` with `.git/howhard/` (`decision-events.jsonl`,
-`decisions/*.json`, and `pending.jsonl`, including `amends` chains) so both `agroute plan`
+`decisions/*.json`, and `pending.jsonl`, including `amends` chains) so both `agr plan`
 resolutions and direct `howhard` routing decisions appear in reverse-chronological order with
 their live outcome state (`pending`, `clean`, `loud`, `silent`, `review`, `planned`) and
 task summary.
 
-- `agroute tui [--all] [--repo NAME] [--agent AGENT] [--model MODEL] [--state STATE] [--refresh-seconds SEC]`:
+- `agr tui [--all] [--repo NAME] [--agent AGENT] [--model MODEL] [--state STATE] [--refresh-seconds SEC]`:
   interactive Textual terminal dashboard showing live agent quota/eligibility badges, active and
   historical model routes, `Enter` route detail modal, `u` live usage & eligibility modal,
   `h` history toggle, and filter pickers for repository (`p`), target agent (`a`), model (`m`),
   and state (`s`).
-- `agroute list [--all] [--repo NAME] [--agent AGENT] [--model MODEL] [--state STATE] [--limit N] [--json]`:
+- `agr list [--all] [--repo NAME] [--agent AGENT] [--model MODEL] [--state STATE] [--limit N] [--json]`:
   scriptable tabular or JSON view of the same route records.
-- `agroute show <id> [--json]`: full route record, invocation details, and `howhard` decision
+- `agr show <id> [--json]`: full route record, invocation details, and `howhard` decision
   for a route ID, decision ID, or execution ID.

@@ -11,15 +11,15 @@ Run these commands from the project where you want to use `agroute`:
 python3 -m venv .venv-agroute
 . .venv-agroute/bin/activate
 python -m pip install "agroute==0.4.0" "howhard>=2.1.0"
-agroute --version
+agr --version
 ```
 
-Expect `agroute 0.4.0`. The Python package is available on
+Expect `agr 0.4.0`. The Python package is available on
 [PyPI](https://pypi.org/project/agroute/0.4.0/).
 
 Keep this environment active and start your coding agent from the same shell so it
-can find `agroute` and `howhard`. If an existing GUI session cannot find it, configure
-the absolute path to your project's `.venv-agroute/bin/agroute`; reopening a GUI does
+can find `agr` and `howhard`. If an existing GUI session cannot find it, configure
+the absolute path to your project's `.venv-agroute/bin/agr`; reopening a GUI does
 not activate the shell's environment.
 
 ## Install the native plugin
@@ -76,12 +76,12 @@ into your project's `AGENTS.md` or `CLAUDE.md`:
 ```text
 Before delegating an authorized task to a worker, use the installed agroute and howhard
 skills:
-1. Inspect or refresh live agent quota state with `agroute usage`.
+1. Inspect or refresh live agent quota state with `agr usage`.
 2. Emit eligible provider-qualified candidates for this host with
-   `agroute candidates --host <codex|claude|agy> --output /tmp/TASK-candidates.json --json`.
+   `agr candidates --host <codex|claude|agy> --output /tmp/TASK-candidates.json --json`.
 3. Select a route with `howhard` (`context`/`retrieve`/`decide` with an independent
    stateless baseline forecast, or `pick`), then resolve the execution plan with
-   `agroute plan --host <codex|claude|agy> --decision /tmp/TASK-decision.json --json`.
+   `agr plan --host <codex|claude|agy> --decision /tmp/TASK-decision.json --json`.
 4. Honor `needs_review`. Execute native plans (`target_agent == host_agent`) with the
    host's native subagent tool and cross-agent plans (`target_agent != host_agent`) with
    the returned non-interactive CLI command.
@@ -89,26 +89,26 @@ skills:
    `feedback` block (`matched_receipt` or `raw_native`), then update `howhard` memory.
 ```
 
-The agent updates or inspects live quota state (`agroute usage`), writes the filtered
-full eligible candidate list (`agroute candidates --host HOST --output FILE`), calls
+The agent updates or inspects live quota state (`agr usage`), writes the filtered
+full eligible candidate list (`agr candidates --host HOST --output FILE`), calls
 `howhard` to choose a provider-qualified `<agent>/<model>` and `effort`, and resolves
-the decision into an `agroute-execution-plan-v1` payload (`agroute plan --host HOST --decision FILE`):
+the decision into an `agroute-execution-plan-v1` payload (`agr plan --host HOST --decision FILE`):
 
 ```sh
-agroute usage show --json
-agroute candidates --host agy --output /tmp/task-candidates.json --json
+agr usage show --json
+agr candidates --host agy --output /tmp/task-candidates.json --json
 ```
 
 Before passing candidates to howhard, inspect the `candidates --json` envelope.
 If `price_request` is non-null, follow its resolution contract, apply the response
-with `agroute prices resolve --file PRICE_RESPONSE.json --json`, and emit candidates
+with `agr prices resolve --file PRICE_RESPONSE.json --json`, and emit candidates
 again. The {ref}`price resolution contract <calling-agent-price-resolution>` defines
 priced, alias and unlisted responses.
 
 ```sh
 howhard context task --text-file /tmp/task.txt --candidates /tmp/task-candidates.json --json > /tmp/task-context.json
 # Complete the returned independent baseline/reader stages with howhard decide:
-agroute plan --host agy --decision /tmp/task-decision.json --prompt-file /tmp/task.txt --json
+agr plan --host agy --decision /tmp/task-decision.json --prompt-file /tmp/task.txt --json
 ```
 
 When `target_agent == host_agent`, `agroute` selects from `native_candidates` and emits
@@ -153,21 +153,21 @@ measured token usage to the recorded execution.
 ## Inspect project state, discovered models, and realtime routes
 
 ```sh
-agroute paths --json
-agroute models --json
-agroute usage show --json
-agroute candidates --host agy --json
-agroute inventory --host agy --name router
-agroute list
-agroute show <id>
-agroute tui
+agr paths --json
+agr models --json
+agr usage show --json
+agr candidates --host agy --json
+agr inventory --host agy --name router
+agr list
+agr show <id>
+agr tui
 ```
 
 By default, `agroute` automatically discovers available models and reasoning efforts
-from your installed agents (`codex`, `claude`, and `agy`) at runtime (`agroute models`,
-or `agroute models --refresh` to refresh the Antigravity CLI cache). `agroute tui`
-opens a live terminal dashboard of `agroute plan` executions and `howhard` routing
-decisions across registered repositories, while `agroute list` and `agroute show <id>`
+from your installed agents (`codex`, `claude`, and `agy`) at runtime (`agr models`,
+or `agr models --refresh` to refresh the Antigravity CLI cache). `agr tui`
+opens a live terminal dashboard of `agr plan` executions and `howhard` routing
+decisions across registered repositories, while `agr list` and `agr show <id>`
 provide scriptable CLI access.
 
 Git worktrees share repository state in `<git-common-dir>/agroute` while each task
