@@ -1,15 +1,11 @@
-"""Empirical Bayes calibration of 5-hour and weekly subscription credit-pool ceilings.
+"""Empirical Bayes calibration of 5-hour and weekly quota-credit ceilings.
 
 `agroute` tracks quota snapshots per `(agent, effective_plan, quota_group, window)` across
-non-resetting windows (`<600s` `reset_at` jitter tolerance; rollover when `reset_at` shifts
-by `>=600s`, `reset_at` passes, or `used_pct` drops). When a non-resetting interval
-`[t_prev, t_curr]` records `delta_used_pct >= 0.25` (`delta_frac = delta_used_pct / 100.0`),
-no unobserved or in-flight planned route straddles `t_curr`, and all completed `howhard`
-observations for `(agent, quota_group)` in `(t_prev, t_curr]` carry positive `cost_usd`,
-the interval updates bounded sufficient statistics `(S_cost, S_frac)` (`S_frac <= 2.0`)
-with outlier filtering `[0.1 * C_prior, 10.0 * C_prior]` and empirical Bayes shrinkage
-`C_hat = (F0 * C_prior + S_cost) / (F0 + S_frac)` (`F0 = 0.20`). Explicit manual
-`[agents.<name>].credit` overrides remain exact.
+non-resetting windows. Completed howhard observations provide measured quota credit; accepted
+intervals update bounded sufficient statistics `(s_credit, s_frac)` and estimate the
+credit ceiling. Subscription cash cost is maintained separately and allocated across weekly
+pools by their calibrated credit ceilings. Explicit manual `[agents.<name>].credit`
+overrides remain exact.
 """
 
 from __future__ import annotations
@@ -22,7 +18,7 @@ import os
 from pathlib import Path
 
 from .adapters import get_adapter
-from .config import resolve_plan_credit_sources
+from .config import resolve_plan_credit_sources, resolve_plan_monthly_cost
 from .files import atomic_write
 from .state import check, claim
 from .validation import (
@@ -38,7 +34,8 @@ from .validation import (
     text,
 )
 
-CALIBRATION_STORE_FORMAT = "agroute-credit-calibration-v1"
+CALIBRATION_STORE_FORMAT = "agroute-credit-calibration-v2"
+LEGACY_CALIBRATION_STORE_FORMAT = "agroute-credit-calibration-v1"
 WINDOWS = ("session_5h", "weekly_7d")
 PRIOR_STRENGTH_F0 = 0.20
 MAX_SAMPLE_WINDOWS_FMAX = 2.0
@@ -84,6 +81,12 @@ def _validate_snapshot_entry(raw: dict, where: str) -> dict:
 def _validate_calibration_store(payload: dict, path: Path) -> dict:
     where = f"credit calibration store {path}"
     table(payload, where)
+    if payload.get("format") == LEGACY_CALIBRATION_STORE_FORMAT:
+        payload = deepcopy(payload)
+        payload["format"] = CALIBRATION_STORE_FORMAT
+        for entry in (payload.get("pools") or {}).values():
+            if "s_cost" in entry and "s_credit" not in entry:
+                entry["s_credit"] = entry.pop("s_cost")
     keys(payload, ["format", "pools"], where=where)
     if payload["format"] != CALIBRATION_STORE_FORMAT:
         raise AgRouteError(f"{where}: unsupported format {payload['format']!r}")
@@ -94,7 +97,7 @@ def _validate_calibration_store(payload: dict, path: Path) -> dict:
         table(entry, p_where)
         keys(
             entry,
-            ["agent", "plan", "quota_group", "window", "s_cost", "s_frac", "matched_intervals"],
+            ["agent", "plan", "quota_group", "window", "s_credit", "s_frac", "matched_intervals"],
             ["rejected_outliers", "updated_at", "last_snapshot"],
             where=p_where,
         )
@@ -107,7 +110,7 @@ def _validate_calibration_store(payload: dict, path: Path) -> dict:
         expected_key = make_pool_key(ag, plan, q_group, win)
         if raw_key != expected_key:
             raise AgRouteError(f"{p_where}: pool key {raw_key!r} does not match {expected_key!r}")
-        s_cost = number(entry["s_cost"], f"{p_where}.s_cost", nonnegative=True)
+        s_credit = number(entry["s_credit"], f"{p_where}.s_credit", nonnegative=True)
         s_frac = number(entry["s_frac"], f"{p_where}.s_frac", nonnegative=True)
         if s_frac > MAX_SAMPLE_WINDOWS_FMAX + 1e-6:
             raise AgRouteError(f"{p_where}.s_frac: exceeds maximum {MAX_SAMPLE_WINDOWS_FMAX}")
@@ -128,7 +131,7 @@ def _validate_calibration_store(payload: dict, path: Path) -> dict:
             "plan": plan,
             "quota_group": q_group,
             "window": win,
-            "s_cost": min(s_cost, 1e12),
+            "s_credit": min(s_credit, 1e12),
             "s_frac": min(s_frac, MAX_SAMPLE_WINDOWS_FMAX),
             "matched_intervals": matched,
             "rejected_outliers": rejected,
@@ -200,7 +203,11 @@ def _read_jsonl_tail(path: Path, *, max_bytes: int | None = None) -> list[dict]:
     return rows
 
 
-def _extract_observation_cost_usd(obs: dict) -> float | None:
+def _extract_observation_credit_usd(obs: dict) -> float | None:
+    raw_credit = obs.get("needed_credit_usd", obs.get("credit_usd"))
+    if type(raw_credit) in (int, float) and math.isfinite(raw_credit):
+        return float(raw_credit)
+    # Older execution evidence recorded API list-price usage as cost_usd.
     raw_cost = obs.get("cost_usd")
     if type(raw_cost) in (int, float) and math.isfinite(raw_cost):
         return float(raw_cost)
@@ -259,11 +266,11 @@ def _load_hh_observations(hh_root: Path) -> tuple[dict[str, dict], list[dict]]:
                     merged[field] = item[field]
             corr = item.get("measurement_corrections")
             if isinstance(corr, dict):
-                for m_field in ("tokens", "seconds", "cost_usd", "execution_usage"):
+                for m_field in ("tokens", "seconds", "cost_usd", "credit_usd", "needed_credit_usd", "execution_usage"):
                     if m_field in corr:
                         merged[m_field] = deepcopy(corr[m_field])
             else:
-                for m_field in ("tokens", "seconds", "cost_usd", "execution_usage"):
+                for m_field in ("tokens", "seconds", "cost_usd", "credit_usd", "needed_credit_usd", "execution_usage"):
                     if item.get(m_field) is not None:
                         merged[m_field] = deepcopy(item[m_field])
             by_id[amends] = merged
@@ -297,7 +304,7 @@ def _load_hh_observations(hh_root: Path) -> tuple[dict[str, dict], list[dict]]:
         if not raw_model:
             continue
         exec_agent, bare_model = infer_agent_from_model(raw_model)
-        cost_usd = _extract_observation_cost_usd(final_obs)
+        credit_usd = _extract_observation_credit_usd(final_obs)
         normalized_obs = {
             "id": root_id,
             "decision_id": final_obs.get("decision_id") if isinstance(final_obs.get("decision_id"), str) else None,
@@ -307,7 +314,7 @@ def _load_hh_observations(hh_root: Path) -> tuple[dict[str, dict], list[dict]]:
             "outcome": str(final_obs["outcome"]),
             "observed_dt": obs_dt,
             "observed_at": format_timestamp(obs_dt),
-            "cost_usd": cost_usd,
+            "credit_usd": credit_usd,
         }
         effective_list.append(normalized_obs)
         if normalized_obs["decision_id"]:
@@ -427,8 +434,8 @@ def _canonical_pool_group_for_window(
     preset_credit: dict,
     manual_credit: dict,
 ) -> tuple[str, float | None, float | None]:
-    """Return `(pool_group, prior_usd, manual_usd)` for `(agent_name, quota_group, window)`."""
-    field = f"{window}_usd"
+    """Return `(pool_group, prior_credit_usd, manual_credit_usd)` for a quota window."""
+    field = f"{window}_credit_usd"
     p_tiers = preset_credit.get("tiers") or {}
     m_tiers = manual_credit.get("tiers") or {}
 
@@ -438,32 +445,32 @@ def _canonical_pool_group_for_window(
     if agent_name == "agy" and quota_group in ("argon", "carbon", "hydrogen"):
         candidate_groups.append("gemini")
 
-    manual_usd = None
+    manual_credit_usd = None
     manual_group = None
     for grp in candidate_groups:
         if grp in m_tiers and field in m_tiers[grp]:
-            manual_usd = float(m_tiers[grp][field])
+            manual_credit_usd = float(m_tiers[grp][field])
             manual_group = grp
             break
-    if manual_usd is None and field in manual_credit:
-        manual_usd = float(manual_credit[field])
+    if manual_credit_usd is None and field in manual_credit:
+        manual_credit_usd = float(manual_credit[field])
         manual_group = "shared"
 
-    prior_usd = None
+    prior_credit_usd = None
     prior_group = None
     for grp in candidate_groups:
         if grp in p_tiers and field in p_tiers[grp]:
-            prior_usd = float(p_tiers[grp][field])
+            prior_credit_usd = float(p_tiers[grp][field])
             prior_group = grp
             break
-    if prior_usd is None and field in preset_credit:
-        prior_usd = float(preset_credit[field])
+    if prior_credit_usd is None and field in preset_credit:
+        prior_credit_usd = float(preset_credit[field])
         prior_group = "shared"
 
     pool_group = manual_group or prior_group or (
         "gemini" if agent_name == "agy" and quota_group in ("argon", "carbon", "hydrogen") else quota_group
     )
-    return pool_group, prior_usd, manual_usd
+    return pool_group, prior_credit_usd, manual_credit_usd
 
 
 def _model_pool_groups(agent_name: str, model_id: str, agent_state: dict, preset_credit: dict) -> set[str]:
@@ -514,25 +521,105 @@ def _extract_pool_window(agent_name: str, pool_group: str, window: str, agent_st
 
 
 def _iter_preset_pools(preset_credit: dict) -> list[tuple[str, str, float]]:
-    """Yield `(pool_group, window, prior_usd)` for every pool defined in `preset_credit`."""
+    """Yield `(pool_group, window, prior_credit_usd)` for each preset pool."""
     pools: list[tuple[str, str, float]] = []
     for win in WINDOWS:
-        field = f"{win}_usd"
+        field = f"{win}_credit_usd"
         if field in preset_credit:
             pools.append(("shared", win, float(preset_credit[field])))
     for grp, spec in sorted((preset_credit.get("tiers") or {}).items()):
         for win in WINDOWS:
-            field = f"{win}_usd"
+            field = f"{win}_credit_usd"
             if field in spec:
                 pools.append((grp, win, float(spec[field])))
     return pools
 
 
-def posterior_ceiling_usd(prior_usd: float, s_cost: float, s_frac: float) -> float:
-    """Compute empirical Bayes ceiling `C_hat = (F0 * C_prior + S_cost) / (F0 + S_frac)`."""
+def posterior_ceiling_credit_usd(prior_credit_usd: float, s_credit: float, s_frac: float) -> float:
+    """Compute the calibrated quota-credit ceiling from observed API list-price usage."""
     if s_frac <= 0.0:
-        return float(prior_usd)
-    return round((PRIOR_STRENGTH_F0 * prior_usd + s_cost) / (PRIOR_STRENGTH_F0 + s_frac), 6)
+        return float(prior_credit_usd)
+    return round((PRIOR_STRENGTH_F0 * prior_credit_usd + s_credit) / (PRIOR_STRENGTH_F0 + s_frac), 6)
+
+
+def _calibrated_pool_credit(
+    agent_name: str,
+    effective_plan: str,
+    quota_group: str,
+    preset_credit: dict,
+    manual_credit: dict,
+    calibration_pools: dict,
+) -> tuple[str, float | None]:
+    pool_group, prior, manual = _canonical_pool_group_for_window(
+        agent_name, quota_group, "weekly_7d", preset_credit, manual_credit
+    )
+    if manual is not None:
+        return pool_group, manual
+    if prior is None:
+        return pool_group, None
+    pkey = make_pool_key(agent_name, effective_plan, pool_group, "weekly_7d") if effective_plan else ""
+    learned = calibration_pools.get(pkey)
+    return pool_group, posterior_ceiling_credit_usd(
+        prior,
+        float(learned["s_credit"]) if learned else 0.0,
+        float(learned["s_frac"]) if learned else 0.0,
+    )
+
+
+def _pool_cost_metadata(
+    agent_name: str,
+    agent_cfg: dict,
+    detected_plan: str | None,
+    quota_group: str,
+    calibration_pools: dict,
+) -> dict:
+    """Allocate weekly subscription cost across calibrated weekly credit ceilings."""
+    effective_plan, preset_credit, manual_credit, effective_credit = resolve_plan_credit_sources(
+        agent_name, agent_cfg, detected_plan
+    )
+    monthly_cost = resolve_plan_monthly_cost(agent_name, agent_cfg, detected_plan)
+    weekly_cost = monthly_cost * 7.0 / 30.0 if monthly_cost is not None else None
+    result = {
+        "monthly_cost_usd": monthly_cost,
+        "weekly_cost_usd": weekly_cost,
+        "pool_weekly_cost_usd": None,
+        "calibrated_weekly_credit_usd": None,
+        "cost_per_credit": 1.0 if monthly_cost is None else 0.0 if monthly_cost == 0.0 else 1.0,
+    }
+    if monthly_cost is None or monthly_cost == 0.0:
+        return result
+
+    groups = set(effective_credit.get("tiers") or {})
+    if "weekly_7d_credit_usd" in effective_credit:
+        groups.add("shared")
+    pool_ceilings: dict[str, float] = {}
+    for group in sorted(groups):
+        pool_group, credit = _calibrated_pool_credit(
+            agent_name, effective_plan, group, preset_credit, manual_credit, calibration_pools
+        )
+        if credit is not None:
+            pool_ceilings[pool_group] = credit
+    total_credit = sum(pool_ceilings.values())
+    if total_credit <= 0.0:
+        return result
+
+    target_group, target_credit = _calibrated_pool_credit(
+        agent_name, effective_plan, quota_group, preset_credit, manual_credit, calibration_pools
+    )
+    if target_credit is None:
+        target_credit = pool_ceilings.get(target_group)
+    if target_credit is None and len(pool_ceilings) == 1:
+        target_group, target_credit = next(iter(pool_ceilings.items()))
+    if target_credit is None or target_credit <= 0.0:
+        return result
+
+    pool_weekly_cost = weekly_cost * target_credit / total_credit
+    result.update(
+        pool_weekly_cost_usd=pool_weekly_cost,
+        calibrated_weekly_credit_usd=target_credit,
+        cost_per_credit=pool_weekly_cost / target_credit,
+    )
+    return result
 
 
 def record_usage_calibration_snapshot(
@@ -559,11 +646,11 @@ def record_usage_calibration_snapshot(
     observations: list[dict] = []
     routes: list[dict] = []
 
-    for pool_group, window, prior_usd in preset_pools:
-        _, _, manual_usd = _canonical_pool_group_for_window(
+    for pool_group, window, prior_credit_usd in preset_pools:
+        _, _, manual_credit_usd = _canonical_pool_group_for_window(
             agent_name, pool_group, window, preset_credit, manual_credit
         )
-        if manual_usd is not None:
+        if manual_credit_usd is not None:
             # Explicit manual `[agents.<name>].credit` overrides remain exact and uncalibrated.
             continue
 
@@ -595,7 +682,7 @@ def record_usage_calibration_snapshot(
                 "plan": effective_plan,
                 "quota_group": pool_group,
                 "window": window,
-                "s_cost": 0.0,
+                "s_credit": 0.0,
                 "s_frac": 0.0,
                 "matched_intervals": 0,
                 "rejected_outliers": 0,
@@ -678,25 +765,25 @@ def record_usage_calibration_snapshot(
         ]
         if not interval_obs:
             continue
-        if any(obs["cost_usd"] is None or obs["cost_usd"] <= 0.0 for obs in interval_obs):
+        if any(obs["credit_usd"] is None or obs["credit_usd"] <= 0.0 for obs in interval_obs):
             continue
 
-        interval_cost_usd = sum(float(obs["cost_usd"]) for obs in interval_obs)
+        interval_credit_usd = sum(float(obs["credit_usd"]) for obs in interval_obs)
         delta_frac = delta_used_pct / 100.0
-        implied_ceiling = interval_cost_usd / delta_frac
-        if not (OUTLIER_MIN_FACTOR * prior_usd <= implied_ceiling <= OUTLIER_MAX_FACTOR * prior_usd):
+        implied_ceiling = interval_credit_usd / delta_frac
+        if not (OUTLIER_MIN_FACTOR * prior_credit_usd <= implied_ceiling <= OUTLIER_MAX_FACTOR * prior_credit_usd):
             pool["rejected_outliers"] = pool.get("rejected_outliers", 0) + 1
             pool["updated_at"] = curr_snap["observed_at"]
             continue
 
-        s_cost = pool["s_cost"] + interval_cost_usd
+        s_credit = pool["s_credit"] + interval_credit_usd
         s_frac = pool["s_frac"] + delta_frac
         if s_frac > MAX_SAMPLE_WINDOWS_FMAX:
             decay = MAX_SAMPLE_WINDOWS_FMAX / s_frac
-            s_cost *= decay
+            s_credit *= decay
             s_frac = MAX_SAMPLE_WINDOWS_FMAX
 
-        pool["s_cost"] = round(s_cost, 9)
+        pool["s_credit"] = round(s_credit, 9)
         pool["s_frac"] = round(s_frac, 9)
         pool["matched_intervals"] = pool["matched_intervals"] + 1
         pool["updated_at"] = curr_snap["observed_at"]
@@ -739,6 +826,9 @@ def resolve_calibrated_quota_credit(
         agent_name, agent_cfg, effective_state.get("detected_plan")
     )
     pools = (calibration_store or {}).get("pools") or {}
+    cost_meta = _pool_cost_metadata(
+        agent_name, agent_cfg, effective_state.get("detected_plan"), quota_group, pools
+    )
     consumed_pools = quota_pools if quota_pools else [(quota_group, s5_win, w7_win)]
 
     windows_meta: dict[str, dict] = {}
@@ -752,25 +842,25 @@ def resolve_calibrated_quota_credit(
         for pool_entry in consumed_pools:
             q_group = pool_entry[0]
             win_dict = pool_entry[win_idx]
-            pool_group, prior_usd, manual_usd = _canonical_pool_group_for_window(
+            pool_group, prior_credit_usd, manual_credit_usd = _canonical_pool_group_for_window(
                 agent_name, q_group, window, preset_credit, manual_credit
             )
             if pool_group in seen_pool_groups:
                 continue
             seen_pool_groups.add(pool_group)
 
-            if manual_usd is not None:
-                total_usd = manual_usd
+            if manual_credit_usd is not None:
+                total_credit_usd = manual_credit_usd
                 s_frac = 0.0
                 matched = 0
                 is_manual = True
-            elif prior_usd is not None:
+            elif prior_credit_usd is not None:
                 pkey = make_pool_key(agent_name, effective_plan, pool_group, window) if effective_plan else ""
                 pool = pools.get(pkey)
-                s_cost = float(pool["s_cost"]) if pool else 0.0
+                s_credit = float(pool["s_credit"]) if pool else 0.0
                 s_frac = float(pool["s_frac"]) if pool else 0.0
                 matched = int(pool["matched_intervals"]) if pool else 0
-                total_usd = posterior_ceiling_usd(prior_usd, s_cost, s_frac)
+                total_credit_usd = posterior_ceiling_credit_usd(prior_credit_usd, s_credit, s_frac)
                 is_manual = False
             else:
                 continue
@@ -778,26 +868,29 @@ def resolve_calibrated_quota_credit(
             used_pct = win_dict.get("used_pct") if isinstance(win_dict, dict) else None
             if used_pct is not None:
                 pct_left = max(0.0, 100.0 - reserve_pct - float(used_pct))
-                rem = round((pct_left / 100.0) * total_usd, 6)
+                remaining_credit_usd = round((pct_left / 100.0) * total_credit_usd, 6)
             else:
-                rem = None
+                remaining_credit_usd = None
 
             meta = {
                 "pool_group": pool_group,
-                "prior_total_usd": prior_usd,
-                "calibrated_total_usd": total_usd,
+                "prior_credit_usd": prior_credit_usd,
+                "calibrated_credit_usd": total_credit_usd,
                 "effective_sample_windows": round(s_frac, 6),
                 "matched_intervals": matched,
                 "manual_override": is_manual,
                 "used_pct": used_pct,
-                "remaining_usd": rem,
+                "remaining_credit_usd": remaining_credit_usd,
             }
+            if window == "weekly_7d":
+                meta["weekly_cost_usd"] = cost_meta["pool_weekly_cost_usd"]
+                meta["cost_per_credit"] = cost_meta["cost_per_credit"]
 
             if best_meta is None:
-                best_rem = rem
+                best_rem = remaining_credit_usd
                 best_meta = meta
-            elif rem is not None and (best_rem is None or rem < best_rem):
-                best_rem = rem
+            elif remaining_credit_usd is not None and (best_rem is None or remaining_credit_usd < best_rem):
+                best_rem = remaining_credit_usd
                 best_meta = meta
 
         if best_meta is None:
@@ -806,21 +899,22 @@ def resolve_calibrated_quota_credit(
         windows_meta[window] = best_meta
 
     if not windows_meta:
-        return None, None
+        return None, {"plan": effective_plan or None, **cost_meta}
 
     present = [x for x in (rem_by_win["session_5h"], rem_by_win["weekly_7d"]) if x is not None]
     credit_budget = None
-    available_usd = min(present) if present else None
+    available_credit_usd = min(present) if present else None
     if present:
-        credit_budget = {"available_usd": available_usd}
+        credit_budget = {"available_credit_usd": available_credit_usd}
         if rem_by_win["session_5h"] is not None:
-            credit_budget["session_5h_remaining_usd"] = rem_by_win["session_5h"]
+            credit_budget["session_5h_remaining_credit_usd"] = rem_by_win["session_5h"]
         if rem_by_win["weekly_7d"] is not None:
-            credit_budget["weekly_7d_remaining_usd"] = rem_by_win["weekly_7d"]
+            credit_budget["weekly_7d_remaining_credit_usd"] = rem_by_win["weekly_7d"]
 
     calibration_meta = {
         "plan": effective_plan or None,
-        "available_usd": available_usd,
+        "available_credit_usd": available_credit_usd,
+        **cost_meta,
         **windows_meta,
     }
     return credit_budget, calibration_meta
@@ -841,8 +935,8 @@ def build_agent_calibration_summary(
     reserve = float(agent_cfg.get("host_reserve_pct", 0.0)) if is_host else 0.0
 
     groups: list[str] = []
-    if any(k in preset_credit for k in ("session_5h_usd", "weekly_7d_usd")) or any(
-        k in manual_credit for k in ("session_5h_usd", "weekly_7d_usd")
+    if any(k in preset_credit for k in ("session_5h_credit_usd", "weekly_7d_credit_usd")) or any(
+        k in manual_credit for k in ("session_5h_credit_usd", "weekly_7d_credit_usd")
     ):
         groups.append("shared")
     for grp in sorted(set(preset_credit.get("tiers") or {}) | set(manual_credit.get("tiers") or {})):

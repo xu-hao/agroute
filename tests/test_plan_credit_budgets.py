@@ -66,7 +66,7 @@ def _write_codex_cache(models):
             "free",
             {
                 "tiers": {
-                    "gemini": {"session_5h_usd": 3.0, "weekly_7d_usd": 10.0},
+                    "gemini": {"session_5h_credit_usd": 3.0, "weekly_7d_credit_usd": 10.0},
                 }
             },
         ),
@@ -76,7 +76,7 @@ def _write_codex_cache(models):
             "plus-8",
             {
                 "tiers": {
-                    "gemini": {"session_5h_usd": 12.0, "weekly_7d_usd": 50.0},
+                    "gemini": {"session_5h_credit_usd": 12.0, "weekly_7d_credit_usd": 50.0},
                 }
             },
         ),
@@ -86,8 +86,8 @@ def _write_codex_cache(models):
             "ultra-100",
             {
                 "tiers": {
-                    "gemini": {"session_5h_usd": 80.0, "weekly_7d_usd": 337.5},
-                    "3p": {"session_5h_usd": 12.5, "weekly_7d_usd": 25.0},
+                    "gemini": {"session_5h_credit_usd": 80.0, "weekly_7d_credit_usd": 337.5},
+                    "3p": {"session_5h_credit_usd": 12.5, "weekly_7d_credit_usd": 25.0},
                 }
             },
         ),
@@ -97,8 +97,8 @@ def _write_codex_cache(models):
             "pro-20",
             {
                 "tiers": {
-                    "gemini": {"session_5h_usd": 32.0, "weekly_7d_usd": 135.0},
-                    "3p": {"session_5h_usd": 5.0, "weekly_7d_usd": 10.0},
+                    "gemini": {"session_5h_credit_usd": 32.0, "weekly_7d_credit_usd": 135.0},
+                    "3p": {"session_5h_credit_usd": 5.0, "weekly_7d_credit_usd": 10.0},
                 }
             },
         ),
@@ -108,8 +108,8 @@ def _write_codex_cache(models):
             "pro-20",
             {
                 "tiers": {
-                    "gemini": {"session_5h_usd": 32.0, "weekly_7d_usd": 135.0},
-                    "3p": {"session_5h_usd": 5.0, "weekly_7d_usd": 10.0},
+                    "gemini": {"session_5h_credit_usd": 32.0, "weekly_7d_credit_usd": 135.0},
+                    "3p": {"session_5h_credit_usd": 5.0, "weekly_7d_credit_usd": 10.0},
                 }
             },
         ),
@@ -119,8 +119,8 @@ def _write_codex_cache(models):
             "ultra-200",
             {
                 "tiers": {
-                    "gemini": {"session_5h_usd": 320.0, "weekly_7d_usd": 1350.0},
-                    "3p": {"session_5h_usd": 25.0, "weekly_7d_usd": 50.0},
+                    "gemini": {"session_5h_credit_usd": 320.0, "weekly_7d_credit_usd": 1350.0},
+                    "3p": {"session_5h_credit_usd": 25.0, "weekly_7d_credit_usd": 50.0},
                 }
             },
         ),
@@ -130,8 +130,8 @@ def _write_codex_cache(models):
             "ultra-200",
             {
                 "tiers": {
-                    "gemini": {"session_5h_usd": 320.0, "weekly_7d_usd": 1350.0},
-                    "3p": {"session_5h_usd": 25.0, "weekly_7d_usd": 50.0},
+                    "gemini": {"session_5h_credit_usd": 320.0, "weekly_7d_credit_usd": 1350.0},
+                    "3p": {"session_5h_credit_usd": 25.0, "weekly_7d_credit_usd": 50.0},
                 }
             },
         ),
@@ -151,16 +151,16 @@ def _write_codex_cache(models):
             "claude",
             "claude-pro",
             "pro-20",
-            {"session_5h_usd": 18.0, "weekly_7d_usd": 45.0, "tiers": {}},
+            {"session_5h_credit_usd": 18.0, "weekly_7d_credit_usd": 45.0, "tiers": {}},
         ),
         (
             "claude",
             "max_5x",
             "max-5x",
             {
-                "session_5h_usd": 90.0,
-                "weekly_7d_usd": 225.0,
-                "tiers": {"fable": {"weekly_7d_usd": 75.0}},
+                "session_5h_credit_usd": 90.0,
+                "weekly_7d_credit_usd": 225.0,
+                "tiers": {"fable": {"weekly_7d_credit_usd": 75.0}},
             },
         ),
         (
@@ -168,28 +168,28 @@ def _write_codex_cache(models):
             "max_20x",
             "max-20x",
             {
-                "session_5h_usd": 360.0,
-                "weekly_7d_usd": 900.0,
-                "tiers": {"fable": {"weekly_7d_usd": 300.0}},
+                "session_5h_credit_usd": 360.0,
+                "weekly_7d_credit_usd": 900.0,
+                "tiers": {"fable": {"weekly_7d_credit_usd": 300.0}},
             },
         ),
         (
             "codex",
             "chatgpt-plus",
             "plus-20",
-            {"session_5h_usd": 20.0, "weekly_7d_usd": 50.0, "tiers": {}},
+            {"session_5h_credit_usd": 20.0, "weekly_7d_credit_usd": 50.0, "tiers": {}},
         ),
         (
             "codex",
             "promax",
-            "pro-200",
-            {"session_5h_usd": 200.0, "weekly_7d_usd": 500.0, "tiers": {}},
+            "pro-500",
+            {"session_5h_credit_usd": 500.0, "weekly_7d_credit_usd": 1250.0, "tiers": {}},
         ),
         (
             "codex",
             "pro",
             "pro-200",
-            {"session_5h_usd": 200.0, "weekly_7d_usd": 500.0, "tiers": {}},
+            {"session_5h_credit_usd": 200.0, "weekly_7d_credit_usd": 500.0, "tiers": {}},
         ),
     ],
 )
@@ -212,7 +212,7 @@ plan = "pro-20"
 exclude_quota_groups = ["3p", "argon"]
 
 [agents.agy.credit.tiers.3p]
-session_5h_usd = 12.0
+session_5h_credit_usd = 12.0
 
 [agents.claude]
 plan = "max-5x"
@@ -230,10 +230,10 @@ plan = "ultra-200"
 exclude_quota_groups = ["3p"]
 
 [agents.agy.credit.tiers.gemini]
-weekly_7d_usd = 1500.0
+weekly_7d_credit_usd = 1500.0
 
 [agents.claude.credit]
-session_5h_usd = 100.0
+session_5h_credit_usd = 100.0
 """,
         encoding="utf-8",
     )
@@ -241,18 +241,18 @@ session_5h_usd = 100.0
     cfg = load_config(project=proj_dir)
     assert cfg.agents["agy"]["plan"] == "ultra-200"
     assert cfg.agents["agy"]["exclude_quota_groups"] == ["3p"]
-    # User 3p session_5h_usd override + project gemini weekly_7d_usd override layered over ultra-200
+    # User 3p session_5h_credit_usd override + project gemini weekly_7d_credit_usd override layered over ultra-200
     assert cfg.agents["agy"]["credit"] == {
         "tiers": {
-            "gemini": {"session_5h_usd": 320.0, "weekly_7d_usd": 1500.0},
-            "3p": {"session_5h_usd": 12.0, "weekly_7d_usd": 50.0},
+            "gemini": {"session_5h_credit_usd": 320.0, "weekly_7d_credit_usd": 1500.0},
+            "3p": {"session_5h_credit_usd": 12.0, "weekly_7d_credit_usd": 50.0},
         }
     }
     assert cfg.agents["claude"]["plan"] == "max-5x"
     assert cfg.agents["claude"]["credit"] == {
-        "session_5h_usd": 100.0,
-        "weekly_7d_usd": 225.0,
-        "tiers": {"fable": {"weekly_7d_usd": 75.0}},
+        "session_5h_credit_usd": 100.0,
+        "weekly_7d_credit_usd": 225.0,
+        "tiers": {"fable": {"weekly_7d_credit_usd": 75.0}},
     }
 
 
@@ -262,11 +262,11 @@ session_5h_usd = 100.0
         ('[agents.agy]\nplan = "enterprise-999"\n', "unknown plan 'enterprise-999' for agent 'agy'"),
         ('[agents.codex]\nplan = "ultra-200"\n', "unknown plan 'ultra-200' for agent 'codex'"),
         ("[agents.claude]\nplan = 20\n", "agents.claude.plan: expected a string"),
-        ("[agents.claude.credit]\nsession_5h_usd = 0\n", "expected a positive number"),
-        ("[agents.claude.credit]\nweekly_7d_usd = -5.0\n", "expected a positive number"),
-        ("[agents.claude.credit]\nsession_5h_usd = true\n", "expected a finite number"),
+        ("[agents.claude.credit]\nsession_5h_credit_usd = 0\n", "expected a positive number"),
+        ("[agents.claude.credit]\nweekly_7d_credit_usd = -5.0\n", "expected a positive number"),
+        ("[agents.claude.credit]\nsession_5h_credit_usd = true\n", "expected a finite number"),
         ("[agents.claude.credit]\nunknown_field = 10.0\n", "unknown keys"),
-        ("[agents.agy.credit.tiers.gemini]\n", "expected at least one of session_5h_usd or weekly_7d_usd"),
+        ("[agents.agy.credit.tiers.gemini]\n", "expected at least one of session_5h_credit_usd or weekly_7d_credit_usd"),
         ("[agents.agy.credit.tiers.gemini]\nextra = 1.0\n", "unknown keys"),
         ('[agents.agy]\nexclude_quota_groups = "3p"\n', "expected a list of quota-group labels"),
         ('[agents.agy]\nexclude_quota_groups = [""]\n', "expected a non-empty trimmed string"),
@@ -411,33 +411,33 @@ plan = "plus-20"
     )
 
     assert by_model["agy/gemini-4-carbon-high"]["credit_budget"] == {
-        "available_usd": 135.0,
-        "session_5h_remaining_usd": 208.0,
-        "weekly_7d_remaining_usd": 135.0,
+        "available_credit_usd": 135.0,
+        "session_5h_remaining_credit_usd": 208.0,
+        "weekly_7d_remaining_credit_usd": 135.0,
     }
     assert by_model["claude/claude-opus-5-5"]["credit_budget"] == {
-        "available_usd": 180.0,
-        "session_5h_remaining_usd": 180.0,
-        "weekly_7d_remaining_usd": 810.0,
+        "available_credit_usd": 180.0,
+        "session_5h_remaining_credit_usd": 180.0,
+        "weekly_7d_remaining_credit_usd": 810.0,
     }
     assert by_model["claude/claude-fable-5-2"]["credit_budget"] == {
-        "available_usd": 120.0,
-        "session_5h_remaining_usd": 180.0,
-        "weekly_7d_remaining_usd": 120.0,
+        "available_credit_usd": 120.0,
+        "session_5h_remaining_credit_usd": 180.0,
+        "weekly_7d_remaining_credit_usd": 120.0,
     }
-    # Codex has no weekly_7d_remaining_usd key (no None values in credit_budget)
+    # Codex has no weekly_7d_remaining_credit_usd key (no None values in credit_budget)
     assert by_model["codex/gpt-6.1-sol"]["credit_budget"] == {
-        "available_usd": 16.0,
-        "session_5h_remaining_usd": 16.0,
+        "available_credit_usd": 16.0,
+        "session_5h_remaining_credit_usd": 16.0,
     }
 
     # Check non-host agy (reserve not deducted when host is codex)
     res_host_codex = router.candidates("codex", now=NOW)
     by_model_codex_host = {c["model"]: c for c in res_host_codex["candidates"]}
     assert by_model_codex_host["agy/gemini-4-carbon-high"]["credit_budget"] == {
-        "available_usd": 240.0,
-        "session_5h_remaining_usd": 240.0,
-        "weekly_7d_remaining_usd": 270.0,
+        "available_credit_usd": 240.0,
+        "session_5h_remaining_credit_usd": 240.0,
+        "weekly_7d_remaining_credit_usd": 270.0,
     }
 
     # Verify TOML inventory rendering with inline credit_budget tables parses cleanly
@@ -445,13 +445,13 @@ plan = "plus-20"
     parsed = tomllib.loads(toml_str)
     inv_by_model = {c["model"]: c for c in parsed["inventories"]["router"]}
     assert inv_by_model["agy/gemini-4-carbon-high"]["credit_budget"] == {
-        "available_usd": 135.0,
-        "session_5h_remaining_usd": 208.0,
-        "weekly_7d_remaining_usd": 135.0,
+        "available_credit_usd": 135.0,
+        "session_5h_remaining_credit_usd": 208.0,
+        "weekly_7d_remaining_credit_usd": 135.0,
     }
     assert inv_by_model["codex/gpt-6.1-sol"]["credit_budget"] == {
-        "available_usd": 16.0,
-        "session_5h_remaining_usd": 16.0,
+        "available_credit_usd": 16.0,
+        "session_5h_remaining_credit_usd": 16.0,
     }
 
 
@@ -474,7 +474,7 @@ host_reserve_pct = 10.0
     mq = snap["models"]["gemini-4-carbon-high"]
     # Note: in usage_show, cli surface comes first (is_host=False -> 3.2 USD),
     # while candidates("agy") evaluates native surface with is_host=True -> 0.0 USD!
-    assert mq["credit_budget"]["available_usd"] == 3.2
+    assert mq["credit_budget"]["available_credit_usd"] == 3.2
 
     with pytest.raises(AgRouteError, match="0 USD remaining"):
         router.candidates("agy", include_agents=["agy"], now=NOW)
@@ -542,20 +542,20 @@ plan = "plus-20"
     assert plan_ok["target_agent"] == "claude"
     assert plan_ok["needed_credit_usd"] == 4.5
     assert plan_ok["credit_budget"] == {
-        "available_usd": 9.0,
-        "session_5h_remaining_usd": 9.0,
-        "weekly_7d_remaining_usd": 40.5,
+        "available_credit_usd": 9.0,
+        "session_5h_remaining_credit_usd": 9.0,
+        "weekly_7d_remaining_credit_usd": 40.5,
     }
     shown = router.show_route(plan_ok["route_id"], now=NOW)
     assert shown["needed_credit_usd"] == 4.5
-    assert shown["credit_budget"]["available_usd"] == 9.0
+    assert shown["credit_budget"]["available_credit_usd"] == 9.0
 
     # 2. Now live usage on claude moves to 85% used on session_5h -> 15% * 18.0 = 2.7 USD remaining.
     # Re-running plan with needed_credit_usd = 4.5 > 2.7 raises AgRouteError!
     router.usage_set("claude", session_used_pct=85.0, weekly_used_pct=10.0, now=NOW)
     with pytest.raises(
         AgRouteError,
-        match=r"requires 4\.5 USD credit, exceeding remaining credit 2\.7 USD \(session_5h_remaining_usd=2\.7, weekly_7d_remaining_usd=40\.5\)",
+        match=r"requires 4\.5 USD credit, exceeding remaining credit 2\.7 USD \(session_5h_remaining_credit_usd=2\.7, weekly_7d_remaining_credit_usd=40\.5\)",
     ):
         router.plan("agy", decision, prompt="exceeds live credit", now=NOW)
 
@@ -614,9 +614,9 @@ def test_auto_plan_resolution_for_agy_statusline_and_clear(
     assert snap["detected_plan"] == expected_plan
     assert snap["effective_plan"] == expected_plan
     assert snap["models"]["gemini-4-carbon-high"]["credit_budget"] == {
-        "available_usd": expected_5h_usd,
-        "session_5h_remaining_usd": expected_5h_usd,
-        "weekly_7d_remaining_usd": expected_7d_usd,
+        "available_credit_usd": expected_5h_usd,
+        "session_5h_remaining_credit_usd": expected_5h_usd,
+        "weekly_7d_remaining_credit_usd": expected_7d_usd,
     }
 
     router.usage_clear("agy")
@@ -672,10 +672,10 @@ def test_auto_plan_resolution_for_claude_and_codex_telemetry(
     assert c_snap["plan"] == "auto"
     assert c_snap["detected_plan"] == expected_plan
     assert c_snap["effective_plan"] == expected_plan
-    assert c_snap["models"]["claude-opus-5-5"]["credit_budget"]["available_usd"] == expected_5h_usd
+    assert c_snap["models"]["claude-opus-5-5"]["credit_budget"]["available_credit_usd"] == expected_5h_usd
 
     # Codex rateLimits with planType = "promax" vs "plus"
-    for raw_codex_plan, exp_codex_plan, exp_usd in (("promax", "pro-200", 150.0), ("plus", "plus-20", 15.0)):
+    for raw_codex_plan, exp_codex_plan, exp_credit in (("promax", "pro-500", 375.0), ("plus", "plus-20", 15.0)):
         codex_rpc = json.dumps(
             {
                 "id": 2,
@@ -695,7 +695,7 @@ def test_auto_plan_resolution_for_claude_and_codex_telemetry(
         x_snap = router.usage_show("codex", now=NOW)["agents"]["codex"]
         assert x_snap["detected_plan"] == exp_codex_plan
         assert x_snap["effective_plan"] == exp_codex_plan
-        assert x_snap["models"]["gpt-6.1-sol"]["credit_budget"]["available_usd"] == exp_usd
+        assert x_snap["models"]["gpt-6.1-sol"]["credit_budget"]["available_credit_usd"] == exp_credit
 
 
 def test_explicit_plan_overrides_detected_plan_and_empty_plan_disables_preset(tmp_path):
@@ -721,7 +721,7 @@ def test_explicit_plan_overrides_detected_plan_and_empty_plan_disables_preset(tm
     assert snap_exp["plan"] == "ultra-100"
     assert snap_exp["detected_plan"] == "ultra-200"
     assert snap_exp["effective_plan"] == "ultra-100"
-    assert snap_exp["models"]["gemini-4-carbon-high"]["credit_budget"]["available_usd"] == 40.0
+    assert snap_exp["models"]["gemini-4-carbon-high"]["credit_budget"]["available_credit_usd"] == 40.0
 
     # 2. Explicit plan = "" disables preset lookup even when detected_plan is "ultra-200"
     cfg_file.write_text('[agents.agy]\nplan = ""\n', encoding="utf-8")
@@ -734,13 +734,13 @@ def test_explicit_plan_overrides_detected_plan_and_empty_plan_disables_preset(tm
 
     # 3. Explicit plan = "" with explicit [agents.agy.credit.tiers.gemini] uses only explicit credit
     cfg_file.write_text(
-        '[agents.agy]\nplan = ""\n[agents.agy.credit.tiers.gemini]\nsession_5h_usd = 50.0\n',
+        '[agents.agy]\nplan = ""\n[agents.agy.credit.tiers.gemini]\nsession_5h_credit_usd = 50.0\n',
         encoding="utf-8",
     )
     r_credit_only = Router(cfg_file, project=tmp_path)
     snap_co = r_credit_only.usage_show("agy", now=NOW)["agents"]["agy"]
     assert snap_co["effective_plan"] == ""
-    assert snap_co["models"]["gemini-4-carbon-high"]["credit_budget"]["available_usd"] == 25.0
+    assert snap_co["models"]["gemini-4-carbon-high"]["credit_budget"]["available_credit_usd"] == 25.0
 
 
 def test_agy_and_claude_adapter_probe_plan_tier_in_isolated_tmp_path(tmp_path, monkeypatch):
@@ -836,7 +836,7 @@ def test_cli_config_set_plan_and_show_preserve_comments_and_subtables(tmp_path, 
         'plan = "auto" # inline comment\n'
         'exclude_quota_groups = ["3p"]\n\n'
         "[agents.agy.credit.tiers.gemini]\n"
-        "weekly_7d_usd = 400.0\n",
+        "weekly_7d_credit_usd = 400.0\n",
         encoding="utf-8",
     )
 
@@ -850,8 +850,8 @@ def test_cli_config_set_plan_and_show_preserve_comments_and_subtables(tmp_path, 
     assert out["config_path"] == str(user_cfg.resolve())
     assert out["credit"] == {
         "tiers": {
-            "gemini": {"session_5h_usd": 80.0, "weekly_7d_usd": 400.0},
-            "3p": {"session_5h_usd": 12.5, "weekly_7d_usd": 25.0},
+            "gemini": {"session_5h_credit_usd": 80.0, "weekly_7d_credit_usd": 400.0},
+            "3p": {"session_5h_credit_usd": 12.5, "weekly_7d_credit_usd": 25.0},
         }
     }
 
@@ -862,7 +862,7 @@ def test_cli_config_set_plan_and_show_preserve_comments_and_subtables(tmp_path, 
     assert 'plan = "ultra-100" # inline comment' in raw_after
     assert 'exclude_quota_groups = ["3p"]' in raw_after
     assert "[agents.agy.credit.tiers.gemini]" in raw_after
-    assert "weekly_7d_usd = 400.0" in raw_after
+    assert "weekly_7d_credit_usd = 400.0" in raw_after
 
     # 2. Update project config via `--project` (inserting new [agents.claude] section)
     rc_proj = main(["config", "set-plan", "claude", "max_20x", "--project", "--json"])
@@ -915,7 +915,7 @@ def test_overlapping_shared_pool_bounds_tier_model_eligibility_and_credit_budget
     router.usage_set("codex", session_used_pct=10.0, now=NOW)
 
     # Case 1: shared weekly_7d is 94% used (54.0 USD left of 900), while fable is 63% used (111.0 USD left of 300).
-    # Overlapping shared pool is tighter (54.0 < 111.0), so fable's available_usd must be capped at 54.0.
+    # Overlapping shared pool is tighter (54.0 < 111.0), so fable's available_credit_usd must be capped at 54.0.
     router.usage_set(
         "claude",
         session_used_pct=10.0,
@@ -928,9 +928,9 @@ def test_overlapping_shared_pool_bounds_tier_model_eligibility_and_credit_budget
     by_model = {c["model"]: c for c in cands["candidates"]}
     assert "claude/claude-fable-5-2" in by_model
     assert by_model["claude/claude-fable-5-2"]["credit_budget"] == {
-        "available_usd": 54.0,
-        "session_5h_remaining_usd": 324.0,
-        "weekly_7d_remaining_usd": 54.0,
+        "available_credit_usd": 54.0,
+        "session_5h_remaining_credit_usd": 324.0,
+        "weekly_7d_remaining_credit_usd": 54.0,
     }
 
     # Case 2: shared weekly_7d is 100% used (0 USD left), while fable is still 63% used.

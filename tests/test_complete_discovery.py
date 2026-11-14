@@ -95,7 +95,9 @@ def test_explicit_inventory_overrides_discovery_without_size_limit(tmp_path):
     for host in ("claude", "codex"):
         result = router.candidates(host, include_agents=["claude"])
         assert len(result["candidates"]) == 40
-        assert result["candidates"][-1] == {"model": "claude/custom-39", "effort": "high"}
+        assert result["candidates"][-1] == {
+            "model": "claude/custom-39", "effort": "high", "cost_per_credit": 1.0,
+        }
 
 
 def test_quota_exclusions_remain_visible_for_complete_inventory(tmp_path):

@@ -84,48 +84,49 @@ reason. Unknown unreported windows stay `null`. See the
 and offline inspection.
 
 (subscription-plan-presets)=
-## Subscription plan presets, credit overrides, and quota-group exclusions
+## Subscription plan presets, cost overrides, credit ceilings, and quota-group exclusions
 
-Each `[agents.<name>]` section accepts:
+Each `[agents.<name>]` section accepts a `plan` selector, a subscription cash cost, and
+independent quota-credit ceilings:
 
-- `plan = "auto"` (packaged default): subscription plan preset selector (trimmed and
-  lowercased). Accepts `"auto"` (resolves preset credit dynamically from the agent's
-  `detected_plan` persisted in `<state_root>/usage.json`, falling back to `""` when no plan has
-  been detected yet), `""` or `"none"` (disables preset credit lookup, leaving only explicit
-  `[agents.<name>].credit` overrides), or an explicit preset/alias. Unknown plan names are
-  refused with `AgRouteError` listing the valid plans for that agent.
-  - **`agy`**:
-    - `"free"` (aliases `"google-ai-free"`, `"google ai free"`): `gemini` (`session_5h_usd = 3.0`,
-      `weekly_7d_usd = 10.0`).
-    - `"plus-8"` (aliases `"plus"`, `"google-ai-plus"`, `"google ai plus"`): `gemini`
-      (`session_5h_usd = 12.0`, `weekly_7d_usd = 50.0`).
-    - `"pro-20"` (aliases `"pro"`, `"google-ai-pro"`, `"google ai pro"`): `gemini`
-      (`session_5h_usd = 32.0`, `weekly_7d_usd = 135.0`), `3p` (`session_5h_usd = 5.0`,
-      `weekly_7d_usd = 10.0`).
-    - `"ultra-100"`: `gemini` (`session_5h_usd = 80.0`, `weekly_7d_usd = 337.5`), `3p`
-      (`session_5h_usd = 12.5`, `weekly_7d_usd = 25.0`).
-    - `"ultra-200"` (aliases `"ultra"`, `"google-ai-ultra"`, `"google ai ultra"`): `gemini`
-      (`session_5h_usd = 320.0`, `weekly_7d_usd = 1350.0`), `3p` (`session_5h_usd = 25.0`,
-      `weekly_7d_usd = 50.0`).
-  - **`claude`**:
-    - `"pro-20"` (aliases `"pro"`, `"claude-pro"`): `session_5h_usd = 18.0`, `weekly_7d_usd = 45.0`.
-    - `"max-5x"` (aliases `"max_5x"`, `"claude-max-5x"`): `session_5h_usd = 90.0`,
-      `weekly_7d_usd = 225.0`, `fable` tier `weekly_7d_usd = 75.0`.
-    - `"max-20x"` (aliases `"max_20x"`, `"claude-max-20x"`): `session_5h_usd = 360.0`,
-      `weekly_7d_usd = 900.0`, `fable` tier `weekly_7d_usd = 300.0`.
-  - **`codex`**:
-    - `"plus-20"` (aliases `"plus"`, `"chatgpt-plus"`): `session_5h_usd = 20.0`, `weekly_7d_usd = 50.0`.
-    - `"pro-200"` (aliases `"pro"`, `"promax"`, `"chatgpt-pro"`): `session_5h_usd = 200.0`,
-      `weekly_7d_usd = 500.0`.
-- `credit = {}`: optional table overriding `session_5h_usd`, `weekly_7d_usd`, or
-  `tiers.<quota_group>.{session_5h_usd, weekly_7d_usd}` (positive numbers). Across configuration
-  layers (`default -> user -> project`), `plan` replaces an earlier `plan`, and `credit`
-  deep-merges on top of the resolved `plan` preset. Plan preset values act as priors (`C_prior`)
-  for empirical Bayes pool calibration in `<state_root>/credit_calibration.json`, whereas explicit
-  `[agents.<name>].credit` overrides remain exact and uncalibrated.
-- `exclude_quota_groups = []`: list of quota-group labels (for example `["3p"]` under
-  `[agents.agy]`) to exclude while keeping dynamic model discovery active for remaining groups.
-  See {ref}`remaining credit budgets <remaining-credit-budgets>`.
+- `plan = "auto"` (packaged default) resolves credit and cost from the provider's detected
+  plan. `""` or `"none"` disables preset lookup, leaving any explicit `credit` override in
+  place. An explicit preset or alias selects the corresponding packaged subscription.
+- `monthly_cost_usd` optionally overrides the preset's monthly subscription cost. When the
+  plan has a known cost, `weekly_cost_usd` is derived as
+  `monthly_cost_usd * 7 / 30`.
+- `credit = {}` optionally overrides quota credit ceilings. Its `session_5h_credit_usd` and
+  `weekly_7d_credit_usd` values, including values under
+  `tiers.<quota_group>.{session_5h_credit_usd, weekly_7d_credit_usd}`, are list-price
+  credit ceilings in USD. Manual credit overrides remain exact and are not recalibrated.
+
+Packaged plans keep cash cost separate from quota credit:
+
+| Agent | Plan | Aliases | Monthly cost | Credit ceilings |
+| --- | --- | --- | ---: | --- |
+| `agy` | `free` | `google-ai-free`, `google ai free` | $0 | `gemini`: $3 session / $10 weekly |
+| `agy` | `plus-8` | `plus`, `google-ai-plus`, `google ai plus` | $8 | `gemini`: $12 / $50 |
+| `agy` | `pro-20` | `pro`, `google-ai-pro`, `google ai pro` | $20 | `gemini`: $32 / $135; `3p`: $5 / $10 |
+| `agy` | `ultra-100` | — | $100 | `gemini`: $80 / $337.50; `3p`: $12.50 / $25 |
+| `agy` | `ultra-200` | `ultra`, `google-ai-ultra`, `google ai ultra` | $200 | `gemini`: $320 / $1,350; `3p`: $25 / $50 |
+| `claude` | `pro-20` | `pro`, `claude-pro` | $20 | shared: $18 / $45 |
+| `claude` | `max-5x` | `max_5x`, `claude-max-5x` | $100 | shared: $90 / $225; `fable` weekly: $75 |
+| `claude` | `max-20x` | `max_20x`, `claude-max-20x` | $200 | shared: $360 / $900; `fable` weekly: $300 |
+| `codex` | `plus-20` | `plus`, `chatgpt-plus` | $20 | shared: $20 / $50 |
+| `codex` | `pro-200` | `pro`, `chatgpt-pro` | $200 | shared: $200 / $500 |
+| `codex` | `pro-500` | `promax` | $500 | shared: $500 / $1,250 |
+
+The credit column lists `session_5h_credit_usd` / `weekly_7d_credit_usd` unless it names a
+single weekly tier ceiling. Credit ceilings are capacity estimates, not subscription charges.
+For multi-tier plans, weekly subscription cost is allocated across quota pools in proportion
+to their calibrated weekly credit ceilings; each pool exposes its `cost_per_credit`. A free
+plan has `cost_per_credit = 0.0`; pay-as-you-go without a subscription plan uses `1.0`.
+
+Configuration layers (`default -> user -> project`) replace an earlier `plan`, apply an
+explicit `monthly_cost_usd` override, and deep-merge `credit` overrides over the selected
+preset. The former `session_5h_usd` / `weekly_7d_usd` names remain accepted as input aliases
+for credit overrides; normalized configuration and emitted credit fields use the explicit
+`*_credit_usd` names.
 
 Inspect or persist `[agents.<agent>].plan` from the CLI while preserving existing TOML comments,
 keys, and subtables:
@@ -134,8 +135,12 @@ keys, and subtables:
 agroute config show --json
 agroute config set-plan agy ultra-100 --json
 agroute config set-plan claude max-20x --project --json
-agroute config set-plan codex auto --json
+agroute config set-plan codex promax --json
 ```
+
+- `exclude_quota_groups = []`: list of quota-group labels (for example `["3p"]` under
+  `[agents.agy]`) to exclude while keeping dynamic model discovery active for remaining groups.
+  See {ref}`remaining credit budgets <remaining-credit-budgets>`.
 
 (howhard-inventories)=
 ## Generating `[inventories]` for `howhard.toml`

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Separate subscription cash costs (`monthly_cost_usd`, amortized `weekly_cost_usd`, and
+  `cost_per_credit`) from quota-credit ceilings and budgets; add Codex `pro-500` / `promax`,
+  emit the `howhard-decision-v7` credit budget schema, and migrate calibration state to explicit
+  credit names. Issue #50 tracks this cost-versus-credit contract across configuration, routing,
+  calibration, user interfaces, and documentation.
 - Add a geometric black-and-white branching-route logo to the README and docs, with
   asset provenance. Group documentation into Getting started, Technical deep dive,
   Reference and Project; add a technical report and real-work evaluation guide,

@@ -212,6 +212,11 @@ def _detail_text(row: dict) -> str:
     exec_id = row.get("execution_id") or "—"
     tokens = f"{row['tokens']:,}" if isinstance(row.get("tokens"), int) else "—"
     cost = f"${row['cost_usd']:.4f}" if type(row.get("cost_usd")) in (int, float) else "—"
+    session_cost = f"${row['session_cost_usd']:.4f}" if type(row.get("session_cost_usd")) in (int, float) else "—"
+    needed_credit = f"${row['needed_credit_usd']:.4f} credit" if type(row.get("needed_credit_usd")) in (int, float) else "—"
+    budget = row.get("credit_budget") or {}
+    available_credit = (f"${budget['available_credit_usd']:.4f} credit"
+                        if type(budget.get("available_credit_usd")) in (int, float) else "—")
     dur = f"{row['seconds']:.1f}s" if type(row.get("seconds")) in (int, float) else "—"
     return (
         f"{row['route_id']} · {row['status']} · {row['execution_mode']} "
@@ -219,7 +224,8 @@ def _detail_text(row: dict) -> str:
         f"target: {row['qualified_model']} ({row['effort']}) · type: {row['task_type']} · "
         f"risk: {risk} · cap_met: {cap}{review}{affinity}\n"
         f"invocation: {_invocation_summary(row.get('invocation'))}\n"
-        f"outcome: {outcome} · exec_id: {exec_id} · tokens: {tokens} · duration: {dur} · cost: {cost}\n"
+        f"selection: session_cost_usd={session_cost} · needed_credit_usd={needed_credit} · available_credit_usd={available_credit}\n"
+        f"outcome: {outcome} · exec_id: {exec_id} · tokens: {tokens} · duration: {dur} · observed cost: {cost}\n"
         f"label: {row['label']}\n"
         f"routed: {row['created_at']} · observed: {row.get('observed_at') or '—'}"
     )
@@ -249,7 +255,13 @@ def _modal_detail(row: dict) -> str:
         f"Execution ID: {row.get('execution_id') or '—'}",
         f"Tokens: {row['tokens'] if row.get('tokens') is not None else '—'}",
         f"Seconds: {row['seconds'] if row.get('seconds') is not None else '—'}",
-        f"Cost USD: {row['cost_usd'] if row.get('cost_usd') is not None else '—'}",
+        f"Observed cost USD: {row['cost_usd'] if row.get('cost_usd') is not None else '—'}",
+        f"Session cost USD: {row.get('session_cost_usd', '—')}",
+        f"Needed credit USD: {row.get('needed_credit_usd', '—')}",
+        f"Available credit USD: {(row.get('credit_budget') or {}).get('available_credit_usd', '—')}",
+        f"Cost per credit: {row.get('cost_per_credit', '—')}",
+        f"Monthly subscription cost USD: {row.get('monthly_cost_usd', '—')}",
+        f"Weekly subscription cost USD: {row.get('weekly_cost_usd', '—')}",
         f"Invocation: {json.dumps(row['invocation'], sort_keys=True) if row.get('invocation') else '—'}",
     ]
     forecasts = row.get("forecasts") or []
@@ -297,6 +309,14 @@ def _usage_modal_body(snapshot: dict) -> str:
         w7 = info.get("weekly_7d") or {}
         lines.append(f"[{name}]")
         lines.append(f"  Enabled: {info.get('enabled', True)}")
+        if info.get("monthly_cost_usd") is not None:
+            weekly_cost = info.get("weekly_cost_usd")
+            lines.append(
+                f"  Subscription cost: monthly_cost_usd=${info['monthly_cost_usd']:.2f}, "
+                f"weekly_cost_usd=${weekly_cost:.2f}"
+                if type(weekly_cost) in (int, float)
+                else f"  Subscription cost: monthly_cost_usd=${info['monthly_cost_usd']:.2f}"
+            )
         lines.append(
             f"  Eligible as target: {info.get('eligible_as_target', True)}"
             + (f" ({info['target_exclusion_reason']})" if info.get("target_exclusion_reason") else "")
@@ -329,8 +349,16 @@ def _usage_modal_body(snapshot: dict) -> str:
                 s_str = f"{ms5:.1f}%" if type(ms5) in (int, float) else "—"
                 w_str = f"{mw7:.1f}%" if type(mw7) in (int, float) else "—"
                 elig_str = "eligible" if mq.get("eligible", True) else f"blocked ({mq.get('exclusion_reason')})"
+                cost_per_credit = mq.get("cost_per_credit")
+                budget = mq.get("credit_budget") or {}
+                budget_str = (
+                    f" available_credit_usd=${budget['available_credit_usd']:.2f} credit"
+                    if type(budget.get("available_credit_usd")) in (int, float)
+                    else ""
+                )
                 lines.append(
-                    f"    {name}/{mid} [{mq.get('quota_group', 'shared')}]: 5h={s_str} 7d={w_str} -> {elig_str}"
+                    f"    {name}/{mid} [{mq.get('quota_group', 'shared')}]: 5h={s_str} 7d={w_str} "
+                    f"cost_per_credit={cost_per_credit if cost_per_credit is not None else '—'}{budget_str} -> {elig_str}"
                 )
         lines.append("")
     return "\n".join(lines).rstrip()

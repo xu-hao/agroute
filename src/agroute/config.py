@@ -29,65 +29,75 @@ from .validation import (
 PLAN_PRESETS = {
     "agy": {
         "free": {
-            "tiers": {
-                "gemini": {"session_5h_usd": 3.0, "weekly_7d_usd": 10.0},
-            },
+            "monthly_cost_usd": 0.0,
+            "credit": {"tiers": {"gemini": {"session_5h_credit_usd": 3.0, "weekly_7d_credit_usd": 10.0}}},
         },
         "plus-8": {
-            "tiers": {
-                "gemini": {"session_5h_usd": 12.0, "weekly_7d_usd": 50.0},
-            },
+            "monthly_cost_usd": 8.0,
+            "credit": {"tiers": {"gemini": {"session_5h_credit_usd": 12.0, "weekly_7d_credit_usd": 50.0}}},
         },
         "pro-20": {
-            "tiers": {
-                "gemini": {"session_5h_usd": 32.0, "weekly_7d_usd": 135.0},
-                "3p": {"session_5h_usd": 5.0, "weekly_7d_usd": 10.0},
+            "monthly_cost_usd": 20.0,
+            "credit": {
+                "tiers": {
+                    "gemini": {"session_5h_credit_usd": 32.0, "weekly_7d_credit_usd": 135.0},
+                    "3p": {"session_5h_credit_usd": 5.0, "weekly_7d_credit_usd": 10.0},
+                },
             },
         },
         "ultra-100": {
-            "tiers": {
-                "gemini": {"session_5h_usd": 80.0, "weekly_7d_usd": 337.5},
-                "3p": {"session_5h_usd": 12.5, "weekly_7d_usd": 25.0},
+            "monthly_cost_usd": 100.0,
+            "credit": {
+                "tiers": {
+                    "gemini": {"session_5h_credit_usd": 80.0, "weekly_7d_credit_usd": 337.5},
+                    "3p": {"session_5h_credit_usd": 12.5, "weekly_7d_credit_usd": 25.0},
+                },
             },
         },
         "ultra-200": {
-            "tiers": {
-                "gemini": {"session_5h_usd": 320.0, "weekly_7d_usd": 1350.0},
-                "3p": {"session_5h_usd": 25.0, "weekly_7d_usd": 50.0},
+            "monthly_cost_usd": 200.0,
+            "credit": {
+                "tiers": {
+                    "gemini": {"session_5h_credit_usd": 320.0, "weekly_7d_credit_usd": 1350.0},
+                    "3p": {"session_5h_credit_usd": 25.0, "weekly_7d_credit_usd": 50.0},
+                },
             },
         },
     },
     "claude": {
         "pro-20": {
-            "session_5h_usd": 18.0,
-            "weekly_7d_usd": 45.0,
-            "tiers": {},
+            "monthly_cost_usd": 20.0,
+            "credit": {"session_5h_credit_usd": 18.0, "weekly_7d_credit_usd": 45.0, "tiers": {}},
         },
         "max-5x": {
-            "session_5h_usd": 90.0,
-            "weekly_7d_usd": 225.0,
-            "tiers": {
-                "fable": {"weekly_7d_usd": 75.0},
+            "monthly_cost_usd": 100.0,
+            "credit": {
+                "session_5h_credit_usd": 90.0,
+                "weekly_7d_credit_usd": 225.0,
+                "tiers": {"fable": {"weekly_7d_credit_usd": 75.0}},
             },
         },
         "max-20x": {
-            "session_5h_usd": 360.0,
-            "weekly_7d_usd": 900.0,
-            "tiers": {
-                "fable": {"weekly_7d_usd": 300.0},
+            "monthly_cost_usd": 200.0,
+            "credit": {
+                "session_5h_credit_usd": 360.0,
+                "weekly_7d_credit_usd": 900.0,
+                "tiers": {"fable": {"weekly_7d_credit_usd": 300.0}},
             },
         },
     },
     "codex": {
         "plus-20": {
-            "session_5h_usd": 20.0,
-            "weekly_7d_usd": 50.0,
-            "tiers": {},
+            "monthly_cost_usd": 20.0,
+            "credit": {"session_5h_credit_usd": 20.0, "weekly_7d_credit_usd": 50.0, "tiers": {}},
         },
         "pro-200": {
-            "session_5h_usd": 200.0,
-            "weekly_7d_usd": 500.0,
-            "tiers": {},
+            "monthly_cost_usd": 200.0,
+            "credit": {"session_5h_credit_usd": 200.0, "weekly_7d_credit_usd": 500.0, "tiers": {}},
+        },
+        "pro-500": {
+            "monthly_cost_usd": 500.0,
+            "credit": {"session_5h_credit_usd": 500.0, "weekly_7d_credit_usd": 1250.0, "tiers": {}},
         },
     },
 }
@@ -119,7 +129,7 @@ PLAN_ALIASES = {
         "plus": "plus-20",
         "chatgpt-plus": "plus-20",
         "pro": "pro-200",
-        "promax": "pro-200",
+        "promax": "pro-500",
         "chatgpt-pro": "pro-200",
     },
 }
@@ -139,6 +149,7 @@ _AGENT_KEYS = (
     "credit",
     "exclude_quota_groups",
 )
+_AGENT_OPTIONAL_KEYS = ("monthly_cost_usd",)
 
 
 @dataclass
@@ -261,7 +272,7 @@ def normalize_plan_slug(agent: str, raw: str | None) -> str | None:
 def _merge_credit_dict(base_credit: dict, override_credit: dict) -> dict:
     effective = deepcopy(base_credit)
     effective.setdefault("tiers", {})
-    for ck in ("session_5h_usd", "weekly_7d_usd"):
+    for ck in ("session_5h_credit_usd", "weekly_7d_credit_usd"):
         if ck in override_credit:
             effective[ck] = override_credit[ck]
     for tk, tv in (override_credit.get("tiers") or {}).items():
@@ -294,17 +305,17 @@ def resolve_plan_credit_sources(
         canonical = normalize_plan_slug(agent_name, detected_plan)
         if canonical is None:
             return "", {"tiers": {}}, manual_credit, _merge_credit_dict({"tiers": {}}, manual_credit)
-        preset = deepcopy(PLAN_PRESETS[agent_name][canonical])
+        preset = deepcopy(PLAN_PRESETS[agent_name][canonical]["credit"])
         preset.setdefault("tiers", {})
         return canonical, preset, manual_credit, _merge_credit_dict(preset, manual_credit)
 
     canonical = normalize_plan_slug(agent_name, configured) or configured
-    preset = deepcopy(PLAN_PRESETS.get(agent_name, {}).get(canonical, {"tiers": {}}))
+    preset = deepcopy(PLAN_PRESETS.get(agent_name, {}).get(canonical, {}).get("credit", {"tiers": {}}))
     preset.setdefault("tiers", {})
     if not has_overrides_key:
         # Infer manual overrides when a synthetic dict omitted `credit_overrides`.
         inferred_manual: dict = {"tiers": {}}
-        for ck in ("session_5h_usd", "weekly_7d_usd"):
+        for ck in ("session_5h_credit_usd", "weekly_7d_credit_usd"):
             if ck in raw_credit and raw_credit[ck] != preset.get(ck):
                 inferred_manual[ck] = raw_credit[ck]
         for tk, tv in (raw_credit.get("tiers") or {}).items():
@@ -326,6 +337,19 @@ def resolve_effective_plan_credit(
     return canonical, merged
 
 
+def resolve_plan_monthly_cost(agent_name: str, agent_cfg: dict, detected_plan: str | None) -> float | None:
+    """Resolve subscription cash cost; a missing plan is treated as pay-as-you-go."""
+    override = agent_cfg.get("monthly_cost_override")
+    if override is not None:
+        return float(override)
+    configured = (agent_cfg.get("plan") or "").strip().lower()
+    raw_plan = detected_plan if configured == "auto" else configured
+    canonical = normalize_plan_slug(agent_name, raw_plan)
+    if canonical is None:
+        return None
+    return float(PLAN_PRESETS[agent_name][canonical]["monthly_cost_usd"])
+
+
 def _validate_plan(raw, where, *, agent):
     if not isinstance(raw, str):
         raise AgRouteError(f"{where}: expected a string")
@@ -342,20 +366,21 @@ def _validate_plan(raw, where, *, agent):
         raise AgRouteError(
             f"{where}: unknown plan {raw!r} for agent '{agent}' (expected one of {valid})"
         )
-    return canonical, deepcopy(presets[canonical])
+    return canonical, deepcopy(presets[canonical]["credit"])
 
 
 def _validate_credit(raw, where):
     table(raw, where)
-    keys(raw, [], ["session_5h_usd", "weekly_7d_usd", "tiers"], where=where)
+    raw = _normalize_credit_fields(raw, where)
+    keys(raw, [], ["session_5h_credit_usd", "weekly_7d_credit_usd", "tiers"], where=where)
     validated = {"tiers": {}}
-    if "session_5h_usd" in raw:
-        validated["session_5h_usd"] = number(
-            raw["session_5h_usd"], f"{where}.session_5h_usd", positive=True
+    if "session_5h_credit_usd" in raw:
+        validated["session_5h_credit_usd"] = number(
+            raw["session_5h_credit_usd"], f"{where}.session_5h_credit_usd", positive=True
         )
-    if "weekly_7d_usd" in raw:
-        validated["weekly_7d_usd"] = number(
-            raw["weekly_7d_usd"], f"{where}.weekly_7d_usd", positive=True
+    if "weekly_7d_credit_usd" in raw:
+        validated["weekly_7d_credit_usd"] = number(
+            raw["weekly_7d_credit_usd"], f"{where}.weekly_7d_credit_usd", positive=True
         )
     if "tiers" in raw:
         tiers_raw = table(raw["tiers"], f"{where}.tiers")
@@ -363,22 +388,37 @@ def _validate_credit(raw, where):
             text(group, f"{where}.tiers.{group}", label=True, max_length=64)
             tier_where = f"{where}.tiers.{group}"
             table(tier_raw, tier_where)
-            keys(tier_raw, [], ["session_5h_usd", "weekly_7d_usd"], where=tier_where)
+            tier_raw = _normalize_credit_fields(tier_raw, tier_where)
+            keys(tier_raw, [], ["session_5h_credit_usd", "weekly_7d_credit_usd"], where=tier_where)
             if not tier_raw:
                 raise AgRouteError(
-                    f"{tier_where}: expected at least one of session_5h_usd or weekly_7d_usd"
+                    f"{tier_where}: expected at least one of session_5h_credit_usd or weekly_7d_credit_usd"
                 )
             t_entry = {}
-            if "session_5h_usd" in tier_raw:
-                t_entry["session_5h_usd"] = number(
-                    tier_raw["session_5h_usd"], f"{tier_where}.session_5h_usd", positive=True
+            if "session_5h_credit_usd" in tier_raw:
+                t_entry["session_5h_credit_usd"] = number(
+                    tier_raw["session_5h_credit_usd"], f"{tier_where}.session_5h_credit_usd", positive=True
                 )
-            if "weekly_7d_usd" in tier_raw:
-                t_entry["weekly_7d_usd"] = number(
-                    tier_raw["weekly_7d_usd"], f"{tier_where}.weekly_7d_usd", positive=True
+            if "weekly_7d_credit_usd" in tier_raw:
+                t_entry["weekly_7d_credit_usd"] = number(
+                    tier_raw["weekly_7d_credit_usd"], f"{tier_where}.weekly_7d_credit_usd", positive=True
                 )
             validated["tiers"][group.lower()] = t_entry
     return validated
+
+
+def _normalize_credit_fields(raw: dict, where: str) -> dict:
+    """Treat former quota-only field names as credit aliases at config input boundaries."""
+    normalized = deepcopy(raw)
+    for old, new in (
+        ("session_5h_usd", "session_5h_credit_usd"),
+        ("weekly_7d_usd", "weekly_7d_credit_usd"),
+    ):
+        if old in normalized and new in normalized:
+            raise AgRouteError(f"{where}: cannot combine legacy {old} with {new}")
+        if old in normalized:
+            normalized[new] = normalized.pop(old)
+    return normalized
 
 
 def _validate_exclude_quota_groups(raw, where):
@@ -410,7 +450,7 @@ def _merge_config(base, override, where):
         for name, spec in a_override.items():
             agent_id(name, f"{where}.agents.{name}")
             table(spec, f"{where}.agents.{name}")
-            unknown_a = set(spec) - set(_AGENT_KEYS)
+            unknown_a = set(spec) - set(_AGENT_KEYS) - set(_AGENT_OPTIONAL_KEYS)
             if unknown_a:
                 raise AgRouteError(f"{where}.agents.{name}: unknown keys {sorted(unknown_a)}")
             spec = deepcopy(spec)
@@ -419,14 +459,16 @@ def _merge_config(base, override, where):
                 spec["prices"] = {**merged["agents"][name]["prices"],
                                   **table(spec["prices"], f"{where}.agents.{name}.prices")}
             if "credit" in spec:
-                c_override = table(spec["credit"], f"{where}.agents.{name}.credit")
+                credit_where = f"{where}.agents.{name}.credit"
+                c_override = _normalize_credit_fields(table(spec["credit"], credit_where), credit_where)
                 merged_credit = deepcopy(merged["agents"][name].get("credit", {}))
                 for ck, cv in c_override.items():
                     if ck == "tiers":
-                        t_override = table(cv, f"{where}.agents.{name}.credit.tiers")
+                        t_override = table(cv, f"{credit_where}.tiers")
                         merged_tiers = deepcopy(merged_credit.get("tiers", {}))
                         for tk, tv in t_override.items():
-                            t_spec = table(tv, f"{where}.agents.{name}.credit.tiers.{tk}")
+                            tier_where = f"{credit_where}.tiers.{tk}"
+                            t_spec = _normalize_credit_fields(table(tv, tier_where), tier_where)
                             merged_tiers[tk] = {**merged_tiers.get(tk, {}), **deepcopy(t_spec)}
                         merged_credit["tiers"] = merged_tiers
                     else:
@@ -451,7 +493,7 @@ def _validate_merged(raw):
     for name in AGENTS:
         where = f"agents.{name}"
         spec = table(agents_raw[name], where)
-        keys(spec, _AGENT_KEYS, where=where)
+        keys(spec, _AGENT_KEYS, _AGENT_OPTIONAL_KEYS, where=where)
         enabled = boolean(spec["enabled"], f"{where}.enabled")
         max_session = percentage(spec["max_session_used_pct"], f"{where}.max_session_used_pct")
         max_weekly = percentage(spec["max_weekly_used_pct"], f"{where}.max_weekly_used_pct")
@@ -469,9 +511,20 @@ def _validate_merged(raw):
             spec["cli_candidates"], f"{where}.cli_candidates", agent=name
         )
         plan_id, preset_credit = _validate_plan(spec["plan"], f"{where}.plan", agent=name)
+        monthly_override = (
+            number(spec["monthly_cost_usd"], f"{where}.monthly_cost_usd", nonnegative=True)
+            if "monthly_cost_usd" in spec
+            else None
+        )
+        preset_cost = (
+            float(PLAN_PRESETS[name][plan_id]["monthly_cost_usd"])
+            if plan_id in PLAN_PRESETS[name]
+            else None
+        )
+        monthly_cost = monthly_override if monthly_override is not None else preset_cost
         override_credit = _validate_credit(spec["credit"], f"{where}.credit")
         effective_credit = deepcopy(preset_credit)
-        for ck in ("session_5h_usd", "weekly_7d_usd"):
+        for ck in ("session_5h_credit_usd", "weekly_7d_credit_usd"):
             if ck in override_credit:
                 effective_credit[ck] = override_credit[ck]
         for tk, tv in override_credit.get("tiers", {}).items():
@@ -494,6 +547,9 @@ def _validate_merged(raw):
             "cli_candidates": cli_cands,
             "prices": _validate_prices(spec["prices"], f"{where}.prices"),
             "plan": plan_id,
+            "monthly_cost_usd": monthly_cost,
+            "weekly_cost_usd": monthly_cost * 7.0 / 30.0 if monthly_cost is not None else None,
+            "monthly_cost_override": monthly_override,
             "credit": effective_credit,
             "credit_overrides": deepcopy(override_credit),
             "exclude_quota_groups": exclude_quota_groups,
