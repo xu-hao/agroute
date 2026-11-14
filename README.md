@@ -1,8 +1,14 @@
 # agroute
 
+<img src="docs/assets/route.svg" alt="agroute branching-route mark" width="160" height="160">
+
 *Which agent should run this task within your live usage limits?*
 
 [Read the documentation](https://agroute.readthedocs.io/en/latest/).
+
+Start with the [quickstart](docs/quickstart.md), read the
+[technical report](docs/technical-report.md) for the routing and credit model, or
+use the [evaluation guide](docs/evaluation.md) to measure it on real work.
 
 `agroute` routes delegated coding-agent tasks across Codex (`codex`), Claude Code
 (`claude`), and Antigravity (`agy`) within live subscription quota and rate-limit

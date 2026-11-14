@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Add a geometric black-and-white branching-route logo to the README and docs, with
+  asset provenance. Group documentation into Getting started, Technical deep dive,
+  Reference and Project; add a technical report and real-work evaluation guide,
+  clarify overlapping quota pools, and update the quickstart's howhard command and
+  price-resolution guidance (#48).
+
 ## 0.4.0 — 2026-11-13
 
 - Enforce all overlapping quota pools generically via `AgentAdapter.resolve_quota_pools`
