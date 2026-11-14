@@ -361,7 +361,7 @@ def _load_routes_file(routes_path: Path) -> list[dict]:
 
 
 def _collect_telemetry_sources(config) -> tuple[dict[str, dict], list[dict], list[dict]]:
-    """Collect deduplicated howhard observations and agroute plan records for `config`."""
+    """Collect deduplicated howhard observations and agr plan records for `config`."""
     repos = [
         {
             "capture_root": str(config.capture_root),

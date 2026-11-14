@@ -1,7 +1,44 @@
 """CLI boundary tests (#2, #3, #4, #5, #7)."""
 
 import json
-from agroute.cli import main
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tomllib
+
+import pytest
+
+from agroute import __version__
+from agroute.cli import _build_parser, main
+
+
+def test_console_script_is_agr():
+    project = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text())
+    assert project["project"]["scripts"] == {"agr": "agroute.cli:main"}
+
+
+def test_cli_program_and_version(capsys):
+    assert _build_parser().prog == "agr"
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--version"])
+    assert exit_info.value.code == 0
+    assert capsys.readouterr().out.strip() == f"agr {__version__}"
+
+
+def test_python_module_version_remains_available(tmp_path):
+    source_root = Path(__file__).parents[1]
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(source_root / "src")
+    result = subprocess.run(
+        [sys.executable, "-m", "agroute", "--version"],
+        cwd=tmp_path,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert result.stdout.strip() == f"agr {__version__}"
 
 
 def test_cli_end_to_end_workflow(tmp_path, capsys):

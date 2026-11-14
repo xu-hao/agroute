@@ -39,7 +39,7 @@ test = ["pytest>=8", "pytest-asyncio>=0.24", "build>=1.2", "twine>=5"]
 docs = ["sphinx>=8", "myst-parser>=4", "furo"]
 
 [project.scripts]
-agroute = "agroute.cli:main"
+agr = "agroute.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/xu-hao/agroute"

@@ -840,7 +840,7 @@ def test_cli_config_set_plan_and_show_preserve_comments_and_subtables(tmp_path, 
         encoding="utf-8",
     )
 
-    # 1. Update user config via CLI `agroute config set-plan agy ultra-100 --json`
+    # 1. Update user config via CLI `agr config set-plan agy ultra-100 --json`
     rc = main(["config", "set-plan", "agy", "ultra-100", "--json"])
     assert rc == 0
     out = json.loads(capsys.readouterr().out)
@@ -875,7 +875,7 @@ def test_cli_config_set_plan_and_show_preserve_comments_and_subtables(tmp_path, 
     assert proj_cfg.is_file()
     assert 'plan = "max-20x"' in proj_cfg.read_text(encoding="utf-8")
 
-    # 3. Inspect via `agroute config show --json`
+    # 3. Inspect via `agr config show --json`
     rc_show = main(["config", "show", "--json"])
     assert rc_show == 0
     shown = json.loads(capsys.readouterr().out)

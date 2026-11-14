@@ -1,8 +1,10 @@
 # Packaging and release
 
-The distribution, Python package, and console command are all `agroute`. The version's
-single source is `src/agroute/__init__.py`; setuptools reads it dynamically, `--version`
-prints it, and Sphinx uses the same value. Keep the version fields in `plugin.json`,
+The distribution and Python package/module are `agroute`; the installed console command
+is `agr`, and `python -m agroute` remains available. The version's single source is
+`src/agroute/__init__.py`; setuptools reads it dynamically, `agr --version` and
+`python -m agroute --version` print it, and Sphinx uses the same value. Keep the version
+fields in `plugin.json`,
 `.claude-plugin/plugin.json`, and `.antigravity-plugin/plugin.json` in sync with that Python
 version; `scripts/verify-wheel.py` checks them in the source archive.
 

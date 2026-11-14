@@ -209,7 +209,7 @@ def registered_repositories(config) -> list[dict]:
 
 
 def record_plan_route(config, plan: dict) -> str:
-    """Persist an agroute plan execution record and return its route_id."""
+    """Persist an agr plan execution record and return its route_id."""
     seed = (
         f"{plan['evaluated_at']}:{plan['decision_id']}:{plan['host_agent']}:"
         f"{plan['target_agent']}:{plan['resolved_target']['model']}:{plan['resolved_target']['effort']}"
@@ -307,7 +307,7 @@ def _load_howhard_observations(hh_root: Path) -> tuple[dict[str, dict], list[dic
 
 
 def load_repository_routes(capture_root: Path, state_root: Path, repository_id: str) -> list[dict]:
-    """Load and correlate agroute plan records with howhard decisions and outcomes."""
+    """Load and correlate agr plan records with howhard decisions and outcomes."""
     plan_records = _read_cached_jsonl(state_root / "routes.jsonl")
     hh_root = state_root.parent / "howhard"
     if not hh_root.is_dir():

@@ -1,4 +1,4 @@
-"""Real-Textual behavioral tests for the realtime model-route view (agroute tui)."""
+"""Real-Textual behavioral tests for the realtime model-route view (agr tui)."""
 
 from __future__ import annotations
 
@@ -353,7 +353,7 @@ def test_dynamic_discovery_and_howhard_correlation(tmp_path):
         {"model": "claude-opus-5-5-high", "effort": "high", "tier": "pro", "display_name": "Claude Opus 5.5 (High)"},
     ]
 
-    # 4. End-to-end correlation between agroute plan, howhard decisions, and howhard pending.jsonl
+    # 4. End-to-end correlation between agr plan, howhard decisions, and howhard pending.jsonl
     repo = tmp_path / "repo"
     git_dir = repo / ".git"
     hh_dir = git_dir / "howhard"

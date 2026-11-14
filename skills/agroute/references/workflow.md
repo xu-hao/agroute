@@ -2,12 +2,12 @@
 
 ## 1. Emit filtered candidates for the current host
 
-Run from the current project directory with `agroute` and `howhard` installed:
+Run from the current project directory with `agr` and `howhard` installed:
 
 ```sh
-agroute paths --json
-agroute models --json
-agroute candidates --host agy --output /tmp/task-candidates.json --json
+agr paths --json
+agr models --json
+agr candidates --host agy --output /tmp/task-candidates.json --json
 ```
 
 Unless explicitly overridden in `agroute.toml`, `agroute` automatically discovers the live
@@ -21,24 +21,24 @@ using it; independently fresh providers remain available.
 
 Emitted cells carry a per-token `rate_card` when agroute can price their model. `agroute` is
 100% offline for pricing and never fetches rates over the network: prices come from user/project
-configuration, `<state_root>/prices.json` written via `agroute prices resolve --file <path>`, or
+configuration, `<state_root>/prices.json` written via `agr prices resolve --file <path>`, or
 the built-in catalog. Some cards are labelled guesses, with a `source` starting `guess:`.
-Whenever `agroute candidates --host HOST --json` (or `agroute prices pending --host HOST --json`)
+Whenever `agr candidates --host HOST --json` (or `agr prices pending --host HOST --json`)
 returns a non-null `price_request`, inspect `price_request.unpriced_models` and fulfill
 `price_request.contract` once before calling `howhard`:
 
 ```sh
 # 1. Inspect pending unknown models (if not already read from `candidates --json`)
-agroute prices pending --host agy --json
+agr prices pending --host agy --json
 
 # 2. Write resolutions (`"priced"`, `"alias"`, or `"unlisted"`) and persist locally
-agroute prices resolve --file /tmp/task-price-resolutions.json --json
+agr prices resolve --file /tmp/task-price-resolutions.json --json
 
 # 3. Re-emit candidates now that prices.json is populated
-agroute candidates --host agy --output /tmp/task-candidates.json --json
+agr candidates --host agy --output /tmp/task-candidates.json --json
 ```
 
-Note that `agroute candidates --host agy` WITHOUT `--json` prints the plain JSON candidate array
+Note that `agr candidates --host agy` WITHOUT `--json` prints the plain JSON candidate array
 directly to stdout (matching `--output`) for `howhard --candidates` compatibility, whereas `--json`
 prints the full `agroute-candidates-v1` envelope (`candidates`, `excluded`, `price_request`,
 `credit_calibration`, and `warnings`). One unpriced cell turns `howhard`'s cost comparison off for
@@ -48,7 +48,7 @@ rate-card and calling-agent callback contracts in `docs/reference.md`.
 To generate a named `[inventories]` section for `howhard.toml` (`howhard` 2.1+ `--inventory`):
 
 ```sh
-agroute inventory --host agy --name router
+agr inventory --host agy --name router
 ```
 
 ## 2. Select a route with `howhard`
@@ -71,7 +71,7 @@ howhard pick task --text-file /tmp/task.txt --candidates /tmp/task-candidates.js
 ## 3. Resolve the `howhard` decision into an execution plan
 
 ```sh
-agroute plan --host agy --decision /tmp/task-decision.json --prompt-file /tmp/task.txt --output /tmp/task-plan.json --json
+agr plan --host agy --decision /tmp/task-decision.json --prompt-file /tmp/task.txt --output /tmp/task-plan.json --json
 ```
 
 The returned `agroute-execution-plan-v1` object includes:

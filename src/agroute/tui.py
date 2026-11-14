@@ -29,7 +29,7 @@ except ImportError:  # pragma: no cover - the package declares Textual; CLI guar
 
 _MISSING = (
     "the route TUI needs Textual — install agroute\n"
-    "(the scriptable view is: agroute list)"
+    "(the scriptable view is: agr list)"
 )
 
 _COMPACT_TABLE_WIDTH = 80

@@ -20,7 +20,8 @@ with zipfile.ZipFile(wheel) as archive:
     metadata = archive.read(f"agroute-{expected}.dist-info/METADATA").decode()
     assert f"Version: {expected}\n" in metadata
     entrypoints = archive.read(f"agroute-{expected}.dist-info/entry_points.txt").decode()
-    assert "agroute = agroute.cli:main" in entrypoints
+    assert "agr = agroute.cli:main" in entrypoints
+    assert "agroute = agroute.cli:main" not in entrypoints
 
 sdist = Path("dist") / f"agroute-{expected}.tar.gz"
 with tarfile.open(sdist) as archive:
@@ -120,12 +121,20 @@ with tempfile.TemporaryDirectory(prefix="agroute-wheel-") as directory:
     ).strip()
     assert installed_version == expected
 
-    command = root / "venv/bin/agroute"
+    command = root / "venv/bin/agr"
+    assert command.is_file()
+    assert not (root / "venv/bin/agroute").exists()
     assert (
         subprocess.check_output(
             [str(command), "--version"], cwd=root, env=environment, text=True
         ).strip()
-        == f"agroute {expected}"
+        == f"agr {expected}"
+    )
+    assert (
+        subprocess.check_output(
+            [str(python), "-m", "agroute", "--version"], cwd=root, env=environment, text=True
+        ).strip()
+        == f"agr {expected}"
     )
 
     paths = json.loads(

@@ -61,7 +61,7 @@ howhard records actual outcome and measured execution usage
 Later quota snapshots can update agroute's credit calibration
 ```
 
-`agroute candidates --json` returns both the eligible inventory and the reasons
+`agr candidates --json` returns both the eligible inventory and the reasons
 other routes were excluded. It also carries price-resolution requests and
 calibration metadata. Without `--json`, the command emits the plain candidate
 array accepted by howhard. The inventory is not truncated to an arbitrary count.
@@ -246,7 +246,7 @@ describes how to assess estimates prospectively.
 
 ### Recheck before launch
 
-Selection and execution can be separated in time. `agroute plan` reconstructs
+Selection and execution can be separated in time. `agr plan` reconstructs
 the current eligible inventory and validates the selected qualified model and
 effort against it. When live credit and the decision's required invocation credit
 are both available, it rejects a requirement exceeding that live balance. It does
@@ -295,7 +295,7 @@ required application dependency.
 | `routes.jsonl` | Resolved plans and execution/decision links |
 | howhard's own store | Decisions, execution outcomes, accounting and semantic memory |
 
-`agroute list`, `agroute show` and `agroute tui` combine route and howhard evidence
+`agr list`, `agr show` and `agr tui` combine route and howhard evidence
 for inspection. A planned or pending record is not proof of completed execution.
 The {ref}`state contract <worktree-state-contract>` and
 {ref}`monitoring contract <realtime-route-monitoring>` define ownership and display.
