@@ -431,16 +431,30 @@ def read_store(config):
                 ag["source"] = "discovered" if ag["updated_at"] is None else ag["source"]
             continue
         # Passive evidence has its own window clocks and never represents a
-        # local probe attempt. Reconcile both sources independently.
+        # local probe attempt. Reconcile both sources independently, allowing
+        # passive windows to advance only strictly newer local windows.
         for patch in (_read_shared_probe_cache(name), discover_live_usage_patch(name)):
+            patch_advanced = False
             for key, win in _patch_windows(patch):
                 validated = _validate_window(win, f"discovered.{name}.{key}")
                 previous = _get_window(ag, key)
-                if not validated.get("observed_at") and (_window_has_evidence(previous) or ag["updated_at"]):
+                prev_obs = previous.get("observed_at")
+                new_obs = validated.get("observed_at")
+                if not new_obs and (_window_has_evidence(previous) or ag["updated_at"]):
+                    continue
+                if prev_obs and new_obs and parse_timestamp(new_obs) <= parse_timestamp(prev_obs):
                     continue
                 _put_window(ag, key, _merge_window(previous, validated))
+                patch_advanced = True
                 if ag["source"] is None:
                     ag["source"] = "discovered"
+            if patch and ag["updated_at"] is None:
+                if "rate_limited" in patch and not ag["rate_limited"]:
+                    ag["rate_limited"] = bool(patch["rate_limited"])
+                if "cooldown_until" in patch and ag["cooldown_until"] is None:
+                    ag["cooldown_until"] = patch["cooldown_until"]
+            if patch.get("detected_plan") is not None and (ag["detected_plan"] is None or patch_advanced):
+                ag["detected_plan"] = patch["detected_plan"]
         times = [win["observed_at"] for _, win in _patch_windows(ag) if win.get("observed_at")]
         if times:
             ag["updated_at"] = max(times + ([ag["updated_at"]] if ag["updated_at"] else []), key=parse_timestamp)

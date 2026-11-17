@@ -345,9 +345,25 @@ def test_codex_session_reconciles_newer_evidence_with_existing_store(tmp_path, m
     router = Router(project=tmp_path)
     router.usage_set('codex', session_used_pct=10, weekly_used_pct=30, now='2026-11-09T12:00:00Z')
     event = {'timestamp': '2026-11-09T12:10:00Z', 'type': 'event_msg', 'payload': {
-        'type': 'token_count', 'rate_limits': {'primary': {'used_percent': 40, 'window_minutes': 300}}}}
+        'type': 'token_count', 'rate_limits': {'plan_type': 'pro', 'primary': {'used_percent': 40, 'window_minutes': 300}}}}
     (sessions / 'rollout.jsonl').write_text(json.dumps(event) + '\n')
     state = router.usage_show('codex', now='2026-11-09T12:10:00Z')['agents']['codex']
     assert state['session_5h']['used_pct'] == 40
     assert state['weekly_7d']['used_pct'] == 30
+    assert state['detected_plan'] == 'pro-200'
     assert state['probe'].get('succeeded_at') is None
+
+
+def test_equal_timestamp_shared_cache_does_not_override_local_usage_set(tmp_path, monkeypatch):
+    spool = tmp_path / 'spool'
+    spool.mkdir()
+    monkeypatch.setenv('AGROUTE_SPOOL_DIR', str(spool))
+    router = Router(project=tmp_path)
+    cache = {'agents': {'agy': {
+        'updated_at': '2026-11-09T12:00:00Z',
+        'session_5h': {'used_pct': 0, 'reset_at': None, 'observed_at': '2026-11-09T12:00:00Z', 'measured_at': '2026-11-09T12:00:00Z'},
+    }}}
+    (spool / 'live_usage_cache.json').write_text(json.dumps(cache))
+    router.usage_set('agy', session_used_pct=82, now='2026-11-09T12:00:00Z')
+    state = router.usage_show('agy', now='2026-11-09T12:01:00Z')['agents']['agy']
+    assert state['session_5h']['used_pct'] == 82.0
