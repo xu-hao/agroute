@@ -430,34 +430,20 @@ def read_store(config):
             if patch:
                 ag["source"] = "discovered" if ag["updated_at"] is None else ag["source"]
             continue
-        if (
-            ag["updated_at"] is None
-            and ag["session_5h"]["used_pct"] is None
-            and ag["weekly_7d"]["used_pct"] is None
-            and not ag["tiers"]
-            and not ag["rate_limited"]
-        ):
-            patch = discover_live_usage_patch(name)
-            if patch:
-                if "session_5h" in patch and isinstance(patch["session_5h"], dict):
-                    ag["session_5h"] = _validate_window(patch["session_5h"], f"discovered.{name}.session_5h")
-                if "weekly_7d" in patch and isinstance(patch["weekly_7d"], dict):
-                    ag["weekly_7d"] = _validate_window(patch["weekly_7d"], f"discovered.{name}.weekly_7d")
-                if "rate_limited" in patch:
-                    ag["rate_limited"] = bool(patch["rate_limited"])
-                if "cooldown_until" in patch:
-                    ag["cooldown_until"] = patch["cooldown_until"]
-                if "tiers" in patch and isinstance(patch["tiers"], dict):
-                    for tk, tv in patch["tiers"].items():
-                        if isinstance(tv, dict):
-                            ag["tiers"][tk] = _validate_window(tv, f"discovered.{name}.tiers.{tk}")
-                for key in ("updated_at", "probe", "detected_plan"):
-                    if key in patch:
-                        ag[key] = deepcopy(patch[key])
-                times = [win["observed_at"] for _, win in _patch_windows(ag) if win.get("observed_at")]
-                if times:
-                    ag["updated_at"] = max(times + ([ag["updated_at"]] if ag["updated_at"] else []), key=parse_timestamp)
-                ag["source"] = "discovered"
+        # Passive evidence has its own window clocks and never represents a
+        # local probe attempt. Reconcile both sources independently.
+        for patch in (_read_shared_probe_cache(name), discover_live_usage_patch(name)):
+            for key, win in _patch_windows(patch):
+                validated = _validate_window(win, f"discovered.{name}.{key}")
+                previous = _get_window(ag, key)
+                if not validated.get("observed_at") and (_window_has_evidence(previous) or ag["updated_at"]):
+                    continue
+                _put_window(ag, key, _merge_window(previous, validated))
+                if ag["source"] is None:
+                    ag["source"] = "discovered"
+        times = [win["observed_at"] for _, win in _patch_windows(ag) if win.get("observed_at")]
+        if times:
+            ag["updated_at"] = max(times + ([ag["updated_at"]] if ag["updated_at"] else []), key=parse_timestamp)
     return store
 
 

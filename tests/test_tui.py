@@ -449,3 +449,71 @@ def test_dynamic_discovery_and_howhard_correlation(tmp_path):
     assert r_dec2["status"] == "routed"
     assert r_dec2["target_agent"] == "codex"
     assert r_dec2["label"] == "#102 Land feature X"
+
+
+@pytest.mark.asyncio
+async def test_tui_automatically_probes_and_manual_probe_refreshes():
+    calls = []
+    def probe(manual):
+        calls.append(manual)
+    app = build_app(lambda: deepcopy(_make_snapshot()), probe_factory=probe, refresh_interval=60)
+    async with app.run_test(size=(100, 24)) as pilot:
+        await pilot.pause()
+        assert calls == [False]
+        await pilot.press('P')
+        await pilot.pause()
+        assert calls == [False, True]
+
+
+@pytest.mark.asyncio
+async def test_probe_single_flight_cooldown_and_manual_bypass():
+    import threading
+
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def probe(manual):
+        calls.append(manual)
+        entered.set()
+        release.wait(5)
+        raise ValueError('offline')
+
+    app = build_app(lambda: deepcopy(_make_snapshot()), probe_factory=probe, refresh_interval=60)
+    try:
+        async with app.run_test(size=(100, 24)) as pilot:
+            await pilot.pause()
+            assert entered.is_set()
+            await pilot.press('P')
+            app.action_refresh()
+            await pilot.pause()
+            assert calls == [False]
+            release.set()
+            await pilot.pause()
+            app.action_refresh()
+            await pilot.pause()
+            assert calls == [False]
+            await pilot.press('P')
+            await pilot.pause()
+            assert calls == [False, True]
+    finally:
+        release.set()
+
+
+def test_cli_tui_wires_probe_factory(monkeypatch):
+    from agroute import cli
+
+    calls = []
+    class FakeRouter:
+        def __init__(self, *args, **kwargs):
+            pass
+        def tui_probe(self, manual, *, now):
+            calls.append((manual, now))
+    def fake_run(snapshot, **kwargs):
+        kwargs['probe_factory'](False)
+        kwargs['probe_factory'](True)
+        return 0
+    monkeypatch.setattr(cli, 'Router', FakeRouter)
+    monkeypatch.setattr(cli.tui, 'run', fake_run)
+    assert cli.main(['tui', '--now', '2026-11-09T12:00:00Z']) == 0
+    assert calls == [(False, '2026-11-09T12:00:00Z'), (True, '2026-11-09T12:00:00Z')]

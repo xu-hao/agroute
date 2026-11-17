@@ -315,6 +315,21 @@ class Router:
         probed = probe_usage(self.config, agent, now=now)
         return {"probed": probed, "warnings": [warning for state in probed.values() for warning in state.get("probe", {}).get("warnings", [])]}
 
+    def tui_probe(self, manual=False, *, now=None):
+        """Probe enabled providers, restricting automatic attempts to stale data."""
+        from .usage import _freshness_reason, _now_utc, read_store
+
+        store = read_store(self.config)
+        for name, cfg in self.config.agents.items():
+            if not cfg["enabled"]:
+                continue
+            if not manual and _freshness_reason(store["agents"][name], cfg, _now_utc(now)) is None:
+                continue
+            try:
+                self.usage_probe(name, now=now)
+            except (AgRouteError, OSError):
+                continue
+
     def usage_clear(self, agent=None):
         cleared = clear_usage(self.config, agent)
         return {"cleared": cleared}

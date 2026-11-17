@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Reconcile newer passive Codex and Antigravity usage windows and refresh stale TUI
+  usage in the background, with a manual `P` probe. Issue #62 tracks live usage refresh.
+
 ## 0.5.0 (2026-11-14)
 
 - Release agroute 0.5.0 with synchronized package and plugin versions. Issue #60 tracks the

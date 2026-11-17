@@ -318,3 +318,36 @@ cli_candidates = [
     codex_snap = router.usage_show("codex", now="2026-11-08T22:05:00Z")["agents"]["codex"]
     assert codex_snap["models"]["gpt-5.4"]["weekly_7d"]["used_pct"] == 7.0
     assert codex_snap["models"]["gpt-5.4"]["eligible"] is True
+
+
+def test_passive_cache_reconciles_newer_windows_without_replacing_probe(tmp_path, monkeypatch):
+    spool = tmp_path / 'spool'
+    spool.mkdir()
+    monkeypatch.setenv('AGROUTE_SPOOL_DIR', str(spool))
+    router = Router(project=tmp_path)
+    router.usage_set('agy', session_used_pct=10, weekly_used_pct=30, now='2026-11-09T12:00:00Z')
+    cache = {'agents': {'agy': {'updated_at': '2026-11-09T12:10:00Z',
+        'session_5h': {'used_pct': 40, 'reset_at': None, 'observed_at': '2026-11-09T12:10:00Z', 'measured_at': '2026-11-09T12:10:00Z'},
+        'weekly_7d': {'used_pct': 5, 'reset_at': None, 'observed_at': '2026-11-09T11:00:00Z', 'measured_at': '2026-11-09T11:00:00Z'},
+        'probe': {'succeeded_at': '2026-11-09T12:10:00Z'}}}}
+    (spool / 'live_usage_cache.json').write_text(json.dumps(cache))
+    state = router.usage_show('agy', now='2026-11-09T12:10:00Z')['agents']['agy']
+    assert state['session_5h']['used_pct'] == 40
+    assert state['weekly_7d']['used_pct'] == 30
+    assert state['probe'].get('succeeded_at') is None
+
+
+def test_codex_session_reconciles_newer_evidence_with_existing_store(tmp_path, monkeypatch):
+    home = tmp_path / 'sessions-home'
+    sessions = home / 'sessions' / '2026'
+    sessions.mkdir(parents=True)
+    monkeypatch.setenv('CODEX_HOME', str(home))
+    router = Router(project=tmp_path)
+    router.usage_set('codex', session_used_pct=10, weekly_used_pct=30, now='2026-11-09T12:00:00Z')
+    event = {'timestamp': '2026-11-09T12:10:00Z', 'type': 'event_msg', 'payload': {
+        'type': 'token_count', 'rate_limits': {'primary': {'used_percent': 40, 'window_minutes': 300}}}}
+    (sessions / 'rollout.jsonl').write_text(json.dumps(event) + '\n')
+    state = router.usage_show('codex', now='2026-11-09T12:10:00Z')['agents']['codex']
+    assert state['session_5h']['used_pct'] == 40
+    assert state['weekly_7d']['used_pct'] == 30
+    assert state['probe'].get('succeeded_at') is None
