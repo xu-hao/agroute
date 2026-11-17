@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.5.1 (2026-11-17)
+
+- Release agroute 0.5.1 with synchronized package and plugin versions. Issue #64 tracks
+  the release metadata, distribution validation, PyPI publication, and GitHub release.
 - Reconcile newer passive Codex and Antigravity usage windows and refresh stale TUI
   usage in the background, with a manual `P` probe. Issue #62 tracks live usage refresh.
 
