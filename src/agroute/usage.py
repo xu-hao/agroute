@@ -430,34 +430,34 @@ def read_store(config):
             if patch:
                 ag["source"] = "discovered" if ag["updated_at"] is None else ag["source"]
             continue
-        if (
-            ag["updated_at"] is None
-            and ag["session_5h"]["used_pct"] is None
-            and ag["weekly_7d"]["used_pct"] is None
-            and not ag["tiers"]
-            and not ag["rate_limited"]
-        ):
-            patch = discover_live_usage_patch(name)
-            if patch:
-                if "session_5h" in patch and isinstance(patch["session_5h"], dict):
-                    ag["session_5h"] = _validate_window(patch["session_5h"], f"discovered.{name}.session_5h")
-                if "weekly_7d" in patch and isinstance(patch["weekly_7d"], dict):
-                    ag["weekly_7d"] = _validate_window(patch["weekly_7d"], f"discovered.{name}.weekly_7d")
-                if "rate_limited" in patch:
+        # Passive evidence has its own window clocks and never represents a
+        # local probe attempt. Reconcile both sources independently, allowing
+        # passive windows to advance only strictly newer local windows.
+        for patch in (_read_shared_probe_cache(name), discover_live_usage_patch(name)):
+            patch_advanced = False
+            for key, win in _patch_windows(patch):
+                validated = _validate_window(win, f"discovered.{name}.{key}")
+                previous = _get_window(ag, key)
+                prev_obs = previous.get("observed_at")
+                new_obs = validated.get("observed_at")
+                if not new_obs and (_window_has_evidence(previous) or ag["updated_at"]):
+                    continue
+                if prev_obs and new_obs and parse_timestamp(new_obs) <= parse_timestamp(prev_obs):
+                    continue
+                _put_window(ag, key, _merge_window(previous, validated))
+                patch_advanced = True
+                if ag["source"] is None:
+                    ag["source"] = "discovered"
+            if patch and ag["updated_at"] is None:
+                if "rate_limited" in patch and not ag["rate_limited"]:
                     ag["rate_limited"] = bool(patch["rate_limited"])
-                if "cooldown_until" in patch:
+                if "cooldown_until" in patch and ag["cooldown_until"] is None:
                     ag["cooldown_until"] = patch["cooldown_until"]
-                if "tiers" in patch and isinstance(patch["tiers"], dict):
-                    for tk, tv in patch["tiers"].items():
-                        if isinstance(tv, dict):
-                            ag["tiers"][tk] = _validate_window(tv, f"discovered.{name}.tiers.{tk}")
-                for key in ("updated_at", "probe", "detected_plan"):
-                    if key in patch:
-                        ag[key] = deepcopy(patch[key])
-                times = [win["observed_at"] for _, win in _patch_windows(ag) if win.get("observed_at")]
-                if times:
-                    ag["updated_at"] = max(times + ([ag["updated_at"]] if ag["updated_at"] else []), key=parse_timestamp)
-                ag["source"] = "discovered"
+            if patch.get("detected_plan") is not None and (ag["detected_plan"] is None or patch_advanced):
+                ag["detected_plan"] = patch["detected_plan"]
+        times = [win["observed_at"] for _, win in _patch_windows(ag) if win.get("observed_at")]
+        if times:
+            ag["updated_at"] = max(times + ([ag["updated_at"]] if ag["updated_at"] else []), key=parse_timestamp)
     return store
 
 

@@ -434,7 +434,9 @@ providers remain eligible. If none remain, routing fails with structured exclusi
 failure metadata is persisted without advancing quota evidence time. Command success without
 recognized current quota or availability evidence is not a successful probe; old cached
 evidence cannot become a fresh probe result. `usage show` and
-history remain inspectable without starting a probe. Expiry and supersession of individual
+history remain inspectable without starting a probe. Reads reconcile timestamped Codex session
+windows and Codex or Antigravity shared-cache windows individually with local evidence,
+retaining newer local measurements and the local probe record. Expiry and supersession of individual
 rejections continue to follow the rules below.
 
 ### Claude availability evidence and freshness
@@ -593,11 +595,15 @@ resolutions and direct `howhard` routing decisions appear in reverse-chronologic
 their live outcome state (`pending`, `clean`, `loud`, `silent`, `review`, `planned`) and
 task summary.
 
-- `agr tui [--all] [--repo NAME] [--agent AGENT] [--model MODEL] [--state STATE] [--refresh-seconds SEC]`:
+- `agr tui [--repo NAME] [--agent AGENT] [--current-repo] [--refresh-interval SEC] [--no-probe]`:
   interactive Textual terminal dashboard showing live agent quota/eligibility badges, active and
   historical model routes, `Enter` route detail modal, `u` live usage & eligibility modal,
   `h` history toggle, and filter pickers for repository (`p`), target agent (`a`), model (`m`),
-  and state (`s`).
+  and state (`s`). Enabled providers with missing, stale, failed, or expired usage are
+  probed off the UI loop automatically, with a 60-second retry cooldown and one probe
+  in flight. `P` probes all enabled providers immediately outside that cooldown; `p`
+  remains the repository filter. The display refreshes after a probe finishes.
+  `--no-probe` disables these probes.
 - `agr list [--all] [--repo NAME] [--agent AGENT] [--model MODEL] [--state STATE] [--limit N] [--json]`:
   scriptable tabular or JSON view of the same route records.
 - `agr show <id> [--json]`: full route record, invocation details, and `howhard` decision

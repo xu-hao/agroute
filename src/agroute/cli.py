@@ -187,6 +187,7 @@ def _build_parser():
     # tui
     p_tui = subparsers.add_parser("tui", help="Open the realtime model-route terminal view")
     p_tui.add_argument("--refresh-interval", type=float, default=1.0, help="Refresh interval in seconds (default: 1.0)")
+    p_tui.add_argument("--no-probe", action="store_true", help="Disable automatic and manual usage probes")
     p_tui.add_argument("--repo", default=None, help="Initial repository filter")
     p_tui.add_argument("--agent", default=None, help="Initial target agent filter (codex|claude|agy)")
     p_tui.add_argument("--current-repo", action="store_true", help="Inspect only the current repository")
@@ -424,6 +425,10 @@ def main(argv=None):
                     include_user_config=not args.no_user_config,
                 ).snapshot(all_repos=not args.current_repo, now=args.now),
                 refresh_interval=args.refresh_interval,
+                probe_factory=None if args.no_probe else lambda manual: Router(
+                    args.config, state_directory=args.state_dir,
+                    include_user_config=not args.no_user_config,
+                ).tui_probe(manual, now=args.now),
                 initial_repository_filter=args.repo,
                 initial_agent_filter=args.agent,
             )

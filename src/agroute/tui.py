@@ -7,7 +7,8 @@ from datetime import datetime, timezone
 import json
 import shlex
 import threading
-from typing import Callable
+import time
+from typing import Any, Callable
 
 from rich.text import Text
 
@@ -368,6 +369,7 @@ def build_app(
     snapshot_factory: Callable[[], dict],
     *,
     refresh_interval: float = 1.0,
+    probe_factory: Callable[[bool], Any] | None = None,
     initial_repository_filter: str | None = None,
     initial_agent_filter: str | None = None,
 ):
@@ -517,6 +519,7 @@ def build_app(
             Binding("u", "usage", "usage"),
             Binding("h", "history", "hide/show observed"),
             Binding("p", "repository", "repository filter"),
+            Binding("P", "probe", "probe"),
             Binding("a", "agent", "agent filter"),
             Binding("m", "model", "model filter"),
             Binding("s", "state", "state filter"),
@@ -531,6 +534,9 @@ def build_app(
             self._snapshot_factory = snapshot_factory
             self._rows: dict[str, dict] = {}
             self._reading = False
+            self._probing = False
+            self._refresh_pending = False
+            self._last_probe = float("-inf")
             self._message = "loading …"
             self._snapshot: dict | None = None
             self._show_history = True
@@ -580,6 +586,7 @@ def build_app(
             ):
                 table.add_column(label, width=width)
             self.action_refresh()
+            self._start_probe(False)
             self.set_interval(refresh_interval, self.action_refresh)
 
         def _render_resized_table(self) -> None:
@@ -587,6 +594,7 @@ def build_app(
                 self._render_snapshot(self._snapshot)
 
         def action_refresh(self) -> None:
+            self._start_probe(False)
             if self._reading:
                 return
             self._reading = True
@@ -600,6 +608,33 @@ def build_app(
                 self._apply_snapshot(result)  # type: ignore[arg-type]
 
             self.run_worker(work(), group="route-snapshot")
+
+        def action_probe(self) -> None:
+            self._start_probe(True)
+
+        def _start_probe(self, manual: bool) -> None:
+            if probe_factory is None or self._probing:
+                return
+            if not manual and time.monotonic() - self._last_probe < 60:
+                return
+            self._probing = True
+            self._last_probe = time.monotonic()
+
+            async def work() -> None:
+                try:
+                    await _off_loop(lambda: probe_factory(manual))
+                except Exception:
+                    # A provider failure must not terminate the interface.
+                    pass
+                finally:
+                    self._probing = False
+                    if self.is_running:
+                        if self._reading:
+                            self._refresh_pending = True
+                        else:
+                            self.action_refresh()
+
+            self.run_worker(work(), group="usage-probe")
 
         def _read_failed(self, exc: AgRouteError) -> None:
             if not self.is_running:
@@ -630,6 +665,9 @@ def build_app(
             self._reading = False
             self._snapshot = snapshot
             self._render_snapshot(snapshot)
+            if self._refresh_pending:
+                self._refresh_pending = False
+                self.action_refresh()
 
         def _render_snapshot(self, snapshot: dict) -> None:
             selected = self._selected_id()
@@ -944,6 +982,7 @@ def run(
     snapshot_factory: Callable[[], dict],
     *,
     refresh_interval: float = 1.0,
+    probe_factory: Callable[[bool], Any] | None = None,
     initial_repository_filter: str | None = None,
     initial_agent_filter: str | None = None,
 ) -> int:
@@ -953,6 +992,7 @@ def run(
     build_app(
         snapshot_factory,
         refresh_interval=refresh_interval,
+        probe_factory=probe_factory,
         initial_repository_filter=initial_repository_filter,
         initial_agent_filter=initial_agent_filter,
     ).run()
