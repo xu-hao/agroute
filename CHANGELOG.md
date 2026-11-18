@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.5.2 (2026-11-18)
+
+- Release agroute 0.5.2 with synchronized package and plugin versions. Issue #69 tracks
+  the release metadata, distribution validation, PyPI publication, and GitHub release.
 - Keep a fixed amount of quota credit in every window with per-agent `host_reserve_credit_usd`,
   applied while the agent is the routing root, and `min_remaining_credit_usd`, applied for any
   root; both default to `0.0`. Each window holds back the larger of the percentage reserve and
