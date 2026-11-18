@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Keep a fixed amount of quota credit in every window with per-agent `host_reserve_credit_usd`,
+  applied while the agent is the routing root, and `min_remaining_credit_usd`, applied for any
+  root; both default to `0.0`. Each window holds back the larger of the percentage reserve and
+  the credit reserve, never their sum, and `credit_calibration` reports that amount as
+  `reserve_credit_usd`. Exclusion reasons and plan refusals name the amount held back; the
+  ` after N USD reserve` suffix also appears for existing configurations that set only
+  `host_reserve_pct`, so the text of those exclusion reasons changes. A window without a known
+  credit ceiling keeps its percentage limits with a warning, and `agr inventory` TOML output
+  carries each warning as a `# warning:` comment line. Issue #67 tracks credit-denominated
+  reserves.
+
 ## 0.5.1 (2026-11-17)
 
 - Release agroute 0.5.1 with synchronized package and plugin versions. Issue #64 tracks

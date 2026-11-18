@@ -476,7 +476,8 @@ host_reserve_pct = 10.0
     # while candidates("agy") evaluates native surface with is_host=True -> 0.0 USD!
     assert mq["credit_budget"]["available_credit_usd"] == 3.2
 
-    with pytest.raises(AgRouteError, match="0 USD remaining"):
+    # The reason names the 3.2 USD (10% of 32 USD) that the host reserve holds back.
+    with pytest.raises(AgRouteError, match=r"0 USD remaining after 3\.2 USD reserve"):
         router.candidates("agy", include_agents=["agy"], now=NOW)
 
 

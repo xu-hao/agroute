@@ -73,6 +73,12 @@ def _toml_string(value):
     return f'"{escaped}"'
 
 
+def _toml_comment(value):
+    """Text for one TOML comment line: whitespace runs become a space and other control characters are escaped."""
+    flat = " ".join(value.split())
+    return "".join(f"\\u{ord(char):04x}" if ord(char) < 0x20 or ord(char) == 0x7F else char for char in flat)
+
+
 def _toml_value(value):
     """Render a candidate cell value as an inline TOML value."""
     if isinstance(value, bool):
@@ -468,10 +474,20 @@ class Router:
                     "surface": surface_name,
                     "candidate": deepcopy(cand),
                     "credit_budget": deepcopy(mq.get("credit_budget")),
+                    # The reserve held back in each budget window, for explaining refusals.
+                    "window_reserves": {
+                        window: mq["credit_calibration"][window]["reserve_credit_usd"]
+                        for window in ("session_5h", "weekly_7d")
+                        if f"{window}_remaining_credit_usd" in (mq.get("credit_budget") or {})
+                    },
                     "monthly_cost_usd": mq.get("monthly_cost_usd"),
                     "weekly_cost_usd": mq.get("weekly_cost_usd"),
                     "cost_per_credit": mq.get("cost_per_credit", 1.0),
                 }
+                # Admitted routes whose windows cannot keep the credit reserve stay visible.
+                for message in mq["credit_reserve_warnings"]:
+                    if message not in warnings:
+                        warnings.append(message)
 
         price_request = build_price_request(self.config, now_dt, pending_prices) if priced else None
         if not admitted:
@@ -636,7 +652,8 @@ class Router:
     def format_inventory_toml(self, host=None, *, name="router", include_agents=None, now=None):
         inv = self.inventory(host, name=name, include_agents=include_agents, now=now)
         cells = inv["inventories"][name]
-        lines = []
+        # Pasted into howhard.toml, each routing warning stays visible as one comment line.
+        lines = [f"# warning: {_toml_comment(warning)}" for warning in inv["warnings"]]
         for ag, groups in (inv.get("credit_calibration") or {}).items():
             for grp, meta in groups.items():
                 parts = []
@@ -802,6 +819,9 @@ class Router:
                     window_parts.append(
                         f"weekly_7d_remaining_credit_usd={live_budget['weekly_7d_remaining_credit_usd']:.6g}"
                     )
+                for window, held_back in meta["window_reserves"].items():
+                    if held_back > 0.0:
+                        window_parts.append(f"{window}_reserve_credit_usd={held_back:.6g}")
                 window_detail = f" ({', '.join(window_parts)})" if window_parts else ""
                 raise AgRouteError(
                     f"plan: chosen cell ({qualified_target_model!r}, {target_effort!r}) requires {needed_credit:.6g} USD credit, "
