@@ -5,10 +5,12 @@ import os
 from pathlib import Path
 import re
 import time
+import tomllib
 
 import pytest
 
 from agroute import AgRouteError, Router, load_config
+from agroute.adapters import get_adapter
 from agroute.cli import main
 
 NOW = "2026-11-18T12:00:00Z"
@@ -332,6 +334,41 @@ def test_cli_candidates_envelope_warns_when_no_window_has_a_credit_ceiling(tmp_p
         "codex quota_group 'shared' weekly_7d: no known credit ceiling, so the 5 USD credit reserve "
         "is not applied (percentage limits only)",
     ]
+
+
+def test_cli_toml_inventory_keeps_every_warning_as_a_comment_line(tmp_path, capsys, monkeypatch):
+    def offline_probe(cwd):
+        raise AgRouteError("usage probe: provider offline\nretry later")
+
+    # agy cannot refresh, so it is excluded with multi-line warnings while codex stays routable.
+    monkeypatch.setattr(get_adapter("agy"), "probe_usage", offline_probe)
+    config = tmp_path / "agroute.toml"
+    config.write_text('[agents.codex]\nplan = "none"\nmin_remaining_credit_usd = 5.0\n', encoding="utf-8")
+    common = ["--config", str(config), "--state-dir", str(tmp_path / "state"), "--no-user-config", "--now", NOW]
+    assert main(
+        ["usage", "set", "--agent", "codex", "--session-used-pct", "40", "--weekly-used-pct", "40", *common, "--json"]
+    ) == 0
+    capsys.readouterr()
+
+    inventory = ["inventory", "--host", "agy", "--include-agents", "agy,codex", *common]
+    assert main([*inventory, "--format", "json"]) == 0
+    warnings = json.loads(capsys.readouterr().out)["warnings"]
+    assert any("\n" in warning for warning in warnings)
+    assert (
+        "codex quota_group 'shared' session_5h: no known credit ceiling, so the 5 USD credit reserve "
+        "is not applied (percentage limits only)"
+    ) in warnings
+
+    output = tmp_path / "howhard-inventories.toml"
+    assert main([*inventory, "--output", str(output)]) == 0
+    rendered = capsys.readouterr().out
+    assert output.read_text(encoding="utf-8") == rendered
+    # One comment line per warning, flattened so the pasted TOML stays valid.
+    assert [line for line in rendered.splitlines() if line.startswith("# warning: ")] == [
+        f"# warning: {' '.join(warning.split())}" for warning in warnings
+    ]
+    cells = tomllib.loads(rendered)["inventories"]["router"]
+    assert cells and all(cell["model"].startswith("codex/") for cell in cells)
 
 
 @pytest.mark.parametrize("key", ["host_reserve_credit_usd", "min_remaining_credit_usd"])

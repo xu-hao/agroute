@@ -884,8 +884,9 @@ def resolve_calibrated_quota_credit(
             held_back_usd = max(total_credit_usd * reserve_pct / 100.0, reserve_credit_usd)
             used_pct = win_dict.get("used_pct") if isinstance(win_dict, dict) else None
             if used_pct is not None:
+                # Without any reserve this is bit-identical to the unreserved balance.
                 remaining_credit_usd = round(
-                    max(0.0, total_credit_usd * (100.0 - float(used_pct)) / 100.0 - held_back_usd), 6
+                    max(0.0, (100.0 - float(used_pct)) / 100.0 * total_credit_usd - held_back_usd), 6
                 )
             else:
                 remaining_credit_usd = None

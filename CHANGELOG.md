@@ -6,9 +6,12 @@
   applied while the agent is the routing root, and `min_remaining_credit_usd`, applied for any
   root; both default to `0.0`. Each window holds back the larger of the percentage reserve and
   the credit reserve, never their sum, and `credit_calibration` reports that amount as
-  `reserve_credit_usd`. Exclusion reasons and plan refusals name the amount held back, and a
-  window without a known credit ceiling keeps its percentage limits with a warning. Issue #67
-  tracks credit-denominated reserves.
+  `reserve_credit_usd`. Exclusion reasons and plan refusals name the amount held back; the
+  ` after N USD reserve` suffix also appears for existing configurations that set only
+  `host_reserve_pct`, so the text of those exclusion reasons changes. A window without a known
+  credit ceiling keeps its percentage limits with a warning, and `agr inventory` TOML output
+  carries each warning as a `# warning:` comment line. Issue #67 tracks credit-denominated
+  reserves.
 
 ## 0.5.1 (2026-11-17)
 

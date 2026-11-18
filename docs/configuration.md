@@ -204,5 +204,9 @@ table for the current host with:
 agr inventory --host agy --name router
 ```
 
+The output begins with one `# warning:` comment line for each routing warning, such as a stale
+provider or a window that cannot hold a credit reserve, so the warnings stay visible in
+`howhard.toml`.
+
 When availability changes dynamically with live usage windows, pass the fresh candidate list
 from `agr candidates --host HOST --output FILE` to `howhard ... --candidates FILE`.

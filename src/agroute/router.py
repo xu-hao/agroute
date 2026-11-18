@@ -73,6 +73,12 @@ def _toml_string(value):
     return f'"{escaped}"'
 
 
+def _toml_comment(value):
+    """Text for one TOML comment line: whitespace runs become a space and other control characters are escaped."""
+    flat = " ".join(value.split())
+    return "".join(f"\\u{ord(char):04x}" if ord(char) < 0x20 or ord(char) == 0x7F else char for char in flat)
+
+
 def _toml_value(value):
     """Render a candidate cell value as an inline TOML value."""
     if isinstance(value, bool):
@@ -646,7 +652,8 @@ class Router:
     def format_inventory_toml(self, host=None, *, name="router", include_agents=None, now=None):
         inv = self.inventory(host, name=name, include_agents=include_agents, now=now)
         cells = inv["inventories"][name]
-        lines = []
+        # Pasted into howhard.toml, each routing warning stays visible as one comment line.
+        lines = [f"# warning: {_toml_comment(warning)}" for warning in inv["warnings"]]
         for ag, groups in (inv.get("credit_calibration") or {}).items():
             for grp, meta in groups.items():
                 parts = []

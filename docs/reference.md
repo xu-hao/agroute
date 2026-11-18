@@ -397,8 +397,9 @@ The calibration metadata labels quota amounts as `prior_credit_usd`, `calibrated
 fields, so it carries no reserve field; its remaining amounts already exclude the reserve.
 `candidates --json` and
 `inventory --json` expose per-cell `cost_per_credit` and top-level `credit_calibration`;
-`inventory` TOML adds explanatory `# credit_calibration` comments and emits candidate cells
-with the fields supported by the current `howhard` candidate contract.
+`inventory` TOML starts with one `# warning:` comment line per envelope warning (whitespace
+collapsed, so each stays one line), adds explanatory `# credit_calibration` comments, and emits
+candidate cells with the fields supported by the current `howhard` candidate contract.
 
 (native-quota-tracking)=
 ## Native quota and rate-limit tracking
