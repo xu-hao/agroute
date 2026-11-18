@@ -862,7 +862,6 @@ def resolve_model_quota(
             "weekly_7d": w7,
             "eligible": eligible,
             "exclusion_reason": exclusion_reason,
-            "reserve_credit_usd": reserve_credit,
             "credit_reserve_warnings": list(reserve_warnings),
         }
         if credit_budget is not None:
@@ -901,7 +900,8 @@ def resolve_model_quota(
 
     if credit_budget is not None and credit_budget["available_credit_usd"] <= 0.0:
         exhausted_win = "session_5h" if (rem_5h is not None and rem_5h <= 0.0) else "weekly_7d"
-        after_reserve = f" after {reserve_credit:.6g} USD credit reserve" if reserve_credit > 0.0 else ""
+        held_back = credit_calibration[exhausted_win]["reserve_credit_usd"]
+        after_reserve = f" after {held_back:.6g} USD reserve" if held_back > 0.0 else ""
         return _result(False, f"{exhausted_win} credit_budget exhausted (0 USD remaining{after_reserve})")
 
     max_session = max(0.0, agent_cfg["max_session_used_pct"] - reserve)

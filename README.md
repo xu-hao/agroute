@@ -205,8 +205,8 @@ older `cost_usd` records remain readable as list-price credit evidence. Explicit
 `[agents.<name>].credit` overrides remain exact. The emitted `credit_budget` names its
 available balance `available_credit_usd` and provides the separate
 `session_5h_remaining_credit_usd` / `weekly_7d_remaining_credit_usd` values when known.
-Per-agent [credit reserves](docs/configuration.md#credit-reserves) keep a fixed amount of
-credit in every window: `host_reserve_credit_usd` while the agent is the routing root and
+Per-agent [credit reserves](docs/configuration.md#credit-reserves) keep at least a fixed amount
+of credit in every window: `host_reserve_credit_usd` while the agent is the routing root and
 `min_remaining_credit_usd` for any root. See [configuration](docs/configuration.md) and the
 [routing reference](docs/reference.md) for preset values, migration details and exact output
 fields.

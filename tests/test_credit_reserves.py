@@ -98,9 +98,7 @@ def test_credit_reserve_excludes_a_candidate_that_percentage_limits_admit(tmp_pa
     )
     result = reserved.candidates("agy", include_agents=["codex", "claude"], now=NOW)
     assert not [cell for cell in result["candidates"] if cell["model"].startswith("codex/")]
-    assert _reasons(result, "codex") == [
-        "session_5h credit_budget exhausted (0 USD remaining after 5 USD credit reserve)"
-    ]
+    assert _reasons(result, "codex") == ["session_5h credit_budget exhausted (0 USD remaining after 5 USD reserve)"]
     assert _cell(result, "claude/claude-opus-5-5")["credit_budget"]["available_credit_usd"] == 81.0
 
 
@@ -120,7 +118,7 @@ def test_plan_refuses_needed_credit_that_fits_only_without_the_reserve(tmp_path)
     }
     expected = (
         "requires 7 USD credit, exceeding remaining credit 6 USD (session_5h_remaining_credit_usd=6, "
-        "weekly_7d_remaining_credit_usd=41, reserve_credit_usd=4)"
+        "weekly_7d_remaining_credit_usd=41, session_5h_reserve_credit_usd=4, weekly_7d_reserve_credit_usd=4)"
     )
     with pytest.raises(AgRouteError, match=re.escape(expected)):
         router.plan("agy", decision, prompt="over the reserve", include_agents=["codex"], now=NOW)
@@ -138,15 +136,15 @@ def test_plan_refuses_needed_credit_that_fits_only_without_the_reserve(tmp_path)
 @pytest.mark.parametrize(
     "session_used_pct,reserve,reasons,available",
     [
-        # Percentage limit admits (80% < 90%); 4 USD left cannot keep a 5 USD reserve.
-        (80.0, 5.0, ["session_5h credit_budget exhausted (0 USD remaining after 5 USD credit reserve)"], None),
+        # The used_pct limit admits (80% < 90%); 4 USD left cannot keep a 5 USD reserve.
+        (80.0, 5.0, ["session_5h credit_budget exhausted (0 USD remaining after 5 USD reserve)"], None),
         # The reserve leaves 1.3 of 1.8 USD, but 91% reaches the 90% session limit.
         (91.0, 0.5, ["session_5h used_pct (91.0%) >= effective limit (90.0%)"], None),
         # Both rules admit: 10 USD session minus the 5 USD reserve.
         (50.0, 5.0, [], 5.0),
     ],
 )
-def test_stricter_of_percentage_limit_and_credit_reserve_decides(
+def test_used_pct_limits_stay_separate_exclusion_thresholds(
     tmp_path, session_used_pct, reserve, reasons, available
 ):
     _write_codex_cache(["gpt-6.1-sol"])
@@ -170,18 +168,16 @@ def test_host_credit_reserve_applies_only_when_the_agent_is_the_routing_root(tmp
     _write_codex_cache(["gpt-6.1-sol"])
     router = _router(
         tmp_path,
-        '[agents.codex]\nplan = "plus-20"\nhost_reserve_pct = 10.0\n'
-        "host_reserve_credit_usd = 3.0\nmin_remaining_credit_usd = 1.0\n",
+        '[agents.codex]\nplan = "plus-20"\nhost_reserve_credit_usd = 3.0\nmin_remaining_credit_usd = 1.0\n',
     )
     router.usage_set("codex", session_used_pct=50.0, weekly_used_pct=20.0, now=NOW)
 
     as_root = router.candidates("codex", include_agents=["codex"], now=NOW)
-    # Root: the percentage reserve and both credit amounts apply.
-    # Session 20 * (100 - 50 - 10)% - (3 + 1) = 4; weekly 50 * (100 - 20 - 10)% - 4 = 31.
+    # Root: the host reserve and the margin add up. Session 20 * 50% - (3 + 1) = 6; weekly 50 * 80% - 4 = 36.
     assert _cell(as_root, "codex/gpt-6.1-sol")["credit_budget"] == {
-        "available_credit_usd": 4.0,
-        "session_5h_remaining_credit_usd": 4.0,
-        "weekly_7d_remaining_credit_usd": 31.0,
+        "available_credit_usd": 6.0,
+        "session_5h_remaining_credit_usd": 6.0,
+        "weekly_7d_remaining_credit_usd": 36.0,
     }
     root_windows = as_root["credit_calibration"]["codex"]["shared"]
     assert root_windows["session_5h"]["reserve_credit_usd"] == 4.0
@@ -197,6 +193,51 @@ def test_host_credit_reserve_applies_only_when_the_agent_is_the_routing_root(tmp
     target_windows = as_target["credit_calibration"]["codex"]["shared"]
     assert target_windows["session_5h"]["reserve_credit_usd"] == 1.0
     assert target_windows["weekly_7d"]["reserve_credit_usd"] == 1.0
+
+
+@pytest.mark.parametrize(
+    "reserve_pct,credit_reserve,budget,held_back",
+    [
+        # Percentage reserve larger: 20% holds 4 of the 20 USD session and 10 of the 50 USD
+        # week, more than the 1 USD credit reserve; the sums (5 and 11) never apply.
+        (
+            20.0,
+            1.0,
+            {"available_credit_usd": 6.0, "session_5h_remaining_credit_usd": 6.0, "weekly_7d_remaining_credit_usd": 30.0},
+            (4.0, 10.0),
+        ),
+        # Credit reserve larger: 6 USD exceeds 5% of either window (1 and 2.5 USD).
+        (
+            5.0,
+            6.0,
+            {"available_credit_usd": 4.0, "session_5h_remaining_credit_usd": 4.0, "weekly_7d_remaining_credit_usd": 34.0},
+            (6.0, 6.0),
+        ),
+        # Each window takes its own larger reserve: 4 USD beats 10% of the session (2 USD),
+        # while 10% of the week (5 USD) beats 4 USD.
+        (
+            10.0,
+            4.0,
+            {"available_credit_usd": 6.0, "session_5h_remaining_credit_usd": 6.0, "weekly_7d_remaining_credit_usd": 35.0},
+            (4.0, 5.0),
+        ),
+    ],
+)
+def test_larger_of_percentage_and_credit_reserve_applies_not_their_sum(
+    tmp_path, reserve_pct, credit_reserve, budget, held_back
+):
+    _write_codex_cache(["gpt-6.1-sol"])
+    router = _router(
+        tmp_path,
+        f'[agents.codex]\nplan = "plus-20"\nhost_reserve_pct = {reserve_pct}\n'
+        f"host_reserve_credit_usd = {credit_reserve}\n",
+    )
+    # 50% of the 20 USD session and 20% of the 50 USD week are used: 10 and 40 USD before reserves.
+    router.usage_set("codex", session_used_pct=50.0, weekly_used_pct=20.0, now=NOW)
+    result = router.candidates("codex", include_agents=["codex"], now=NOW)
+    assert _cell(result, "codex/gpt-6.1-sol")["credit_budget"] == budget
+    windows = result["credit_calibration"]["codex"]["shared"]
+    assert (windows["session_5h"]["reserve_credit_usd"], windows["weekly_7d"]["reserve_credit_usd"]) == held_back
 
 
 @pytest.mark.parametrize("host", ["agy", "codex", "claude"])

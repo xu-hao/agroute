@@ -4,8 +4,9 @@
 
 - Keep a fixed amount of quota credit in every window with per-agent `host_reserve_credit_usd`,
   applied while the agent is the routing root, and `min_remaining_credit_usd`, applied for any
-  root; both default to `0.0`. Remaining credit subtracts the credit reserve after the
-  percentage reserve, `credit_calibration` reports each window's `reserve_credit_usd`, and a
+  root; both default to `0.0`. Each window holds back the larger of the percentage reserve and
+  the credit reserve, never their sum, and `credit_calibration` reports that amount as
+  `reserve_credit_usd`. Exclusion reasons and plan refusals name the amount held back, and a
   window without a known credit ceiling keeps its percentage limits with a warning. Issue #67
   tracks credit-denominated reserves.
 

@@ -830,9 +830,10 @@ def resolve_calibrated_quota_credit(
 ) -> tuple[dict | None, dict | None, list[tuple[str, str]]]:
     """Return `(credit_budget, credit_calibration_meta, unknown_ceiling_windows)` for `(agent_name, quota_group)`.
 
-    Every consumed window with a known credit ceiling keeps `reserve_pct` percent of that
-    ceiling and then `reserve_credit_usd` USD. `unknown_ceiling_windows` lists the consumed
-    `(pool_group, window)` pairs without a known ceiling, where no credit reserve can apply.
+    Every consumed window with a known credit ceiling holds back the larger of `reserve_pct`
+    percent of that ceiling and `reserve_credit_usd` USD, never their sum.
+    `unknown_ceiling_windows` lists the consumed `(pool_group, window)` pairs without a known
+    ceiling, where no credit reserve can apply.
     """
     effective_plan, preset_credit, manual_credit, _ = resolve_plan_credit_sources(
         agent_name, agent_cfg, effective_state.get("detected_plan")
@@ -879,11 +880,12 @@ def resolve_calibrated_quota_credit(
                 unknown_ceiling_windows.append((pool_group, window))
                 continue
 
+            # The stricter reserve applies: percentage and credit reserves never add up.
+            held_back_usd = max(total_credit_usd * reserve_pct / 100.0, reserve_credit_usd)
             used_pct = win_dict.get("used_pct") if isinstance(win_dict, dict) else None
             if used_pct is not None:
-                pct_left = max(0.0, 100.0 - reserve_pct - float(used_pct))
                 remaining_credit_usd = round(
-                    max(0.0, (pct_left / 100.0) * total_credit_usd - reserve_credit_usd), 6
+                    max(0.0, total_credit_usd * (100.0 - float(used_pct)) / 100.0 - held_back_usd), 6
                 )
             else:
                 remaining_credit_usd = None
@@ -897,7 +899,7 @@ def resolve_calibrated_quota_credit(
                 "manual_override": is_manual,
                 "used_pct": used_pct,
                 "remaining_credit_usd": remaining_credit_usd,
-                "reserve_credit_usd": reserve_credit_usd,
+                "reserve_credit_usd": round(held_back_usd, 6),
             }
             if window == "weekly_7d":
                 meta["weekly_cost_usd"] = cost_meta["pool_weekly_cost_usd"]

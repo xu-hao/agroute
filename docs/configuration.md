@@ -155,7 +155,7 @@ agr config set-plan codex promax --json
 `max_session_used_pct`, `max_weekly_used_pct`, `max_tier_used_pct` and `host_reserve_pct` are
 percentages, so the headroom they leave grows and shrinks with each window. Five percent of a
 75 USD model tier is 3.75 USD, less than one worker may spend, while five percent of a 900 USD
-weekly window is 45 USD. Two per-agent options instead keep a fixed amount of quota credit, in
+weekly window is 45 USD. Two per-agent options keep at least a fixed amount of quota credit, in
 USD at the provider's list-price basis, in every window with a known credit ceiling: the 5-hour
 session, the weekly window and each per-model tier.
 
@@ -167,21 +167,31 @@ session, the weekly window and each per-model tier.
 ```toml
 [agents.claude]
 plan = "max-20x"
+host_reserve_pct = 5.0
 host_reserve_credit_usd = 20.0
 min_remaining_credit_usd = 5.0
 ```
 
-With these values, every Claude window keeps 25 USD while Claude is the routing root and 5 USD
-while another agent routes to Claude. Each value is a non-negative finite number.
+The credit reserve is 25 USD while Claude is the routing root and 5 USD while another agent
+routes to Claude. Each value is a non-negative finite number.
 
-Credit reserves work together with the percentage rules. Remaining credit subtracts the
-percentage reserve and then the credit reserve, and the percentage limits still apply, so a
-route must pass both and the stricter rule decides. A window whose credit ceiling is unknown,
-because no plan preset or `credit` override covers it, cannot hold a credit reserve. It keeps
-only its percentage limits, and `candidates`, `inventory` and `plan` add a warning naming the
-agent, quota group and window; configure a `plan` or `credit` ceiling to apply the reserve
-there. See {ref}`remaining credit budgets <remaining-credit-budgets>` for the formula and the
-reported fields.
+On the routing root, `host_reserve_pct` describes the same headroom as a share of each window,
+so the stricter reserve applies, never the sum: each window holds back the larger of
+`host_reserve_pct` of its ceiling and the credit reserve. Here the 360 USD session holds back
+25 USD rather than 18 USD, and the 900 USD week holds back 45 USD rather than 25 USD. The
+`max_session_used_pct`, `max_weekly_used_pct` and `max_tier_used_pct` limits stay separate
+exclusion thresholds, so a route must also stay below them.
+
+`credit_calibration` reports the amount held back in each window as `reserve_credit_usd`.
+`credit_budget` keeps only the fields `howhard` accepts, and its remaining amounts already
+exclude the reserve.
+
+A window whose credit ceiling is unknown, because no plan preset or `credit` override covers it,
+cannot hold a credit reserve. It keeps only its percentage limits, and `candidates`, `inventory`
+and `plan` add a warning naming the agent, quota group and window; configure a `plan` or
+`credit` ceiling to apply the reserve there. See
+{ref}`remaining credit budgets <remaining-credit-budgets>` for the formula and the reported
+fields.
 
 (howhard-inventories)=
 ## Generating `[inventories]` for `howhard.toml`
