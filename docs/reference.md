@@ -351,11 +351,23 @@ historically measured credit amount. The next calibration write emits v2 with `s
 - `agr usage clear` resets `last_snapshot` anchors for cleared agents while preserving
   learned credit statistics.
 
-For a known credit ceiling `C_credit` and usage percentage `u`, remaining credit after host
-reserve `rho` is `round(C_credit * max(0, 100 - u - rho) / 100, 6)`. `rho` is
-`host_reserve_pct` for the current host and `0.0` for other agents. For models consuming
+For a known credit ceiling `C_credit` and usage percentage `u`, remaining credit is
+`round(max(0, C_credit * max(0, 100 - u - rho) / 100 - kappa), 6)`. The percentage reserve
+`rho` is `host_reserve_pct` for the current host and `0.0` for other agents. The credit reserve
+`kappa` is `host_reserve_credit_usd` for the current host plus `min_remaining_credit_usd` for
+any host, and the same amount applies to every window: the session, the weekly window, and
+each per-model tier (see {ref}`credit reserves <credit-reserves>`). For models consuming
 overlapping pools, `agroute` retains the tightest known remaining balance per window. Unknown
 windows do not contribute a calculated balance.
+
+Percentage eligibility limits apply alongside both reserves, so a route must pass both rules
+and the stricter one decides. A window without a known credit ceiling cannot hold a credit
+reserve and keeps only its percentage limits. When `kappa > 0`, each such window consumed by
+an admitted route adds one entry to `warnings` in `candidates`, `inventory`, and `plan`:
+
+```text
+codex quota_group 'shared' session_5h: no known credit ceiling, so the 5 USD credit reserve is not applied (percentage limits only)
+```
 
 When at least one window has a known remaining credit, `credit_budget` uses this explicit
 schema (omitting any unknown window instead of emitting `None`):
@@ -369,13 +381,18 @@ schema (omitting any unknown window instead of emitting `None`):
 ```
 
 `available_credit_usd` is the minimum of known remaining session and weekly credits. A model
-with no available credit is excluded. When a budget is active, candidates without a rate card
-or `usd_per_mtok` are excluded so `howhard` can evaluate candidate costs uniformly.
+with no available credit is excluded; when a credit reserve applies, the reason names it, for
+example `session_5h credit_budget exhausted (0 USD remaining after 25 USD credit reserve)`.
+When a budget is active, candidates without a rate card or `usd_per_mtok` are excluded so
+`howhard` can evaluate candidate costs uniformly.
 
 `agr usage show` and `agr models` expose agent-level `monthly_cost_usd` and
 `weekly_cost_usd`, plus per-model `cost_per_credit`, `credit_budget`, and `credit_calibration`.
 The calibration metadata labels quota amounts as `prior_credit_usd`, `calibrated_credit_usd`,
-`remaining_credit_usd`, and `available_credit_usd`. `candidates --json` and
+`remaining_credit_usd`, and `available_credit_usd`. Each window's metadata also reports
+`reserve_credit_usd`, the credit reserve `kappa` subtracted from that window. `credit_budget`
+keeps the `howhard` candidate schema shown above, so its remaining amounts already exclude both
+reserves and it carries no reserve field. `candidates --json` and
 `inventory --json` expose per-cell `cost_per_credit` and top-level `credit_calibration`;
 `inventory` TOML adds explanatory `# credit_calibration` comments and emits candidate cells
 with the fields supported by the current `howhard` candidate contract.
@@ -548,7 +565,8 @@ When that condition holds, `agr plan` selects the native host cell, sets
 For a `howhard-decision-v7` panel, `agr plan` reads `session_cost_usd` as cost and
 `needed_credit_usd` as quota credit. It validates `needed_credit_usd` against
 `credit_budget["available_credit_usd"]`, refusing an over-budget target with the separate
-`session_5h_remaining_credit_usd` / `weekly_7d_remaining_credit_usd` breakdown. It does not
+`session_5h_remaining_credit_usd` / `weekly_7d_remaining_credit_usd` breakdown, plus
+`reserve_credit_usd` when a credit reserve applies. It does not
 use `session_cost_usd` as quota credit. Older decision formats without the explicit split
 retain their legacy `C_run` compatibility. The resolved execution plan and persisted route
 record include `session_cost_usd`, `needed_credit_usd`, `cost_per_credit`, and `credit_budget`

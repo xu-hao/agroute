@@ -468,10 +468,15 @@ class Router:
                     "surface": surface_name,
                     "candidate": deepcopy(cand),
                     "credit_budget": deepcopy(mq.get("credit_budget")),
+                    "reserve_credit_usd": mq["reserve_credit_usd"],
                     "monthly_cost_usd": mq.get("monthly_cost_usd"),
                     "weekly_cost_usd": mq.get("weekly_cost_usd"),
                     "cost_per_credit": mq.get("cost_per_credit", 1.0),
                 }
+                # Admitted routes whose windows cannot keep the credit reserve stay visible.
+                for message in mq["credit_reserve_warnings"]:
+                    if message not in warnings:
+                        warnings.append(message)
 
         price_request = build_price_request(self.config, now_dt, pending_prices) if priced else None
         if not admitted:
@@ -802,6 +807,8 @@ class Router:
                     window_parts.append(
                         f"weekly_7d_remaining_credit_usd={live_budget['weekly_7d_remaining_credit_usd']:.6g}"
                     )
+                if meta["reserve_credit_usd"] > 0.0:
+                    window_parts.append(f"reserve_credit_usd={meta['reserve_credit_usd']:.6g}")
                 window_detail = f" ({', '.join(window_parts)})" if window_parts else ""
                 raise AgRouteError(
                     f"plan: chosen cell ({qualified_target_model!r}, {target_effort!r}) requires {needed_credit:.6g} USD credit, "

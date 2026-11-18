@@ -828,10 +828,11 @@ def resolve_model_quota(
         quota_group = "shared"
         quota_pools = [(quota_group, s5, w7)]
 
-    from .calibration import resolve_calibrated_quota_credit
+    from .calibration import credit_reserve_usd, resolve_calibrated_quota_credit
 
     reserve = agent_cfg["host_reserve_pct"] if is_host else 0.0
-    credit_budget, credit_calibration = resolve_calibrated_quota_credit(
+    reserve_credit = credit_reserve_usd(agent_cfg, is_host=is_host)
+    credit_budget, credit_calibration, unknown_ceiling_windows = resolve_calibrated_quota_credit(
         agent_name,
         agent_cfg,
         effective_state,
@@ -839,11 +840,18 @@ def resolve_model_quota(
         s5,
         w7,
         reserve_pct=reserve,
+        reserve_credit_usd=reserve_credit,
         calibration_store=calibration_store,
         quota_pools=quota_pools,
     )
     rem_5h = credit_budget.get("session_5h_remaining_credit_usd") if credit_budget else None
     rem_7d = credit_budget.get("weekly_7d_remaining_credit_usd") if credit_budget else None
+    # A window without a known credit ceiling keeps only its percentage limits.
+    reserve_warnings = [
+        f"{agent_name} quota_group '{group}' {window}: no known credit ceiling, so the "
+        f"{reserve_credit:.6g} USD credit reserve is not applied (percentage limits only)"
+        for group, window in (unknown_ceiling_windows if reserve_credit > 0.0 else ())
+    ]
 
     def _result(eligible, exclusion_reason):
         res = {
@@ -854,6 +862,8 @@ def resolve_model_quota(
             "weekly_7d": w7,
             "eligible": eligible,
             "exclusion_reason": exclusion_reason,
+            "reserve_credit_usd": reserve_credit,
+            "credit_reserve_warnings": list(reserve_warnings),
         }
         if credit_budget is not None:
             res["credit_budget"] = deepcopy(credit_budget)
@@ -891,7 +901,8 @@ def resolve_model_quota(
 
     if credit_budget is not None and credit_budget["available_credit_usd"] <= 0.0:
         exhausted_win = "session_5h" if (rem_5h is not None and rem_5h <= 0.0) else "weekly_7d"
-        return _result(False, f"{exhausted_win} credit_budget exhausted (0 USD remaining)")
+        after_reserve = f" after {reserve_credit:.6g} USD credit reserve" if reserve_credit > 0.0 else ""
+        return _result(False, f"{exhausted_win} credit_budget exhausted (0 USD remaining{after_reserve})")
 
     max_session = max(0.0, agent_cfg["max_session_used_pct"] - reserve)
     max_weekly = max(0.0, agent_cfg["max_weekly_used_pct"] - reserve)

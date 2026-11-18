@@ -809,6 +809,12 @@ def reset_calibration_snapshots(config, agents: list[str]) -> None:
         write_calibration_store(config, cal_store)
 
 
+def credit_reserve_usd(agent_cfg: dict, *, is_host: bool) -> float:
+    """Quota credit kept in every window: the routing root's own reserve plus the margin for any root."""
+    host_reserve = agent_cfg["host_reserve_credit_usd"] if is_host else 0.0
+    return host_reserve + agent_cfg["min_remaining_credit_usd"]
+
+
 def resolve_calibrated_quota_credit(
     agent_name: str,
     agent_cfg: dict,
@@ -818,10 +824,16 @@ def resolve_calibrated_quota_credit(
     w7_win: dict,
     *,
     reserve_pct: float = 0.0,
+    reserve_credit_usd: float = 0.0,
     calibration_store: dict | None = None,
     quota_pools: list[tuple[str, dict, dict]] | None = None,
-) -> tuple[dict | None, dict | None]:
-    """Return `(credit_budget, credit_calibration_meta)` for `(agent_name, quota_group)`."""
+) -> tuple[dict | None, dict | None, list[tuple[str, str]]]:
+    """Return `(credit_budget, credit_calibration_meta, unknown_ceiling_windows)` for `(agent_name, quota_group)`.
+
+    Every consumed window with a known credit ceiling keeps `reserve_pct` percent of that
+    ceiling and then `reserve_credit_usd` USD. `unknown_ceiling_windows` lists the consumed
+    `(pool_group, window)` pairs without a known ceiling, where no credit reserve can apply.
+    """
     effective_plan, preset_credit, manual_credit, _ = resolve_plan_credit_sources(
         agent_name, agent_cfg, effective_state.get("detected_plan")
     )
@@ -833,6 +845,7 @@ def resolve_calibrated_quota_credit(
 
     windows_meta: dict[str, dict] = {}
     rem_by_win: dict[str, float | None] = {"session_5h": None, "weekly_7d": None}
+    unknown_ceiling_windows: list[tuple[str, str]] = []
 
     for window, win_idx in (("session_5h", 1), ("weekly_7d", 2)):
         best_rem: float | None = None
@@ -863,12 +876,15 @@ def resolve_calibrated_quota_credit(
                 total_credit_usd = posterior_ceiling_credit_usd(prior_credit_usd, s_credit, s_frac)
                 is_manual = False
             else:
+                unknown_ceiling_windows.append((pool_group, window))
                 continue
 
             used_pct = win_dict.get("used_pct") if isinstance(win_dict, dict) else None
             if used_pct is not None:
                 pct_left = max(0.0, 100.0 - reserve_pct - float(used_pct))
-                remaining_credit_usd = round((pct_left / 100.0) * total_credit_usd, 6)
+                remaining_credit_usd = round(
+                    max(0.0, (pct_left / 100.0) * total_credit_usd - reserve_credit_usd), 6
+                )
             else:
                 remaining_credit_usd = None
 
@@ -881,6 +897,7 @@ def resolve_calibrated_quota_credit(
                 "manual_override": is_manual,
                 "used_pct": used_pct,
                 "remaining_credit_usd": remaining_credit_usd,
+                "reserve_credit_usd": reserve_credit_usd,
             }
             if window == "weekly_7d":
                 meta["weekly_cost_usd"] = cost_meta["pool_weekly_cost_usd"]
@@ -899,7 +916,7 @@ def resolve_calibrated_quota_credit(
         windows_meta[window] = best_meta
 
     if not windows_meta:
-        return None, {"plan": effective_plan or None, **cost_meta}
+        return None, {"plan": effective_plan or None, **cost_meta}, unknown_ceiling_windows
 
     present = [x for x in (rem_by_win["session_5h"], rem_by_win["weekly_7d"]) if x is not None]
     credit_budget = None
@@ -917,7 +934,7 @@ def resolve_calibrated_quota_credit(
         **cost_meta,
         **windows_meta,
     }
-    return credit_budget, calibration_meta
+    return credit_budget, calibration_meta, unknown_ceiling_windows
 
 
 def build_agent_calibration_summary(
@@ -933,6 +950,7 @@ def build_agent_calibration_summary(
         agent_name, agent_cfg, effective_state.get("detected_plan")
     )
     reserve = float(agent_cfg.get("host_reserve_pct", 0.0)) if is_host else 0.0
+    reserve_credit = credit_reserve_usd(agent_cfg, is_host=is_host)
 
     groups: list[str] = []
     if any(k in preset_credit for k in ("session_5h_credit_usd", "weekly_7d_credit_usd")) or any(
@@ -964,7 +982,7 @@ def build_agent_calibration_summary(
                     else {"used_pct": None, "reset_at": None}
                 )
             )
-        _, meta = resolve_calibrated_quota_credit(
+        _, meta, _ = resolve_calibrated_quota_credit(
             agent_name,
             agent_cfg,
             effective_state,
@@ -972,6 +990,7 @@ def build_agent_calibration_summary(
             s5,
             w7,
             reserve_pct=reserve,
+            reserve_credit_usd=reserve_credit,
             calibration_store=calibration_store,
         )
         if meta is not None:

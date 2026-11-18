@@ -132,7 +132,8 @@ If {math}`Q(r)` is the set of consumed pools, the pool checks have the form:
 Provider availability and candidate controls are additional requirements. Known
 counters are evaluated against the configured limits; missing counters are
 retained as unknown. Policy can also reserve a percentage of the current host's
-capacity for its coordinating session.
+capacity for its coordinating session, and a fixed amount of credit in every
+window with a known ceiling (section 5).
 
 ## 5 Prices and remaining credit
 
@@ -167,11 +168,13 @@ model inputs, not cash balances. Automatic plan detection or explicit configurat
 selects a preset; manual credit overrides take precedence over learned estimates.
 
 For a consumed pool {math}`q` and window {math}`w`, let {math}`C_{q,w}` be its
-effective ceiling, {math}`u_{q,w}` its known used percentage and {math}`\rho`
-the host reserve percentage, applied only to the current host. Remaining credit is:
+effective ceiling, {math}`u_{q,w}` its known used percentage, {math}`\rho`
+the host reserve percentage, applied only to the current host, and {math}`\kappa`
+the credit reserve: the host's own credit reserve when the agent is the current
+host, plus a margin that applies for any host. Remaining credit is:
 
 ```{math}
-B_{q,w}=C_{q,w}\max\left(0,\frac{100-u_{q,w}-\rho}{100}\right).
+B_{q,w}=\max\left(0,\;C_{q,w}\max\left(0,\frac{100-u_{q,w}-\rho}{100}\right)-\kappa\right).
 ```
 
 The candidate's `available_credit_usd` is the minimum of the calculated quota-credit
@@ -183,10 +186,22 @@ For illustration, if one consumed pool has 10 estimated dollars left and another
 has 4, the route's budget is 4. A forecast requiring 5 does not fit. Adding the
 balances would incorrectly treat overlapping constraints as separate capacity.
 
-These are forecast-based scheduling checks. They do not reserve capacity against
-other sessions, guarantee that a task finishes before a provider limit, or cover
-every possible retry. The {ref}`credit contract <remaining-credit-budgets>` defines
-the emitted fields and policy behavior.
+A percentage reserve scales with its window, while the work a host needs in order
+to keep going does not. Five percent of a 75-dollar model tier is 3.75 dollars,
+less than one worker may spend, but five percent of a 900-dollar weekly window is
+45 dollars. {math}`\kappa` is therefore a fixed amount, applied to every window
+with a known ceiling, including each per-model tier. A tier with a 75-dollar
+ceiling at 60% used holds 30 dollars; a 5-dollar margin leaves 25 for workers of
+any host, and a further 20-dollar host reserve leaves 5 when the agent is itself
+the host. A window without a known ceiling cannot express {math}`\kappa` as
+credit. It keeps only its percentage limits, and routing reports a warning
+instead of excluding the provider.
+
+These are forecast-based scheduling checks. Reserves hold back capacity only from
+agroute's own routing decisions: they do not reserve capacity against other
+sessions, guarantee that a task finishes before a provider limit, or cover every
+possible retry. The {ref}`credit contract <remaining-credit-budgets>` defines the
+emitted fields and policy behavior.
 
 ## 6 Empirical credit calibration
 

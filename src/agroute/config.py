@@ -140,6 +140,8 @@ _AGENT_KEYS = (
     "max_weekly_used_pct",
     "max_tier_used_pct",
     "host_reserve_pct",
+    "host_reserve_credit_usd",
+    "min_remaining_credit_usd",
     "usage_probe_cmd",
     "usage_stale_after_seconds",
     "native_candidates",
@@ -501,6 +503,12 @@ def _validate_merged(raw):
         reserve = percentage(spec["host_reserve_pct"], f"{where}.host_reserve_pct")
         if reserve > max_session or reserve > max_weekly:
             raise AgRouteError(f"{where}.host_reserve_pct: cannot exceed max_session_used_pct or max_weekly_used_pct")
+        host_reserve_credit = number(
+            spec["host_reserve_credit_usd"], f"{where}.host_reserve_credit_usd", nonnegative=True
+        )
+        min_remaining_credit = number(
+            spec["min_remaining_credit_usd"], f"{where}.min_remaining_credit_usd", nonnegative=True
+        )
         probe_cmd = spec["usage_probe_cmd"]
         if not isinstance(probe_cmd, list) or any(not isinstance(arg, str) or not arg for arg in probe_cmd):
             raise AgRouteError(f"{where}.usage_probe_cmd: expected a list of non-empty strings")
@@ -541,6 +549,8 @@ def _validate_merged(raw):
             "max_weekly_used_pct": max_weekly,
             "max_tier_used_pct": max_tier,
             "host_reserve_pct": reserve,
+            "host_reserve_credit_usd": host_reserve_credit,
+            "min_remaining_credit_usd": min_remaining_credit,
             "usage_probe_cmd": list(probe_cmd),
             "usage_stale_after_seconds": number(spec["usage_stale_after_seconds"], f"{where}.usage_stale_after_seconds", positive=True),
             "native_candidates": native_cands,

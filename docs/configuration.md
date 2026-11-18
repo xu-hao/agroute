@@ -7,8 +7,9 @@
    (or `AGROUTE_USER_CONFIG`; disable with `--no-user-config`).
 3. Project `agroute.toml` in the current directory, or `--config PATH`.
 
-Unknown keys, out-of-range percentages, negative `host_affinity_epsilon`, bare models containing
-`/` or `:`, and `model_default` effort strings are refused before any state is modified.
+Unknown keys, out-of-range percentages, negative or non-finite credit reserves, negative
+`host_affinity_epsilon`, bare models containing `/` or `:`, and `model_default` effort strings
+are refused before any state is modified.
 
 ## Dynamic model discovery
 
@@ -52,6 +53,8 @@ max_session_used_pct = 90.0
 max_weekly_used_pct = 95.0
 max_tier_used_pct = 95.0
 host_reserve_pct = 5.0
+host_reserve_credit_usd = 20.0
+min_remaining_credit_usd = 5.0
 usage_stale_after_seconds = 1800
 usage_probe_cmd = []
 
@@ -62,6 +65,8 @@ max_session_used_pct = 90.0
 max_weekly_used_pct = 95.0
 max_tier_used_pct = 95.0
 host_reserve_pct = 0.0
+host_reserve_credit_usd = 0.0
+min_remaining_credit_usd = 0.0
 usage_stale_after_seconds = 1800
 usage_probe_cmd = []
 
@@ -73,6 +78,8 @@ max_session_used_pct = 90.0
 max_weekly_used_pct = 95.0
 max_tier_used_pct = 95.0
 host_reserve_pct = 0.0
+host_reserve_credit_usd = 0.0
+min_remaining_credit_usd = 0.0
 usage_probe_cmd = []
 ```
 
@@ -141,6 +148,40 @@ agr config set-plan codex promax --json
 - `exclude_quota_groups = []`: list of quota-group labels (for example `["3p"]` under
   `[agents.agy]`) to exclude while keeping dynamic model discovery active for remaining groups.
   See {ref}`remaining credit budgets <remaining-credit-budgets>`.
+
+(credit-reserves)=
+## Credit reserves
+
+`max_session_used_pct`, `max_weekly_used_pct`, `max_tier_used_pct` and `host_reserve_pct` are
+percentages, so the headroom they leave grows and shrinks with each window. Five percent of a
+75 USD model tier is 3.75 USD, less than one worker may spend, while five percent of a 900 USD
+weekly window is 45 USD. Two per-agent options instead keep a fixed amount of quota credit, in
+USD at the provider's list-price basis, in every window with a known credit ceiling: the 5-hour
+session, the weekly window and each per-model tier.
+
+| Option | Default | Applies when | Keeps |
+| --- | ---: | --- | --- |
+| `host_reserve_credit_usd` | `0.0` | the agent is the routing root (`--host`) | credit for the root's own work |
+| `min_remaining_credit_usd` | `0.0` | any root routes to the agent | a safety margin |
+
+```toml
+[agents.claude]
+plan = "max-20x"
+host_reserve_credit_usd = 20.0
+min_remaining_credit_usd = 5.0
+```
+
+With these values, every Claude window keeps 25 USD while Claude is the routing root and 5 USD
+while another agent routes to Claude. Each value is a non-negative finite number.
+
+Credit reserves work together with the percentage rules. Remaining credit subtracts the
+percentage reserve and then the credit reserve, and the percentage limits still apply, so a
+route must pass both and the stricter rule decides. A window whose credit ceiling is unknown,
+because no plan preset or `credit` override covers it, cannot hold a credit reserve. It keeps
+only its percentage limits, and `candidates`, `inventory` and `plan` add a warning naming the
+agent, quota group and window; configure a `plan` or `credit` ceiling to apply the reserve
+there. See {ref}`remaining credit budgets <remaining-credit-budgets>` for the formula and the
+reported fields.
 
 (howhard-inventories)=
 ## Generating `[inventories]` for `howhard.toml`
