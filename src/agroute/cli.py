@@ -30,6 +30,16 @@ def _add_common_flags(parser):
     parser.add_argument("--json", action="store_true", help="Emit structured JSON output")
 
 
+def _display_limit(value):
+    try:
+        limit = int(value)
+        if limit >= 0:
+            return limit
+    except ValueError:
+        pass
+    raise argparse.ArgumentTypeError("limit must be a non-negative integer")
+
+
 def _build_parser():
     parser = argparse.ArgumentParser(
         prog="agr",
@@ -211,7 +221,7 @@ def _build_parser():
     # close
     p_close = subparsers.add_parser(
         "close",
-        help="Close a planned route in routes.jsonl (link raw --native observation, record switch, or cancel)",
+        help="Close a planned route in routes.sqlite3 (link raw --native observation, record switch, or cancel)",
     )
     p_close.add_argument("route_id", help="Planned route ID (or unique prefix)")
     p_close.add_argument(
@@ -241,6 +251,11 @@ def _build_parser():
     p_tui.add_argument("--no-probe", action="store_true", help="Disable automatic and manual usage probes")
     p_tui.add_argument("--repo", default=None, help="Initial repository filter")
     p_tui.add_argument("--agent", default=None, help="Initial target agent filter (codex|claude|agy)")
+    bounds = p_tui.add_mutually_exclusive_group()
+    bounds.add_argument("--limit", type=_display_limit, default=200,
+                        help="Show all active routes plus N newest completed routes (default: 200)")
+    bounds.add_argument("--all", dest="limit", action="store_const", const=None,
+                        help="Show all route history without a display cutoff")
     p_tui.add_argument("--current-repo", action="store_true", help="Inspect only the current repository")
     _add_common_flags(p_tui)
 
@@ -508,6 +523,7 @@ def main(argv=None):
                     args.config, state_directory=args.state_dir,
                     include_user_config=not args.no_user_config,
                 ).tui_probe(manual, now=args.now),
+                limit=args.limit,
                 initial_repository_filter=args.repo,
                 initial_agent_filter=args.agent,
             )

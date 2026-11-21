@@ -357,7 +357,7 @@ historically measured credit amount. The next calibration write emits v2 with `s
   (`delta_frac = delta_used_pct / 100.0`) match completed `howhard` observations in
   `outcomes.jsonl` / `pending.jsonl`, including amendments and execution usage, when all
   matched observations have positive measured credit and no unobserved or in-flight route in
-  `routes.jsonl` straddles `t_curr`. New observations use `needed_credit_usd` or `credit_usd`;
+  `routes.sqlite3` straddles `t_curr`. New observations use `needed_credit_usd` or `credit_usd`;
   older `cost_usd` measurements remain readable as credit evidence.
 - Intervals whose implied credit ceiling falls outside `[0.1 * prior_credit_usd,
   10.0 * prior_credit_usd]` are rejected as outliers. Accepted intervals update `(s_credit,
@@ -645,7 +645,7 @@ and queried with `get_adapter(name)`.
 (realtime-route-monitoring)=
 ## Realtime route monitoring (`tui`, `list`, `show`)
 
-Every `agr plan` resolution appends a record to `<state_root>/routes.jsonl` and registers
+Every `agr plan` resolution appends a record to `<state_root>/routes.sqlite3` and registers
 the repository in `${AGROUTE_SPOOL_DIR:-~/.local/share/agroute}/repositories.json`. `agroute`
 correlates these records with `.git/howhard/` (`decision-events.jsonl`, `decisions/*.json`,
 `outcomes.jsonl`, and `pending.jsonl`, including `amends` chains). Automatic receipt linking
@@ -661,7 +661,7 @@ that does not create a howhard capability observation. JSON exposes `route_statu
 `outcome`, and `outcome_source`; linked receipts use `matched_receipt` and explicitly
 linked raw observations use `linked_raw`.
 
-- `agr tui [--repo NAME] [--agent AGENT] [--current-repo] [--refresh-interval SEC] [--no-probe]`:
+- `agr tui [--repo NAME] [--agent AGENT] [--current-repo] [--limit N | --all] [--refresh-interval SEC] [--no-probe]`:
   interactive Textual terminal dashboard showing live agent quota/eligibility badges (with
   5h/7d percentages and estimated remaining quota credit when calibrated), active and
   historical model routes, `Enter` route detail modal, `u` live usage & eligibility modal
@@ -679,10 +679,42 @@ linked raw observations use `linked_raw`.
 - `agr show <id> [--json]`: full route record, invocation details, and decision metadata
   for a route ID, decision ID, or execution ID.
 
+### Route storage, migration, and display bounds
+
+`<state_root>/routes.sqlite3` stores the complete route and close-event history in
+`route_events`. SQLite uses a 30-second busy timeout and immediate transactions to
+serialize concurrent writers safely; the rollback journal permits read-only readers
+without writable WAL sidecars. The database and its `-wal`, `-shm`, and `-journal` sidecars
+are recognized store entries; an unclaimed database is refused by identity validation.
+
+Opening a writable legacy store automatically imports `plans.jsonl` and `routes.jsonl`
+inside a transaction. Every input line is retained byte-for-byte, including duplicate,
+blank, malformed, and unknown-format lines. Source name, line number, and content digest
+make retries idempotent. Imported payloads are verified before commit; the corresponding
+unchanged input files are unlinked only afterward. A crash before unlink is safe to retry.
+Read-only stores merge unmigrated JSONL inputs with SQLite in memory, deduplicating lines
+already imported; no migration write or unlink is required. `agr show` and quota calibration
+continue to read the full history.
+
+The `decision_summaries` table caches lightweight howhard metadata by
+`(decision_id, mtime_ns, size)`: a 4,000-character task excerpt, task/risk classification,
+review flags, chosen cell costs, and the first eight forecasts. A writable-store cache miss
+is serialized across processes, so an unchanged multi-MB receipt is parsed once. Raw
+`decision.semantic` objects are released immediately and never retained in the in-memory
+JSON cache. Read-only cache misses are extracted in memory without requiring a write.
+
+The TUI defaults to all active `routed` / `review` rows plus the newest 200 completed or
+closed rows. `--limit N` changes the completed-history allowance (`0` shows only active
+rows); `--all` removes the display bound. Repository, agent, model, and state filters apply
+before that allowance. Total routed/observed counts and the displayed/total row count
+remain visible. This is a display-only limit: no route, observation, calibration input,
+or lookup is deleted or omitted from storage. `agr list` retains its separate default
+limit of 50, and `agr show` always searches all history.
+
 ### Explicit route closure
 
 `agr close <route_id>` accepts a full route ID or unique prefix and appends a durable
-`agroute-route-close-v1` event to `<state_root>/routes.jsonl`. Options are
+`agroute-route-close-v1` event to `<state_root>/routes.sqlite3`. Options are
 `--status {done,switched,cancelled}`, `--obs EXECUTION_ID`, `--from ROUTE_ID`,
 `--superseded-by ROUTE_ID`, `--switched-to MODEL`, `--effort EFFORT`, `--tokens N`,
 `--seconds SEC`, `--credit-usd USD`, `--note TEXT`, and `--json`. Status defaults to `done`,

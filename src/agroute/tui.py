@@ -569,6 +569,7 @@ def build_app(
     *,
     refresh_interval: float = 1.0,
     probe_factory: Callable[[bool], Any] | None = None,
+    limit: int | None = 200,
     initial_repository_filter: str | None = None,
     initial_agent_filter: str | None = None,
 ):
@@ -890,6 +891,17 @@ def build_app(
                 ordered = [row for row in ordered if row["model"] == self._model_filter]
             if self._state_filter is not None:
                 ordered = [row for row in ordered if _row_matches_state(row, self._state_filter)]
+
+            if limit is not None:
+                completed = 0
+                visible = []
+                for row in ordered:
+                    if _is_active_row(row):
+                        visible.append(row)
+                    elif completed < limit:
+                        visible.append(row)
+                        completed += 1
+                ordered = visible
 
             self._rows = {row["route_id"]: row for row in ordered}
             model_width, _ = _flexible_widths(table.size.width)
@@ -1216,6 +1228,7 @@ def run(
     *,
     refresh_interval: float = 1.0,
     probe_factory: Callable[[bool], Any] | None = None,
+    limit: int | None = 200,
     initial_repository_filter: str | None = None,
     initial_agent_filter: str | None = None,
 ) -> int:
@@ -1226,6 +1239,7 @@ def run(
         snapshot_factory,
         refresh_interval=refresh_interval,
         probe_factory=probe_factory,
+        limit=limit,
         initial_repository_filter=initial_repository_filter,
         initial_agent_filter=initial_agent_filter,
     ).run()
