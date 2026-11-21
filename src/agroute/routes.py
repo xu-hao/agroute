@@ -208,7 +208,7 @@ def registered_repositories(config) -> list[dict]:
     return list(by_state.values())
 
 
-def record_plan_route(config, plan: dict) -> str:
+def record_plan_route(config, plan: dict, *, locked: bool = False) -> str:
     """Persist an agr plan execution record and return its route_id."""
     seed = (
         f"{plan['evaluated_at']}:{plan['decision_id']}:{plan['host_agent']}:"
@@ -246,10 +246,15 @@ def record_plan_route(config, plan: dict) -> str:
     for key in ("session_cost_usd", "cost_per_credit", "monthly_cost_usd", "weekly_cost_usd"):
         if plan.get(key) is not None:
             record[key] = plan[key]
-    with _usage_locked(config):
+    if locked:
         claim(config)
         record["repository_id"] = config.project_identity or config.capture_root.name
         append_jsonl(config.state_root / "routes.jsonl", record)
+    else:
+        with _usage_locked(config):
+            claim(config)
+            record["repository_id"] = config.project_identity or config.capture_root.name
+            append_jsonl(config.state_root / "routes.jsonl", record)
     register_repository(config)
     return route_id
 

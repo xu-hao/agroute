@@ -21,16 +21,21 @@ agr usage show --agent claude --json
 
 Windows whose `reset_at` (or `cooldown_until`) timestamp has passed (`now >= reset_at`) clear
 automatically during evaluation. `candidates`, `inventory`, and `plan` refresh missing,
-stale, or expired known evidence before routing; fresh reports cover only their reported
-scopes. A recognized current report can retire already expired scopes, leaving them null;
-omitted nonexpired stale scopes still need current evidence. A failed refresh after two
+stale, or expired known evidence before routing (tightening staleness automatically to 60s
+when a usable window has less than 20% headroom before its cutoff), and `plan` records
+in-flight credit reservations across consumed quota pools until a newer probe or measured
+observation supersedes them. Fresh reports cover only their reported scopes. A recognized current report can retire already expired scopes, leaving them null;
+omitted nonexpired stale scopes still need current evidence (explicit unexpired tier
+rejections remain authoritative until `reset_at` or probe recovery). A failed refresh after two
 bounded attempts excludes that provider with a retry
 reason, while independently fresh providers remain available. Unknown unreported windows
 remain null. `usage show` inspects state without probing.
 
 ## Ingest native command or event-stream output
 
-Pipe or pass a file captured from the agent's native usage/status command or JSONL stream:
+Pipe or pass a file captured from the agent's native usage/status command or JSONL stream,
+or pass inline host 429 error text (with optional `--tier` to scope the refusal to one model
+tier):
 
 ```sh
 # Codex JSONL rate_limits event or /status text
@@ -39,16 +44,22 @@ agr usage ingest --agent codex --file /tmp/codex-status.jsonl --json
 # Claude Code /usage text or stream-json rate_limit_event
 agr usage ingest --agent claude --file /tmp/claude-usage.txt --json
 
+# Host 429 refusal scoped to one model tier
+agr usage ingest --agent claude --tier fable-weekly --text "HTTP 429: You've hit your weekly limit · resets 2026-11-25T00:00:00Z" --json
+
 # Antigravity quota/status output
 agr usage ingest --agent agy --file /tmp/agy-usage.txt --json
 ```
 
 ## Explicitly set or clear quota windows and cooldowns
 
-When a live call hits a rate limit or quota wall, update the agent's window or cooldown directly:
+When a live call hits a rate limit or quota wall, update the agent's window or cooldown
+directly (`--rate-limited` / `--no-rate-limited` and `--cooldown-until` apply to `--tier`
+when given, or to the whole agent otherwise):
 
 ```sh
 agr usage set --agent claude --session-used-pct 95 --session-reset-at 2026-11-08T21:00:00Z --json
+agr usage set --agent claude --tier fable-weekly --rate-limited --cooldown-until 2026-11-25T00:00:00Z --json
 agr usage set --agent codex --rate-limited --cooldown-until 2026-11-08T19:30:00Z --json
 agr usage set --agent agy --tier pro --tier-used-pct 96 --tier-reset-at 2026-11-08T20:00:00Z --json
 agr usage clear --agent codex --json

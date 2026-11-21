@@ -89,13 +89,33 @@ def _build_parser():
     p_u_set.add_argument("--tier-used-pct", type=float, default=None, help="Tier used percentage (0-100)")
     p_u_set.add_argument("--tier-reset-at", default=None, help="Tier reset timestamp (ISO-8601 or epoch)")
     rl_group = p_u_set.add_mutually_exclusive_group()
-    rl_group.add_argument("--rate-limited", dest="rate_limited", action="store_true", default=None)
-    rl_group.add_argument("--no-rate-limited", dest="rate_limited", action="store_false")
-    p_u_set.add_argument("--cooldown-until", default=None, help="Rate-limit cooldown expiry timestamp")
+    rl_group.add_argument(
+        "--rate-limited",
+        dest="rate_limited",
+        action="store_true",
+        default=None,
+        help="Mark the agent (or --tier, when given) as rate-limited",
+    )
+    rl_group.add_argument(
+        "--no-rate-limited",
+        dest="rate_limited",
+        action="store_false",
+        help="Clear rate-limit rejection on the agent (or --tier, when given)",
+    )
+    p_u_set.add_argument(
+        "--cooldown-until",
+        default=None,
+        help="Rate-limit cooldown/reset expiry timestamp (scoped to --tier when given)",
+    )
     _add_common_flags(p_u_set)
 
     p_u_ingest = usage_sub.add_parser("ingest", help="Parse native usage/status output for an agent")
     p_u_ingest.add_argument("--agent", required=True, help="Target agent (codex|claude|agy)")
+    p_u_ingest.add_argument(
+        "--tier",
+        default=None,
+        help="Optional model tier to scope a parsed rate-limit refusal (e.g. fable-weekly)",
+    )
     p_u_ingest.add_argument("--file", default=None, help="Path to captured native status/event output")
     p_u_ingest.add_argument("--text", default=None, help="Inline native status/event text")
     _add_common_flags(p_u_ingest)
@@ -285,7 +305,7 @@ def main(argv=None):
                     raw_text = args.text
                 else:
                     raw_text = sys.stdin.read()
-                res = router.usage_ingest(args.agent, raw_text, now=args.now)
+                res = router.usage_ingest(args.agent, raw_text, tier=args.tier, now=args.now)
                 _emit(res, as_json=True)
                 return 0
             if sub == "probe":

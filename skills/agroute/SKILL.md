@@ -57,10 +57,16 @@ while `howhard` owns model/effort selection, execution accounting, and writable 
      native delegation tool (`swarm` or `invoke_subagent` in Antigravity, as named by
      `invocation.tool_name`; `Agent` in Claude Code; or `spawn_agent` in Codex) using the exact
      `invocation.parameters`.
-     - **Native launch failure recovery**: If native delegation fails at launch (for example,
-       host subagent concurrency or slot limit reached), execute the non-interactive CLI command
-       in `fallback.argv` instead. When recording feedback after fallback execution, record raw
-       native feedback (`howhard observe ... --native`) without attaching the unexecuted receipt.
+     - **Native launch failure / host 429 recovery**: If native delegation fails at launch
+       (for example, host subagent concurrency or slot limit reached), execute the
+       non-interactive CLI command in `fallback.argv` instead. If a worker is refused or
+       terminated with a host HTTP 429 / usage-limit error, immediately report the refusal to
+       `agroute` so that tier (or agent) is excluded before re-running `agr candidates`
+       (`agr usage set --agent AGENT --tier TIER --rate-limited --cooldown-until RESET_AT` or
+       `agr usage ingest --agent AGENT [--tier TIER] --text "HTTP 429: ..."`), and record the
+       execution as `howhard observe ... interrupted --cause usage_limit`. When recording
+       feedback after fallback execution, record raw native feedback
+       (`howhard observe ... --native`) without attaching the unexecuted receipt.
    - When `execution_mode == "cli"` (`target_agent != host_agent`), run the non-interactive
      CLI command in `invocation.argv` (`codex exec --json`, `claude -p --verbose --output-format stream-json`,
      or `agy -p --output-format stream-json`), capturing its output in a task-owned temporary file.

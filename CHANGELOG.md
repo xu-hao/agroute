@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Tighten routing quota freshness automatically when a usable window has less than
+  `usage_low_headroom_pct` (default `20%`) remaining before its cutoff (down to
+  `usage_low_headroom_stale_after_seconds`, default `60`s), record atomic in-flight credit
+  reservations in `<state_root>/reservations.json` across consumed quota pools on `agr plan`
+  (updated by measured `howhard` observations and released on fresh probes/clears/resets),
+  and support tier-scoped host 429 refusals via `agr usage set --tier ... --rate-limited` and
+  `agr usage ingest [--tier ...] --text ...` without poisoning partial probes for other
+  windows. Issue #66 tracks headroom-scaled freshness, in-flight reservations, and host 429
+  ingestion.
+
 - Harden `"unlisted"` calling-agent price caching and expand the built-in rate catalog: shorten
   the default `"unlisted"` negative-cache TTL from 7 days to 1 day, require a live web lookup
   and non-empty `checked_sources` (`http://`/`https://` URLs) on new `"unlisted"` resolutions

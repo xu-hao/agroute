@@ -88,11 +88,15 @@ usage_probe_cmd = []
 ```
 
 `agents.<name>.usage_stale_after_seconds` is a positive number of seconds (default
-`1800`) for each provider. Before routing, known stale or expired scopes and missing
-evidence trigger a bounded refresh; a failed refresh excludes that provider with a retry
-reason. Unknown unreported windows stay `null`. See the
-{ref}`quota freshness contract <native-quota-tracking>` for partial reports, retries,
-and offline inspection.
+`1800`) for each provider. `usage_low_headroom_pct` (default `20.0`) and
+`usage_low_headroom_stale_after_seconds` (default `60`) tighten freshness automatically
+when an eligible window's usable headroom before its effective cutoff falls below
+`usage_low_headroom_pct`, so routing re-probes near-cap buckets sooner without double-probing
+back-to-back `candidates` and `plan` calls or spamming already-exhausted windows. Before
+routing, known stale or expired scopes and missing evidence trigger a bounded refresh; a
+failed refresh excludes that provider with a retry reason. Unknown unreported windows stay
+`null`. See the {ref}`quota freshness contract <native-quota-tracking>` for partial reports,
+retries, and offline inspection.
 
 (subscription-plan-presets)=
 ## Subscription plan presets, cost overrides, credit ceilings, and quota-group exclusions

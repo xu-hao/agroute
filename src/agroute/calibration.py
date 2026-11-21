@@ -827,6 +827,7 @@ def resolve_calibrated_quota_credit(
     reserve_credit_usd: float = 0.0,
     calibration_store: dict | None = None,
     quota_pools: list[tuple[str, dict, dict]] | None = None,
+    reserved_credit_by_pool: dict[tuple[str, str], float] | None = None,
 ) -> tuple[dict | None, dict | None, list[tuple[str, str]]]:
     """Return `(credit_budget, credit_calibration_meta, unknown_ceiling_windows)` for `(agent_name, quota_group)`.
 
@@ -882,11 +883,20 @@ def resolve_calibrated_quota_credit(
 
             # The stricter reserve applies: percentage and credit reserves never add up.
             held_back_usd = max(total_credit_usd * reserve_pct / 100.0, reserve_credit_usd)
+            reserved_usd = round(
+                max(0.0, float((reserved_credit_by_pool or {}).get((pool_group, window), 0.0))), 6
+            )
             used_pct = win_dict.get("used_pct") if isinstance(win_dict, dict) else None
             if used_pct is not None:
-                # Without any reserve this is bit-identical to the unreserved balance.
+                # Without any reserve or in-flight reservation this is bit-identical to the unreserved balance.
                 remaining_credit_usd = round(
-                    max(0.0, (100.0 - float(used_pct)) / 100.0 * total_credit_usd - held_back_usd), 6
+                    max(
+                        0.0,
+                        (100.0 - float(used_pct)) / 100.0 * total_credit_usd
+                        - held_back_usd
+                        - reserved_usd,
+                    ),
+                    6,
                 )
             else:
                 remaining_credit_usd = None
@@ -902,6 +912,8 @@ def resolve_calibrated_quota_credit(
                 "remaining_credit_usd": remaining_credit_usd,
                 "reserve_credit_usd": round(held_back_usd, 6),
             }
+            if reserved_usd > 0.0:
+                meta["reserved_credit_usd"] = reserved_usd
             if window == "weekly_7d":
                 meta["weekly_cost_usd"] = cost_meta["pool_weekly_cost_usd"]
                 meta["cost_per_credit"] = cost_meta["cost_per_credit"]
@@ -947,6 +959,7 @@ def build_agent_calibration_summary(
     *,
     is_host: bool = False,
     calibration_store: dict | None = None,
+    reserved_credit_by_pool: dict[tuple[str, str], float] | None = None,
 ) -> dict[str, dict]:
     """Build per-`quota_group` calibration summary for `agent_name`."""
     effective_plan, preset_credit, manual_credit, _ = resolve_plan_credit_sources(
@@ -995,6 +1008,7 @@ def build_agent_calibration_summary(
             reserve_pct=reserve,
             reserve_credit_usd=reserve_credit,
             calibration_store=calibration_store,
+            reserved_credit_by_pool=reserved_credit_by_pool,
         )
         if meta is not None:
             out[grp] = meta
