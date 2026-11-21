@@ -257,15 +257,53 @@ def record_plan_route(config, plan: dict) -> str:
 def _extract_forecasts(decision_doc: dict | None) -> list[dict]:
     if not isinstance(decision_doc, dict):
         return []
+    selection = decision_doc.get("selection")
+    if isinstance(selection, dict) and isinstance(selection.get("cells"), list) and selection["cells"]:
+        return [f for f in selection["cells"] if isinstance(f, dict)]
     semantic = decision_doc.get("semantic")
     if isinstance(semantic, dict):
         final = semantic.get("final")
         if isinstance(final, dict) and isinstance(final.get("forecasts"), list):
             return [f for f in final["forecasts"] if isinstance(f, dict)]
+        worlds = semantic.get("worlds")
+        if isinstance(worlds, dict) and isinstance(worlds.get("llm"), list):
+            return [f for f in worlds["llm"] if isinstance(f, dict)]
     for key in ("candidates", "cells", "ranking"):
         if isinstance(decision_doc.get(key), list):
             return [f for f in decision_doc[key] if isinstance(f, dict)]
     return []
+
+
+def _decision_selection_flag(decision_doc: dict | None, key: str, default=None):
+    if not isinstance(decision_doc, dict):
+        return default
+    if decision_doc.get(key) is not None:
+        return decision_doc[key]
+    selection = decision_doc.get("selection")
+    if isinstance(selection, dict) and selection.get(key) is not None:
+        return selection[key]
+    return default
+
+
+def _chosen_selection_cell(decision_doc: dict | None, chosen: dict | None) -> dict | None:
+    if not isinstance(decision_doc, dict) or not isinstance(chosen, dict):
+        return None
+    target_model = chosen.get("model")
+    target_effort = chosen.get("effort")
+    if not isinstance(target_model, str) or not isinstance(target_effort, str):
+        return None
+    selection = decision_doc.get("selection")
+    panels = []
+    if isinstance(selection, dict) and isinstance(selection.get("cells"), list):
+        panels.append(selection["cells"])
+    for key in ("cells", "candidates", "ranking"):
+        if isinstance(decision_doc.get(key), list):
+            panels.append(decision_doc[key])
+    for panel in panels:
+        for item in panel:
+            if isinstance(item, dict) and item.get("model") == target_model and item.get("effort") == target_effort:
+                return item
+    return None
 
 
 def _load_howhard_observations(hh_root: Path) -> tuple[dict[str, dict], list[dict]]:
@@ -443,8 +481,8 @@ def load_repository_routes(capture_root: Path, state_root: Path, repository_id: 
         )
         target_agent, bare_model = infer_agent_from_model(raw_model)
         outcome = obs.get("outcome") if isinstance(obs, dict) and obs.get("outcome") in OBSERVED_STATUSES else None
-        needs_review = bool((dec_doc or {}).get("needs_review", False))
-        cap_met = (dec_doc or {}).get("cap_met")
+        needs_review = bool(_decision_selection_flag(dec_doc, "needs_review", False))
+        cap_met = _decision_selection_flag(dec_doc, "cap_met")
         if outcome:
             status = str(outcome)
         elif needs_review or cap_met is False:
@@ -470,40 +508,46 @@ def load_repository_routes(capture_root: Path, state_root: Path, repository_id: 
         fallback_label = str(obs.get("id")) if isinstance(obs, dict) and obs.get("id") else task_type
         label = _first_line(task_text, fallback=fallback_label)
 
-        routes.append(
-            {
-                "route_id": f"hh-{dec_id[:12]}",
-                "decision_id": dec_id,
-                "status": status,
-                "execution_mode": "native",
-                "repository": str(capture_root),
-                "repository_id": repository_id,
-                "host_agent": target_agent,
-                "target_agent": target_agent,
-                "model": bare_model,
-                "qualified_model": f"{target_agent}/{bare_model}",
-                "effort": effort,
-                "task_type": task_type,
-                "risk_class": str(risk_class) if risk_class else None,
-                "role": None,
-                "label": label,
-                "cap_met": cap_met if isinstance(cap_met, bool) else None,
-                "needs_review": needs_review,
-                "host_affinity_applied": False,
-                "created_at": _normalize_iso_utc(ev.get("at_utc")),
-                "observed_at": _normalize_iso_utc(obs.get("observed_at")) if isinstance(obs, dict) and obs.get("observed_at") else None,
-                "outcome": outcome,
-                "cause": str(obs.get("cause")) if isinstance(obs, dict) and obs.get("cause") else None,
-                "execution_id": str(obs.get("id")) if isinstance(obs, dict) and obs.get("id") else None,
-                "tokens": obs.get("tokens") if isinstance(obs, dict) and isinstance(obs.get("tokens"), int) else None,
-                "seconds": float(obs["seconds"]) if isinstance(obs, dict) and type(obs.get("seconds")) in (int, float) else None,
-                "cost_usd": float(obs["cost_usd"]) if isinstance(obs, dict) and type(obs.get("cost_usd")) in (int, float) else None,
-                "invocation": None,
-                "forecasts": _extract_forecasts(dec_doc),
-                "note": str(obs.get("note")) if isinstance(obs, dict) and obs.get("note") else None,
-                "task_text": task_text[:4000] if isinstance(task_text, str) else None,
-            }
-        )
+        entry = {
+            "route_id": f"hh-{dec_id[:12]}",
+            "decision_id": dec_id,
+            "status": status,
+            "execution_mode": "native",
+            "repository": str(capture_root),
+            "repository_id": repository_id,
+            "host_agent": target_agent,
+            "target_agent": target_agent,
+            "model": bare_model,
+            "qualified_model": f"{target_agent}/{bare_model}",
+            "effort": effort,
+            "task_type": task_type,
+            "risk_class": str(risk_class) if risk_class else None,
+            "role": None,
+            "label": label,
+            "cap_met": cap_met if isinstance(cap_met, bool) else None,
+            "needs_review": needs_review,
+            "host_affinity_applied": False,
+            "created_at": _normalize_iso_utc(ev.get("at_utc")),
+            "observed_at": _normalize_iso_utc(obs.get("observed_at")) if isinstance(obs, dict) and obs.get("observed_at") else None,
+            "outcome": outcome,
+            "cause": str(obs.get("cause")) if isinstance(obs, dict) and obs.get("cause") else None,
+            "execution_id": str(obs.get("id")) if isinstance(obs, dict) and obs.get("id") else None,
+            "tokens": obs.get("tokens") if isinstance(obs, dict) and isinstance(obs.get("tokens"), int) else None,
+            "seconds": float(obs["seconds"]) if isinstance(obs, dict) and type(obs.get("seconds")) in (int, float) else None,
+            "cost_usd": float(obs["cost_usd"]) if isinstance(obs, dict) and type(obs.get("cost_usd")) in (int, float) else None,
+            "invocation": None,
+            "forecasts": _extract_forecasts(dec_doc),
+            "note": str(obs.get("note")) if isinstance(obs, dict) and obs.get("note") else None,
+            "task_text": task_text[:4000] if isinstance(task_text, str) else None,
+        }
+        chosen_cell = _chosen_selection_cell(dec_doc, chosen)
+        if isinstance(chosen_cell, dict):
+            if isinstance(chosen_cell.get("credit_budget"), dict):
+                entry["credit_budget"] = deepcopy(chosen_cell["credit_budget"])
+            for key in ("session_cost_usd", "needed_credit_usd", "cost_per_credit"):
+                if type(chosen_cell.get(key)) in (int, float):
+                    entry[key] = float(chosen_cell[key])
+        routes.append(entry)
 
     for obs in raw_observations:
         obs_id = str(obs.get("id") or "")
