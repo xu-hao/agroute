@@ -27,9 +27,11 @@ while `howhard` owns model/effort selection, execution accounting, and writable 
      target's non-interactive CLI.
    - **Check `price_request` before routing**: If `price_request` in the `candidates --json`
      envelope (or `agr prices pending --host HOST --json`) is non-null, follow its `contract`
-     once: look up official first-party provider token pricing (`status = "priced"`), map internal
-     harness/orchestrator wrappers backed by a known catalog model (`status = "alias"`), or mark
-     unpriced internal/experimental models (`status = "unlisted"`), write the JSON resolution file,
+     once: perform a **live web lookup** against official first-party provider pricing pages
+     (`status = "priced"`), map internal harness/orchestrator wrappers backed by a known catalog
+     model (`status = "alias"`), or mark confirmed-absent internal/experimental models
+     (`status = "unlisted"` with `checked_sources` listing the official URLs checked — never
+     guess from training data or mark `"unlisted"` when offline), write the JSON resolution file,
      run `agr prices resolve --file /tmp/TASK-prices.json --json`, and re-run
      `agr candidates --host HOST --output /tmp/TASK-candidates.json --json`.
    - When an agent resolves a subscription `plan` (`plan = "auto"` by default from native

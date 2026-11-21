@@ -101,7 +101,9 @@ For each cell, the first rule that applies sets its price. Higher rules come fir
    (see {ref}`calling-agent-price-resolution`):
    - If `<state_root>/prices.json` holds an active (`resolved_at <= evaluated_at < expires_at`)
      `"unlisted"` entry for the catalog key, the cell stays unpriced and is omitted from
-     `price_request` until `expires_at`.
+     `price_request` until `expires_at` **unless** the built-in catalog carries an active card
+     whose `effective_at >= resolved_at`, in which case the built-in card supersedes the older
+     `"unlisted"` entry.
    - If `<state_root>/prices.json` holds an active `"alias"` entry (`alias_of`), the cell resolves
      to `alias_of`'s card and emits a labelled guess (`source = "guess: <reason>; priced as
      <alias_of> from <version>"`, `version = "agroute-guess-2026-11-12"`).
@@ -142,8 +144,8 @@ is the later of the verification time and its period's start:
 | Provider | Source (`source`, `version`) | Mapping onto the six categories |
 | --- | --- | --- |
 | Anthropic | [Claude API pricing](https://platform.claude.com/docs/en/about-claude/pricing), `anthropic-list-2026-11-12` | `input` = base input; `output`; `cache_read` = cache hits and refreshes; `cache_write` and `cache_write_5m` = 5-minute cache write; `cache_write_1h` = 1-hour cache write. |
-| OpenAI | [OpenAI API pricing](https://developers.openai.com/api/docs/pricing), `openai-list-2026-11-12` | Standard short-context rows. `cache_read` = cached input. `cache_write`, `cache_write_5m` and `cache_write_1h` all equal the default 30-minute cache write (1.25x input). The optional 12-hour write (2.5x input) is not represented: Codex writes at the default lifetime, and `howhard`'s Codex usage collection records every Codex write as `cache_write`, with zero 5m and 1h tokens. |
-| Google | [Google Cloud generative AI pricing](https://cloud.google.com/vertex-ai/generative-ai/pricing) (Global, Standard), `google-cloud-list-2026-11-12` | `cache_read` = cached input (implicit caching). All three write categories equal input, because implicit caching bills writes as ordinary input. The per-hour storage price of explicit caches is excluded. Antigravity overage credits are consumed at Gemini Enterprise (Google Cloud) consumption pricing. For these models, the Global rates equal the Gemini Developer API list prices. |
+| OpenAI | [OpenAI API pricing](https://developers.openai.com/api/docs/pricing), `openai-list-2026-11-12` (and `openai-list-2026-11-21` for `gpt-6.2-*`) | Standard short-context rows. `cache_read` = cached input. `cache_write`, `cache_write_5m` and `cache_write_1h` all equal the default 30-minute cache write (1.25x input). The optional 12-hour write (2.5x input) is not represented: Codex writes at the default lifetime, and `howhard`'s Codex usage collection records every Codex write as `cache_write`, with zero 5m and 1h tokens. |
+| Google | [Google Cloud generative AI pricing](https://cloud.google.com/vertex-ai/generative-ai/pricing) (Global, Standard), `google-cloud-list-2026-11-12` (and `google-cloud-list-2026-11-21` for `gemini-4-neon`) | `cache_read` = cached input (implicit caching). All three write categories equal input, because implicit caching bills writes as ordinary input. The per-hour storage price of explicit caches is excluded. Antigravity overage credits are consumed at Gemini Enterprise (Google Cloud) consumption pricing. For these models, the Global rates equal the Gemini Developer API list prices. |
 | Open-weight market estimate (`openai-oss`) | `published open-weight market estimate (gpt-oss-120b)`, `openai-oss-estimate-2026-11-12` | Only for `gpt-oss-120b`, which has no first-party list price. `input`, `output`, and `cache_read` reflect published open-weight token market rates; all three writes equal input. |
 
 Three providers price by prompt length, and the catalog picks one row for each:
@@ -168,11 +170,14 @@ Catalog prices in USD per million tokens:
 | `claude-sonnet-4-6`, `claude-sonnet-4-5` | 3 | 15 | 0.30 | 3.75 | 6 |
 | `claude-haiku-5-5` (over 100K row) | 0.50 | 2.50 | 0.05 | 0.625 | 1 |
 | `claude-haiku-4-5`, `claude-haiku-4-5-20251001` | 1 | 5 | 0.10 | 1.25 | 2 |
+| `gpt-6.2-astra` (from 2026-11-21) | 8 | 40 | 0.40 | 10 | 10 |
+| `gpt-6.2-sol` (from 2026-11-21) | 2 | 10 | 0.10 | 2.50 | 2.50 |
 | `gpt-6-astra` | 10 | 50 | 1 | 12.50 | 12.50 |
 | `gpt-6-sol` | 2 | 10 | 0.20 | 2.50 | 2.50 |
 | `gpt-6.1-sol` | 2 | 10 | 0.10 | 2.50 | 2.50 |
 | `gpt-6.1-terra` | 1 | 5 | 0.05 | 1.25 | 1.25 |
 | `gpt-6-luna` | 0.10 | 0.50 | 0.01 | 0.125 | 0.125 |
+| `gemini-4-neon` (from 2026-11-21) | 3 | 15 | 0.15 | 3 | 3 |
 | `gemini-4-carbon`, `gemini-4-argon` until 2026-12-01 | 2 | 10 | 0.10 | 2 | 2 |
 | `gemini-4-carbon`, `gemini-4-argon` from 2026-12-01 | 4 | 20 | 0.20 | 4 | 4 |
 | `gemini-4-hydrogen` | 1.50 | 7.50 | 0.075 | 1.50 | 1.50 |
@@ -271,9 +276,13 @@ catalog key that has no configured price, no active built-in catalog card, and n
      `expires_at`), emitted as a labelled guess `source = "guess: <reason>; priced as <alias_of>
      from <version>"` (`version = "agroute-guess-2026-11-12"`). Self-aliases, cycles, unknown
      targets, and `"unlisted"` targets are rejected.
-  3. **`"unlisted"`** (`default TTL = 7 days`): negative cache entry (`reason`, optional
-     `resolved_at` / `expires_at`) keeping an internal or experimental model unpriced without
-     re-requesting it in `price_request` until `expires_at` passes.
+  3. **`"unlisted"`** (`default TTL = 1 day`): negative cache entry (`reason`, `checked_sources`
+     listing one or more official `http://`/`https://` provider pricing URLs verified via a live
+     web lookup, optional `resolved_at` / `expires_at`) keeping an internal or experimental model
+     unpriced without re-requesting it in `price_request` until `expires_at` passes or a newer
+     built-in catalog card (`effective_at >= resolved_at`) supersedes it. Existing on-disk
+     snapshots lacking `checked_sources` remain readable; new `agr prices resolve` submissions
+     require `checked_sources`.
 
 `agr prices resolve --file <path> [--json]` validates incoming entries, merges them into
 `<state_root>/prices.json` (`format = "agroute-price-snapshot-v2"`) atomically under the store
