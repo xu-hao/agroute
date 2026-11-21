@@ -193,7 +193,11 @@ def _build_parser():
     p_list = subparsers.add_parser("list", help="Show active and observed model routes")
     p_list.add_argument("--repo", default=None, help="Filter by repository name or path")
     p_list.add_argument("--agent", default=None, help="Filter by target agent (codex|claude|agy)")
-    p_list.add_argument("--state", default=None, help="Filter by state (routed|review|clean|loud|silent|interrupted)")
+    p_list.add_argument(
+        "--state",
+        default=None,
+        help="Filter by route lifecycle (routed|review|done|switched|cancelled) or howhard outcome (clean|loud|silent|interrupted|unscored)",
+    )
     p_list.add_argument("--limit", type=int, default=50, help="Maximum routes to display (default: 50)")
     p_list.add_argument("--current-repo", action="store_true", help="Inspect only the current repository")
     _add_common_flags(p_list)
@@ -203,6 +207,33 @@ def _build_parser():
     p_show.add_argument("identifier", help="Route ID, decision ID, or execution ID (or unique prefix)")
     p_show.add_argument("--current-repo", action="store_true", help="Inspect only the current repository")
     _add_common_flags(p_show)
+
+    # close
+    p_close = subparsers.add_parser(
+        "close",
+        help="Close a planned route in routes.jsonl (link raw --native observation, record switch, or cancel)",
+    )
+    p_close.add_argument("route_id", help="Planned route ID (or unique prefix)")
+    p_close.add_argument(
+        "--status",
+        choices=("done", "switched", "cancelled"),
+        default=None,
+        help="Terminal route status (defaults to 'switched' with --switched-to/--superseded-by, else 'done')",
+    )
+    p_close.add_argument("--obs", default=None, help="Standalone howhard --native execution ID to link")
+    p_close.add_argument("--from", dest="switched_from", default=None, help="Prior route ID this route switched from")
+    p_close.add_argument("--superseded-by", default=None, help="Replacement route ID that superseded this route")
+    p_close.add_argument(
+        "--switched-to",
+        default=None,
+        help="Target <agent>/<model> (spawns a live routed continuation route when switching without a second agr plan)",
+    )
+    p_close.add_argument("--effort", default=None, help="Reasoning effort for --switched-to continuation route")
+    p_close.add_argument("--tokens", type=int, default=None, help="Measured token count on unscored route completion")
+    p_close.add_argument("--seconds", type=float, default=None, help="Measured wall-clock seconds on unscored route completion")
+    p_close.add_argument("--credit-usd", type=float, default=None, help="Measured quota credit USD consumed on unscored route completion")
+    p_close.add_argument("--note", default=None, help="Optional close note")
+    _add_common_flags(p_close)
 
     # tui
     p_tui = subparsers.add_parser("tui", help="Open the realtime model-route terminal view")
@@ -413,16 +444,44 @@ def main(argv=None):
                     _emit("no model routes recorded", as_json=False)
                 else:
                     lines = [
-                        f"{'STATE':<7} {'MODE':<6} {'REPO':<12} {'AGENT':<11} {'MODEL':<22} {'EFFORT':<7} {'ROUTE':<15} LABEL"
+                        f"{'ROUTE':<8} {'OUTCOME':<11} {'MODE':<6} {'REPO':<12} {'AGENT':<11} {'MODEL':<22} {'EFFORT':<7} {'ID':<18} LABEL"
                     ]
                     for r in routes:
                         repo_lbl = tui._repository_label(r["repository"])[:12]
                         ag_lbl = tui._agent_label(r)[:11]
+                        rt_lbl = tui._row_route_label(r)[:8]
+                        out_lbl = tui._row_outcome_label(r)[:11]
                         lines.append(
-                            f"{r['status']:<7} {r['execution_mode']:<6} {repo_lbl:<12} {ag_lbl:<11} "
-                            f"{r['model'][:22]:<22} {r['effort'][:7]:<7} {r['route_id']:<15} {r['label'][:48]}"
+                            f"{rt_lbl:<8} {out_lbl:<11} {r['execution_mode']:<6} {repo_lbl:<12} {ag_lbl:<11} "
+                            f"{r['model'][:22]:<22} {r['effort'][:7]:<7} {r['route_id']:<18} {r['label'][:44]}"
                         )
                     _emit("\n".join(lines), as_json=False)
+            return 0
+
+        if args.command == "close":
+            closed = router.close_route(
+                args.route_id,
+                status=args.status,
+                obs=args.obs,
+                switched_from=args.switched_from,
+                superseded_by=args.superseded_by,
+                switched_to=args.switched_to,
+                effort=args.effort,
+                tokens=args.tokens,
+                seconds=args.seconds,
+                credit_usd=args.credit_usd,
+                note=args.note,
+                now=args.now,
+            )
+            if args.json:
+                _emit(closed, as_json=True)
+            else:
+                cont = f" -> spawned {closed['continuation_route_id']}" if closed.get("continuation_route_id") else ""
+                linked = f" (linked obs {closed['linked_execution_id']})" if closed.get("linked_execution_id") else ""
+                _emit(
+                    f"closed {closed['route_id']} as {closed['close_status']}{linked}{cont}",
+                    as_json=False,
+                )
             return 0
 
         if args.command == "show":

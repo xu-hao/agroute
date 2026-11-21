@@ -17,7 +17,7 @@ from .price_store import (
     snapshot_path,
 )
 from .pricing import needs_price_resolution, rate_card, resolve_price, user_rate_card
-from .routes import build_snapshot, find_route, record_plan_route, register_repository
+from .routes import build_snapshot, close_plan_route, find_route, mint_route_id, record_plan_route, register_repository
 from .usage import (
     _now_utc,
     _usage_locked,
@@ -968,6 +968,16 @@ class Router:
             }
             fallback = None
 
+        evaluated_iso = format_timestamp(now_dt)
+        planned_route_id = mint_route_id(
+            evaluated_iso,
+            decision_id,
+            host,
+            target_agent,
+            target_model,
+            target_effort,
+        )
+
         if not host_affinity_applied:
             feedback = {
                 "mode": "matched_receipt",
@@ -1013,11 +1023,37 @@ class Router:
                     "Host-affinity override executed native host cell",
                     "--json",
                 ],
+                "close_command_template": [
+                    "agr",
+                    "close",
+                    planned_route_id,
+                    "--obs",
+                    "<EXECUTION_ID>",
+                    "--json",
+                ],
+            }
+
+        if fallback is not None:
+            fallback["feedback"] = {
+                "mode": "raw_native",
+                "decision_id": None,
+                "unexecuted_decision_id": decision_id,
+                "model": qualified_target_model,
+                "effort": target_effort,
+                "command_template": [
+                    "howhard", "observe", "<TASK>", qualified_target_model, target_effort,
+                    "<clean|loud|silent|interrupted>", "--native", "--id", "<EXECUTION_ID>",
+                    "--text-file", "<ORIGINAL_TASK_FILE>",
+                    "--project-context", "<ORIGINAL_CONTEXT_JSON>", "--json",
+                ],
+                "close_command_template": [
+                    "agr", "close", planned_route_id, "--obs", "<EXECUTION_ID>", "--json",
+                ],
             }
 
         result = {
             "format": PLAN_FORMAT,
-            "evaluated_at": format_timestamp(now_dt),
+            "evaluated_at": evaluated_iso,
             "host_agent": host,
             "target_agent": target_agent,
             "execution_mode": execution_mode,
@@ -1091,7 +1127,13 @@ class Router:
                 _check_credit_fit(locked_budget, locked_reserves, locked_reserved)
                 if locked_budget is not None:
                     result["credit_budget"] = deepcopy(locked_budget)
-                route_id = record_plan_route(self.config, result, locked=True)
+                route_id = record_plan_route(
+                    self.config,
+                    result,
+                    locked=True,
+                    route_id=planned_route_id,
+                    task_text=prompt,
+                )
                 record_credit_reservation_locked(
                     self.config,
                     route_id=route_id,
@@ -1105,8 +1147,45 @@ class Router:
                 )
                 result["route_id"] = route_id
         else:
-            result["route_id"] = record_plan_route(self.config, result)
+            result["route_id"] = record_plan_route(
+                self.config,
+                result,
+                route_id=planned_route_id,
+                task_text=prompt,
+            )
         return result
+
+    def close_route(
+        self,
+        identifier,
+        *,
+        status=None,
+        obs=None,
+        switched_from=None,
+        superseded_by=None,
+        switched_to=None,
+        effort=None,
+        tokens=None,
+        seconds=None,
+        credit_usd=None,
+        note=None,
+        now=None,
+    ):
+        return close_plan_route(
+            self.config,
+            identifier,
+            status=status,
+            obs=obs,
+            switched_from=switched_from,
+            superseded_by=superseded_by,
+            switched_to=switched_to,
+            effort=effort,
+            tokens=tokens,
+            seconds=seconds,
+            credit_usd=credit_usd,
+            note=note,
+            now=now,
+        )
 
     def snapshot(self, *, all_repos=True, now=None):
         return build_snapshot(self, all_repos=all_repos, now=now)
@@ -1135,7 +1214,11 @@ class Router:
             routes = [r for r in routes if r["target_agent"] == ag]
         if state is not None:
             st = text(state, "state", label=True, max_length=32)
-            routes = [r for r in routes if r["status"] == st]
+            routes = [
+                r
+                for r in routes
+                if st in (r.get("status"), r.get("route_status"), r.get("outcome"))
+            ]
         if limit is not None:
             if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
                 raise AgRouteError("limit: expected a positive integer")

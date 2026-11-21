@@ -12,12 +12,15 @@ from pathlib import Path
 
 from .files import append_jsonl, atomic_write
 from .state import claim
-from .usage import _now_utc, _usage_locked
-from .validation import AGENTS, AgRouteError, format_timestamp
+from .usage import _now_utc, _usage_locked, reconcile_reservation_on_close_locked
+from .validation import AGENTS, AgRouteError, format_timestamp, number, text
 
 SNAPSHOT_FORMAT = "agroute-snapshot-v1"
 REPOS_FORMAT = "agroute-repositories-v1"
+ROUTE_CLOSE_FORMAT = "agroute-route-close-v1"
 OBSERVED_STATUSES = frozenset({"clean", "loud", "silent", "interrupted"})
+CLOSE_STATUSES = ("done", "switched", "cancelled")
+TERMINAL_ROUTE_STATUSES = frozenset(CLOSE_STATUSES)
 
 _JSON_CACHE: dict[str, tuple[int, int, object]] = {}
 
@@ -199,7 +202,7 @@ def registered_repositories(config) -> list[dict]:
             continue
         sr = item.get("state_root")
         cr = item.get("capture_root")
-        if isinstance(sr, str) and isinstance(cr, str) and Path(cr).exists():
+        if isinstance(sr, str) and isinstance(cr, str) and (Path(cr).exists() or Path(sr).exists()):
             by_state[sr] = {
                 "capture_root": cr,
                 "state_root": sr,
@@ -208,13 +211,37 @@ def registered_repositories(config) -> list[dict]:
     return list(by_state.values())
 
 
-def record_plan_route(config, plan: dict, *, locked: bool = False) -> str:
+def mint_route_id(
+    evaluated_at: str,
+    decision_id: str | None,
+    host_agent: str,
+    target_agent: str,
+    model: str,
+    effort: str,
+) -> str:
+    """Compute the deterministic `route-<12hex>` ID for a planned or switched route."""
+    seed = f"{evaluated_at}:{decision_id or 'switched'}:{host_agent}:{target_agent}:{model}:{effort}"
+    return "route-" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:12]
+
+
+def record_plan_route(
+    config,
+    plan: dict,
+    *,
+    locked: bool = False,
+    route_id: str | None = None,
+    task_text: str | None = None,
+) -> str:
     """Persist an agr plan execution record and return its route_id."""
-    seed = (
-        f"{plan['evaluated_at']}:{plan['decision_id']}:{plan['host_agent']}:"
-        f"{plan['target_agent']}:{plan['resolved_target']['model']}:{plan['resolved_target']['effort']}"
-    )
-    route_id = "route-" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:12]
+    if route_id is None:
+        route_id = mint_route_id(
+            plan["evaluated_at"],
+            plan["decision_id"],
+            plan["host_agent"],
+            plan["target_agent"],
+            plan["resolved_target"]["model"],
+            plan["resolved_target"]["effort"],
+        )
     record = {
         "format": "agroute-route-v1",
         "route_id": route_id,
@@ -239,6 +266,8 @@ def record_plan_route(config, plan: dict, *, locked: bool = False) -> str:
         "invocation": deepcopy(plan["invocation"]),
         "feedback": deepcopy(plan["feedback"]),
     }
+    if isinstance(task_text, str) and task_text.strip():
+        record["task_text"] = task_text[:4000]
     if "credit_budget" in plan and plan["credit_budget"] is not None:
         record["credit_budget"] = deepcopy(plan["credit_budget"])
     if "needed_credit_usd" in plan and plan["needed_credit_usd"] is not None:
@@ -361,21 +390,222 @@ def _load_howhard_observations(hh_root: Path) -> tuple[dict[str, dict], list[dic
     return obs_by_decision, raw_observations
 
 
+def _resolve_howhard_root(capture_root: Path, state_root: Path) -> Path | None:
+    for cand in (state_root.parent / "howhard", capture_root / ".git" / "howhard", capture_root / ".howhard"):
+        if cand.is_dir():
+            return cand
+    return None
+
+
+def close_plan_route(
+    config,
+    identifier: str,
+    *,
+    status: str | None = None,
+    obs: str | None = None,
+    switched_from: str | None = None,
+    superseded_by: str | None = None,
+    switched_to: str | None = None,
+    effort: str | None = None,
+    tokens: int | None = None,
+    seconds: float | None = None,
+    credit_usd: float | None = None,
+    note: str | None = None,
+    now=None,
+) -> dict:
+    """Append an `agroute-route-close-v1` record (and optional switched continuation route) in `routes.jsonl`."""
+    needle = text(identifier, "route_id", max_length=128).strip()
+    if status is None:
+        close_status = "switched" if (switched_to is not None or superseded_by is not None) else "done"
+    else:
+        close_status = text(status, "status", label=True, max_length=32)
+    if close_status not in CLOSE_STATUSES:
+        raise AgRouteError(f"close: status must be one of {list(CLOSE_STATUSES)}, got {close_status!r}")
+
+    obs_id = text(obs, "obs", max_length=256).strip() if obs is not None else None
+    if obs_id is not None and close_status == "cancelled":
+        raise AgRouteError("close: --obs cannot be combined with --status cancelled")
+    if switched_to is not None and close_status != "switched":
+        raise AgRouteError("close: --switched-to requires --status switched (or omitted --status)")
+
+    from_id = text(switched_from, "switched_from", max_length=128).strip() if switched_from is not None else None
+    sup_id = text(superseded_by, "superseded_by", max_length=128).strip() if superseded_by is not None else None
+    note_txt = text(note, "note", max_length=2000) if note is not None else None
+
+    if tokens is not None:
+        if not isinstance(tokens, int) or isinstance(tokens, bool) or tokens < 0:
+            raise AgRouteError("close: tokens must be a non-negative integer")
+    sec_val = float(number(seconds, "seconds", nonnegative=True)) if seconds is not None else None
+    cred_val = float(number(credit_usd, "credit_usd", nonnegative=True)) if credit_usd is not None else None
+
+    now_dt = _now_utc(now)
+    closed_iso = format_timestamp(now_dt)
+    routes_path = config.state_root / "routes.jsonl"
+    raw_records = _read_cached_jsonl(routes_path)
+    plan_by_id: dict[str, dict] = {}
+    for rec in raw_records:
+        if rec.get("format") == ROUTE_CLOSE_FORMAT:
+            continue
+        rid = rec.get("route_id")
+        if isinstance(rid, str) and rid:
+            plan_by_id[rid] = rec
+
+    if needle in plan_by_id:
+        target_rec = plan_by_id[needle]
+    else:
+        matches = [r for rid, r in plan_by_id.items() if rid.startswith(needle)]
+        if len(matches) == 1:
+            target_rec = matches[0]
+        elif len(matches) > 1:
+            raise AgRouteError(f"close: route prefix '{needle}' is ambiguous ({len(matches)} matches)")
+        else:
+            raise AgRouteError(f"close: unknown planned route '{needle}' in {routes_path}")
+
+    resolved_route_id = target_rec["route_id"]
+
+    linked_obs_credit: float | None = None
+    if obs_id is not None:
+        hh_root = _resolve_howhard_root(config.capture_root, config.state_root)
+        if hh_root is None:
+            raise AgRouteError(f"close: howhard store not found while looking up --obs '{obs_id}'")
+        obs_by_dec, raw_list = _load_howhard_observations(hh_root)
+        raw_map = {str(o.get("id")): o for o in raw_list if o.get("id")}
+        if obs_id not in raw_map:
+            if any(str(o.get("id")) == obs_id for o in obs_by_dec.values()):
+                raise AgRouteError(
+                    f"close: observation '{obs_id}' already carries a howhard decision_id and links automatically"
+                )
+            raise AgRouteError(f"close: unknown standalone howhard observation '{obs_id}'")
+        matched_raw = raw_map[obs_id]
+        for k in ("needed_credit_usd", "credit_usd", "cost_usd"):
+            if type(matched_raw.get(k)) in (int, float):
+                linked_obs_credit = float(matched_raw[k])
+                break
+
+    continuation_record: dict | None = None
+    continuation_route_id: str | None = None
+    if switched_to is not None:
+        raw_sw = text(switched_to, "switched_to", max_length=200).strip()
+        if "/" in raw_sw or ":" in raw_sw:
+            sep = "/" if "/" in raw_sw else ":"
+            prefix, rest = raw_sw.split(sep, 1)
+            if prefix not in AGENTS or not rest.strip():
+                raise AgRouteError(f"close: invalid --switched-to model '{raw_sw}'")
+            cont_agent, cont_model = prefix, rest.strip()
+        else:
+            cont_agent, cont_model = infer_agent_from_model(raw_sw)
+        prev_target = target_rec.get("resolved_target") or {}
+        cont_effort = (
+            text(effort, "effort", label=True, max_length=32)
+            if effort is not None
+            else str(prev_target.get("effort") or "high")
+        )
+        host_agent = str(target_rec.get("host_agent") or "agy")
+        cont_mode = "native" if cont_agent == host_agent else "cli"
+        continuation_route_id = mint_route_id(
+            closed_iso,
+            f"switch:{resolved_route_id}",
+            host_agent,
+            cont_agent,
+            cont_model,
+            cont_effort,
+        )
+        sup_id = continuation_route_id
+        continuation_record = {
+            "format": "agroute-route-v1",
+            "route_id": continuation_route_id,
+            "created_at": closed_iso,
+            "repository": str(target_rec.get("repository") or config.capture_root),
+            "repository_id": config.project_identity or config.capture_root.name,
+            "host_agent": host_agent,
+            "target_agent": cont_agent,
+            "execution_mode": cont_mode,
+            "decision_id": None,
+            "switched_from": resolved_route_id,
+            "cap_met": None,
+            "needs_review": bool(target_rec.get("needs_review", False)),
+            "host_affinity_applied": False,
+            "host_affinity_detail": None,
+            "howhard_cell": {"model": f"{cont_agent}/{cont_model}", "effort": cont_effort},
+            "resolved_target": {
+                "agent": cont_agent,
+                "model": cont_model,
+                "effort": cont_effort,
+                "surface": cont_mode,
+            },
+            "role": str(target_rec.get("role") or "Task Worker"),
+            "invocation": None,
+            "feedback": None,
+        }
+        if isinstance(target_rec.get("task_text"), str):
+            continuation_record["task_text"] = target_rec["task_text"]
+
+    close_record: dict = {
+        "format": ROUTE_CLOSE_FORMAT,
+        "route_id": resolved_route_id,
+        "closed_at": closed_iso,
+        "close_status": close_status,
+    }
+    if obs_id is not None:
+        close_record["linked_execution_id"] = obs_id
+    if from_id is not None:
+        close_record["switched_from"] = from_id
+    if sup_id is not None:
+        close_record["superseded_by"] = sup_id
+    if tokens is not None:
+        close_record["tokens"] = tokens
+    if sec_val is not None:
+        close_record["seconds"] = sec_val
+    if cred_val is not None:
+        close_record["credit_usd"] = cred_val
+    if note_txt is not None:
+        close_record["note"] = note_txt
+
+    effective_res_credit = cred_val if cred_val is not None else linked_obs_credit
+    with _usage_locked(config):
+        claim(config)
+        append_jsonl(routes_path, close_record)
+        if continuation_record is not None:
+            continuation_record["repository_id"] = config.project_identity or config.capture_root.name
+            append_jsonl(routes_path, continuation_record)
+        reconcile_reservation_on_close_locked(
+            config,
+            resolved_route_id,
+            close_status=close_status,
+            credit_usd=effective_res_credit,
+        )
+    register_repository(config)
+
+    result = deepcopy(close_record)
+    if continuation_route_id is not None:
+        result["continuation_route_id"] = continuation_route_id
+    return result
+
+
 def load_repository_routes(capture_root: Path, state_root: Path, repository_id: str) -> list[dict]:
-    """Load and correlate agr plan records with howhard decisions and outcomes."""
-    plan_records = _read_cached_jsonl(state_root / "routes.jsonl")
-    hh_root = state_root.parent / "howhard"
-    if not hh_root.is_dir():
-        alt = capture_root / ".git" / "howhard"
-        if alt.is_dir():
-            hh_root = alt
+    """Load and correlate agr plan records with agr close events, howhard decisions, and outcomes."""
+    raw_route_records = _read_cached_jsonl(state_root / "routes.jsonl")
+    plan_records: list[dict] = []
+    close_by_route: dict[str, dict] = {}
+    for item in raw_route_records:
+        if item.get("format") == ROUTE_CLOSE_FORMAT:
+            rid = item.get("route_id")
+            if isinstance(rid, str) and rid and item.get("close_status") in CLOSE_STATUSES:
+                close_by_route[rid] = item
+        else:
+            plan_records.append(item)
+
+    hh_root = _resolve_howhard_root(capture_root, state_root)
 
     obs_by_decision: dict[str, dict] = {}
     raw_observations: list[dict] = []
     hh_events: list[dict] = []
-    if hh_root.is_dir():
+    if hh_root is not None:
         obs_by_decision, raw_observations = _load_howhard_observations(hh_root)
         hh_events = _read_cached_jsonl(hh_root / "decision-events.jsonl")
+
+    raw_by_id = {str(o.get("id")): o for o in raw_observations if o.get("id")}
+    linked_raw_ids: set[str] = set()
 
     routes: list[dict] = []
     covered_decisions: set[str] = set()
@@ -384,12 +614,21 @@ def load_repository_routes(capture_root: Path, state_root: Path, repository_id: 
         route_id = str(rec.get("route_id") or "")
         if not route_id:
             continue
-        dec_id = rec.get("decision_id") if isinstance(rec.get("decision_id"), str) else None
+        dec_id = rec.get("decision_id") if isinstance(rec.get("decision_id"), str) and rec.get("decision_id") else None
         if dec_id:
             covered_decisions.add(dec_id)
 
-        dec_doc = _read_cached_json(hh_root / "decisions" / f"{dec_id}.json") if (dec_id and hh_root.is_dir()) else None
+        dec_doc = _read_cached_json(hh_root / "decisions" / f"{dec_id}.json") if (dec_id and hh_root is not None) else None
+        close_rec = close_by_route.get(route_id)
+
         obs = obs_by_decision.get(dec_id) if dec_id else None
+        outcome_source: str | None = "matched_receipt" if obs is not None else None
+        if obs is None and close_rec is not None:
+            linked_id = close_rec.get("linked_execution_id")
+            if isinstance(linked_id, str) and linked_id in raw_by_id:
+                obs = raw_by_id[linked_id]
+                outcome_source = "linked_raw"
+                linked_raw_ids.add(linked_id)
 
         resolved = rec.get("resolved_target") if isinstance(rec.get("resolved_target"), dict) else {}
         host_agent = str(rec.get("host_agent") or "agy")
@@ -400,21 +639,46 @@ def load_repository_routes(capture_root: Path, state_root: Path, repository_id: 
         needs_review = bool(rec.get("needs_review", False))
         cap_met = rec.get("cap_met")
 
-        outcome = obs.get("outcome") if isinstance(obs, dict) and obs.get("outcome") in OBSERVED_STATUSES else None
-        if outcome:
-            status = str(outcome)
+        hh_outcome = obs.get("outcome") if isinstance(obs, dict) and obs.get("outcome") in OBSERVED_STATUSES else None
+        if close_rec is not None:
+            route_status = str(close_rec["close_status"])
+        elif hh_outcome:
+            route_status = "done"
         elif needs_review or cap_met is False:
-            status = "review"
+            route_status = "review"
         else:
-            status = "routed"
+            route_status = "routed"
+
+        if hh_outcome:
+            outcome: str | None = str(hh_outcome)
+        elif route_status == "done":
+            outcome = "unscored"
+            outcome_source = "unscored"
+        else:
+            outcome = None
+
+        if close_rec is not None and route_status in ("switched", "cancelled"):
+            status = route_status
+        elif hh_outcome:
+            status = str(hh_outcome)
+        else:
+            status = route_status
 
         task_text = None
         if isinstance(dec_doc, dict):
             ctx = dec_doc.get("context")
             if isinstance(ctx, dict) and isinstance(ctx.get("task_text"), str):
                 task_text = ctx["task_text"]
+        if not task_text and isinstance(rec.get("task_text"), str):
+            task_text = rec["task_text"]
         if not task_text and isinstance(obs, dict) and isinstance(obs.get("task_text"), str):
             task_text = obs["task_text"]
+        if not task_text and isinstance(rec.get("invocation"), dict):
+            inv_params = rec["invocation"].get("parameters") or {}
+            for pk in ("brief", "Prompt", "prompt"):
+                if isinstance(inv_params.get(pk), str) and inv_params[pk].strip():
+                    task_text = inv_params[pk]
+                    break
 
         role = str(rec.get("role") or "Task Worker")
         label = _first_line(task_text, fallback=role if role != "Task Worker" else (obs.get("id") if obs else role))
@@ -425,10 +689,33 @@ def load_repository_routes(capture_root: Path, state_root: Path, repository_id: 
         )
         risk_class = (dec_doc or {}).get("risk_class") or (obs or {}).get("risk_class")
 
+        obs_tokens = obs.get("tokens") if isinstance(obs, dict) and isinstance(obs.get("tokens"), int) else None
+        close_tokens = close_rec.get("tokens") if isinstance(close_rec, dict) and isinstance(close_rec.get("tokens"), int) else None
+        obs_secs = float(obs["seconds"]) if isinstance(obs, dict) and type(obs.get("seconds")) in (int, float) else None
+        close_secs = float(close_rec["seconds"]) if isinstance(close_rec, dict) and type(close_rec.get("seconds")) in (int, float) else None
+        obs_note = str(obs["note"]) if isinstance(obs, dict) and obs.get("note") else None
+        close_note = str(close_rec["note"]) if isinstance(close_rec, dict) and close_rec.get("note") else None
+        combined_note = (
+            f"{obs_note}\nClose note: {close_note}"
+            if (obs_note and close_note and obs_note != close_note)
+            else (close_note or obs_note)
+        )
+        observed_at = (
+            _normalize_iso_utc(obs.get("observed_at"))
+            if isinstance(obs, dict) and obs.get("observed_at")
+            else (_normalize_iso_utc(close_rec.get("closed_at")) if isinstance(close_rec, dict) and close_rec.get("closed_at") else None)
+        )
+        switched_from_val = (
+            (close_rec or {}).get("switched_from")
+            or rec.get("switched_from")
+        )
+        superseded_by_val = (close_rec or {}).get("superseded_by")
+
         route_entry = {
             "route_id": route_id,
             "decision_id": dec_id,
             "status": status,
+            "route_status": route_status,
             "execution_mode": str(rec.get("execution_mode") or ("native" if host_agent == target_agent else "cli")),
             "repository": str(rec.get("repository") or capture_root),
             "repository_id": str(rec.get("repository_id") or repository_id),
@@ -445,18 +732,23 @@ def load_repository_routes(capture_root: Path, state_root: Path, repository_id: 
             "needs_review": needs_review,
             "host_affinity_applied": bool(rec.get("host_affinity_applied", False)),
             "created_at": _normalize_iso_utc(rec.get("created_at")),
-            "observed_at": _normalize_iso_utc(obs.get("observed_at")) if isinstance(obs, dict) and obs.get("observed_at") else None,
+            "observed_at": observed_at,
             "outcome": outcome,
+            "outcome_source": outcome_source,
             "cause": str(obs.get("cause")) if isinstance(obs, dict) and obs.get("cause") else None,
             "execution_id": str(obs.get("id")) if isinstance(obs, dict) and obs.get("id") else None,
-            "tokens": obs.get("tokens") if isinstance(obs, dict) and isinstance(obs.get("tokens"), int) else None,
-            "seconds": float(obs["seconds"]) if isinstance(obs, dict) and type(obs.get("seconds")) in (int, float) else None,
+            "switched_from": str(switched_from_val) if switched_from_val else None,
+            "superseded_by": str(superseded_by_val) if superseded_by_val else None,
+            "tokens": close_tokens if close_tokens is not None else obs_tokens,
+            "seconds": close_secs if close_secs is not None else obs_secs,
             "cost_usd": float(obs["cost_usd"]) if isinstance(obs, dict) and type(obs.get("cost_usd")) in (int, float) else None,
             "invocation": rec.get("invocation") if isinstance(rec.get("invocation"), dict) else None,
             "forecasts": _extract_forecasts(dec_doc),
-            "note": str(obs.get("note")) if isinstance(obs, dict) and obs.get("note") else None,
+            "note": combined_note,
             "task_text": task_text[:4000] if isinstance(task_text, str) else None,
         }
+        if isinstance(close_rec, dict) and type(close_rec.get("credit_usd")) in (int, float):
+            route_entry["credit_usd"] = float(close_rec["credit_usd"])
         if isinstance(rec.get("credit_budget"), dict):
             route_entry["credit_budget"] = deepcopy(rec["credit_budget"])
         if type(rec.get("needed_credit_usd")) in (int, float):
@@ -471,7 +763,7 @@ def load_repository_routes(capture_root: Path, state_root: Path, repository_id: 
         if not isinstance(dec_id, str) or not dec_id or dec_id in covered_decisions:
             continue
         covered_decisions.add(dec_id)
-        dec_doc = _read_cached_json(hh_root / "decisions" / f"{dec_id}.json")
+        dec_doc = _read_cached_json(hh_root / "decisions" / f"{dec_id}.json") if hh_root is not None else None
         obs = obs_by_decision.get(dec_id)
         chosen = (dec_doc or {}).get("chosen") if isinstance(dec_doc, dict) else None
         raw_model = str(
@@ -489,10 +781,13 @@ def load_repository_routes(capture_root: Path, state_root: Path, repository_id: 
         needs_review = bool(_decision_selection_flag(dec_doc, "needs_review", False))
         cap_met = _decision_selection_flag(dec_doc, "cap_met")
         if outcome:
+            route_status = "done"
             status = str(outcome)
         elif needs_review or cap_met is False:
+            route_status = "review"
             status = "review"
         else:
+            route_status = "routed"
             status = "routed"
 
         task_text = None
@@ -517,6 +812,7 @@ def load_repository_routes(capture_root: Path, state_root: Path, repository_id: 
             "route_id": f"hh-{dec_id[:12]}",
             "decision_id": dec_id,
             "status": status,
+            "route_status": route_status,
             "execution_mode": "native",
             "repository": str(capture_root),
             "repository_id": repository_id,
@@ -535,8 +831,11 @@ def load_repository_routes(capture_root: Path, state_root: Path, repository_id: 
             "created_at": _normalize_iso_utc(ev.get("at_utc")),
             "observed_at": _normalize_iso_utc(obs.get("observed_at")) if isinstance(obs, dict) and obs.get("observed_at") else None,
             "outcome": outcome,
+            "outcome_source": "matched_receipt" if outcome else None,
             "cause": str(obs.get("cause")) if isinstance(obs, dict) and obs.get("cause") else None,
             "execution_id": str(obs.get("id")) if isinstance(obs, dict) and obs.get("id") else None,
+            "switched_from": None,
+            "superseded_by": None,
             "tokens": obs.get("tokens") if isinstance(obs, dict) and isinstance(obs.get("tokens"), int) else None,
             "seconds": float(obs["seconds"]) if isinstance(obs, dict) and type(obs.get("seconds")) in (int, float) else None,
             "cost_usd": float(obs["cost_usd"]) if isinstance(obs, dict) and type(obs.get("cost_usd")) in (int, float) else None,
@@ -556,7 +855,7 @@ def load_repository_routes(capture_root: Path, state_root: Path, repository_id: 
 
     for obs in raw_observations:
         obs_id = str(obs.get("id") or "")
-        if not obs_id:
+        if not obs_id or obs_id in linked_raw_ids:
             continue
         raw_model = str(obs.get("model") or "unknown")
         effort = str(obs.get("effort") or "standard")
@@ -571,6 +870,7 @@ def load_repository_routes(capture_root: Path, state_root: Path, repository_id: 
                 "route_id": f"obs-{short_hash}",
                 "decision_id": None,
                 "status": outcome,
+                "route_status": None,
                 "execution_mode": "raw",
                 "repository": str(capture_root),
                 "repository_id": repository_id,
@@ -589,8 +889,11 @@ def load_repository_routes(capture_root: Path, state_root: Path, repository_id: 
                 "created_at": _normalize_iso_utc(obs.get("observed_at")),
                 "observed_at": _normalize_iso_utc(obs.get("observed_at")),
                 "outcome": outcome if outcome in OBSERVED_STATUSES else None,
+                "outcome_source": "standalone_raw",
                 "cause": str(obs.get("cause")) if obs.get("cause") else None,
                 "execution_id": obs_id,
+                "switched_from": None,
+                "superseded_by": None,
                 "tokens": obs.get("tokens") if isinstance(obs.get("tokens"), int) else None,
                 "seconds": float(obs["seconds"]) if type(obs.get("seconds")) in (int, float) else None,
                 "cost_usd": float(obs["cost_usd"]) if type(obs.get("cost_usd")) in (int, float) else None,
@@ -625,8 +928,8 @@ def build_snapshot(router, *, all_repos: bool = True, now=None) -> dict:
             )
         )
     all_routes.sort(key=lambda r: (r["created_at"], r["route_id"]), reverse=True)
-    routed_count = sum(1 for r in all_routes if r["status"] in ("routed", "review"))
-    observed_count = sum(1 for r in all_routes if r["status"] in OBSERVED_STATUSES)
+    routed_count = sum(1 for r in all_routes if r.get("route_status") in ("routed", "review"))
+    observed_count = sum(1 for r in all_routes if r.get("route_status") not in ("routed", "review"))
     return {
         "format": SNAPSHOT_FORMAT,
         "captured_at": format_timestamp(now_dt),

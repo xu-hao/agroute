@@ -77,6 +77,16 @@ while `howhard` owns model/effort selection, execution accounting, and writable 
    - When `feedback.mode == "raw_native"` (for example, when `host_affinity_epsilon` selected a
      native host route over `howhard`'s cross-agent choice) or if a different known route ran,
      record raw native feedback with `howhard observe ... --native` without attaching the
-     unexecuted receipt.
+     unexecuted receipt. Then run `agr close ROUTE_ID --obs EXECUTION_ID` to link the raw
+     observation and remove the duplicate dashboard row, preserving a human-readable execution ID.
    - Attach measured execution usage via `howhard usage collect` / `howhard usage attach` when
      supported, and complete `howhard memory learn-context` / `howhard memory learn`.
+
+6. Keep route lifecycle separate from howhard outcome: `ROUTE` is `routed` / `review`, then
+   `done` / `switched` / `cancelled`; `done*` retains a plan review warning. After an in-place
+   model switch, score only the first model's interruption (`--cause usage_limit`), use
+   `agr close ROUTE_ID --switched-to AGENT/MODEL --effort EFFORT` to create a continuation,
+   and close its returned `continuation_route_id` with measured `--tokens`, `--seconds`,
+   and `--credit-usd` after completion. The continuation remains howhard-unscored
+   (`OUTCOME=unscored` on `done`). Use `--from` / `--superseded-by` to link separately
+   planned routes, or `--status cancelled` to abandon a plan and release its reservation.

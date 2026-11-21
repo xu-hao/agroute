@@ -90,7 +90,7 @@ def test_plan_resolution_native_and_cross_agent_across_all_hosts(tmp_path):
         "Workspace": "inherit",
         "Prompt": "implement parser",
     }
-    assert plan_agy_native["fallback"] == {
+    assert {k: v for k, v in plan_agy_native["fallback"].items() if k != "feedback"} == {
         "kind": "cli_command",
         "argv": [
             "agy",
@@ -181,7 +181,7 @@ def test_plan_resolution_native_and_cross_agent_across_all_hosts(tmp_path):
     assert plan_codex_native["execution_mode"] == "native"
     assert plan_codex_native["invocation"]["tool_name"] == "spawn_agent"
     assert plan_codex_native["invocation"]["parameters"]["reasoning_effort"] == "high"
-    assert plan_codex_native["fallback"] == {
+    assert {k: v for k, v in plan_codex_native["fallback"].items() if k != "feedback"} == {
         "kind": "cli_command",
         "argv": [
             "codex",

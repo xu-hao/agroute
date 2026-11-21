@@ -647,25 +647,58 @@ and queried with `get_adapter(name)`.
 
 Every `agr plan` resolution appends a record to `<state_root>/routes.jsonl` and registers
 the repository in `${AGROUTE_SPOOL_DIR:-~/.local/share/agroute}/repositories.json`. `agroute`
-correlates `<state_root>/routes.jsonl` with `.git/howhard/` (`decision-events.jsonl`,
-`decisions/*.json`, `outcomes.jsonl`, and `pending.jsonl`, including `amends` chains) so both
-`agr plan` resolutions and direct `howhard` routing decisions appear in reverse-chronological
-order with their live outcome state (`routed`, `review`, `clean`, `loud`, `silent`,
-`interrupted`), failure/interruption `cause`, and task summary.
+correlates these records with `.git/howhard/` (`decision-events.jsonl`, `decisions/*.json`,
+`outcomes.jsonl`, and `pending.jsonl`, including `amends` chains). Automatic receipt linking
+uses only `decision_id`; keep howhard's `--id` as a human-readable execution ID.
+
+The `ROUTE` column belongs to agroute: `routed` and `review` are active; `done`, `switched`,
+and `cancelled` are terminal. Compact displays mark completed plans with `needs_review`
+or `cap_met == false` as `done*`, preserving the review warning after completion.
+Standalone raw observations have no route lifecycle (`—`). The separate `OUTCOME` column
+belongs to howhard: `clean`, `loud`, `silent`, or `interrupted`; `—` means no observation.
+A route closed as `done` without an observation displays `unscored`, an agroute marker
+that does not create a howhard capability observation. JSON exposes `route_status`,
+`outcome`, and `outcome_source`; linked receipts use `matched_receipt` and explicitly
+linked raw observations use `linked_raw`.
 
 - `agr tui [--repo NAME] [--agent AGENT] [--current-repo] [--refresh-interval SEC] [--no-probe]`:
   interactive Textual terminal dashboard showing live agent quota/eligibility badges (with
   5h/7d percentages and estimated remaining quota credit when calibrated), active and
   historical model routes, `Enter` route detail modal, `u` live usage & eligibility modal
   (showing estimated used/ceiling/remaining credit alongside 5h/7d percentages, per-pool
-  calibrated credit summaries, and per-model window credit),
-  `h` history toggle, and filter pickers for repository (`p`), target agent (`a`), model (`m`),
-  and state (`s`). Enabled providers with missing, stale, failed, or expired usage are
-  probed off the UI loop automatically, with a 60-second retry cooldown and one probe
-  in flight. `P` probes all enabled providers immediately outside that cooldown; `p`
-  remains the repository filter. The display refreshes after a probe finishes.
-  `--no-probe` disables these probes.
+  calibrated credit summaries, and per-model window credit). `h` hides terminal routes and
+  observed raw rows. Filter pickers select repository (`p`), target agent (`a`), model (`m`),
+  and route lifecycle or outcome (`s`); `?` explains both columns.
+  Enabled providers with missing, stale, failed, or expired usage are probed off the UI loop
+  automatically, with a 60-second retry cooldown and one probe in flight. `P` probes all
+  enabled providers immediately outside that cooldown; `p` remains the repository filter.
+  The display refreshes after a probe finishes. `--no-probe` disables these probes.
 - `agr list [--all] [--repo NAME] [--agent AGENT] [--model MODEL] [--state STATE] [--limit N] [--json]`:
-  scriptable tabular or JSON view of the same route records.
-- `agr show <id> [--json]`: full route record, invocation details, and `howhard` decision
+  scriptable tabular or JSON view of the same route records. `--state` accepts route
+  lifecycle or outcome values, including `unscored`.
+- `agr show <id> [--json]`: full route record, invocation details, and decision metadata
   for a route ID, decision ID, or execution ID.
+
+### Explicit route closure
+
+`agr close <route_id>` accepts a full route ID or unique prefix and appends a durable
+`agroute-route-close-v1` event to `<state_root>/routes.jsonl`. Options are
+`--status {done,switched,cancelled}`, `--obs EXECUTION_ID`, `--from ROUTE_ID`,
+`--superseded-by ROUTE_ID`, `--switched-to MODEL`, `--effort EFFORT`, `--tokens N`,
+`--seconds SEC`, `--credit-usd USD`, `--note TEXT`, and `--json`. Status defaults to `done`,
+or `switched` when `--switched-to` or `--superseded-by` is given.
+
+After raw native feedback (host-affinity override or native launch fallback), use
+`agr close ROUTE_ID --obs EXECUTION_ID` to attach the standalone observation's outcome and
+measurements to the planned route and suppress its duplicate raw row. This leaves the
+original howhard decision receipt unscored; `feedback` metadata includes the close step.
+
+For an in-place model switch, record the first model's interruption in howhard with
+`--cause usage_limit`, then run `agr close ROUTE_ID --switched-to AGENT/MODEL --effort high`.
+This creates a linked continuation route and returns `continuation_route_id`; it does
+not launch a worker. Close that continuation with `agr close CONTINUATION_ID --tokens N
+--seconds SEC --credit-usd USD` after completion, leaving howhard unscored for the
+post-switch task. Alternatively, link separately planned routes with `--from` and
+`--superseded-by`. Abandoned plans use `--status cancelled`.
+Closed routes no longer block calibration as in-flight work; measured close credit may
+contribute within cleanly bounded quota intervals. Cancellation releases its reservation.

@@ -120,3 +120,33 @@ There is no model-count or cell-count cap. Every current model and supported eff
 emitted after quota filtering. Use `--include-agents` to restrict agents by policy. A
 consumer with a smaller supported inventory must report its own validation error;
 agroute never truncates the inventory to satisfy it.
+
+## 5. Close raw-feedback, switched, or abandoned routes
+
+`agr list` and `agr tui` show agroute's `ROUTE` separately from howhard's `OUTCOME`.
+Receipt observations match automatically by `decision_id`. Keep `EXECUTION_ID` readable;
+for raw native feedback after a fallback or host-affinity override, explicitly link it:
+
+```sh
+agr close ROUTE_ID --obs EXECUTION_ID --json
+```
+
+This suppresses the duplicate standalone raw row and sets `outcome_source=linked_raw`;
+it does not score the unexecuted howhard receipt. For an in-place mid-task model switch,
+record Model 1 as interrupted with `--cause usage_limit`, then create a continuation:
+
+```sh
+agr close ROUTE_ID --switched-to agy/gemini-4-argon-high --effort high --json
+agr close CONTINUATION_ROUTE_ID --tokens 19000 --seconds 180 --credit-usd 1.4 --json
+```
+
+Use the returned `continuation_route_id` for the second command after Model 2 finishes.
+The first route is `switched`; the continuation is `done` with `OUTCOME=unscored`.
+Do not attribute the whole task's capability outcome to Model 2. Separately planned
+routes can be linked with `--from ROUTE_ID` and `--superseded-by ROUTE_ID`.
+`agr close ROUTE_ID --status cancelled --note "Declined after review"` abandons a plan.
+`--status` otherwise defaults to `done`, or `switched` with `--switched-to` /
+`--superseded-by`. Closure also accepts `--note`, `--tokens`, `--seconds`, and `--credit-usd`.
+Completed review-flagged plans retain `done*`. Closed routes stop blocking calibration
+intervals; cancellation releases its credit reservation. The TUI's `h` hides terminal
+routes and observed raw rows; `s` filters lifecycle or outcome, and `?` explains both.

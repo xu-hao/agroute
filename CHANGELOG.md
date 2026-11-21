@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Separate agroute `ROUTE` lifecycle from howhard `OUTCOME` in monitoring, preserve review
+  warnings as `done*`, and add `agr close` for raw-observation linking, cancellation, and
+  unscored completion. Model switches can create linked continuation routes using
+  `--switched-to`; closed routes reconcile quota credit and reservations. Issue #82 tracks
+  route lifecycle, explicit closure, and independent howhard outcome attribution.
+
 - Tighten routing quota freshness automatically when a usable window has less than
   `usage_low_headroom_pct` (default `20%`) remaining before its cutoff (down to
   `usage_low_headroom_stale_after_seconds`, default `60`s), record atomic in-flight credit
