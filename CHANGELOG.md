@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Read `selection.cells`, `selection.cap_met`, and `selection.needs_review` (and fall back to
+  `semantic.worlds.llm` when `selection.cells` is absent) from saved `howhard` decision
+  receipts across `routes.py`, `router.plan()`, and `tui.py`, formatting `P_clean`/`P_loud`/
+  `P_silent` mean panels and surfacing review state and selection costs in `agr tui` and
+  `agr show`. Issue #77 tracks saved `howhard` receipt selection correlation.
+
 - Support `howhard` 3.4's `interrupted` outcome and `howhard-decision-v8`/`v9` receipts across
   route correlation (`routes.py`), credit calibration (`calibration.py`), execution planning
   (`router.py`), CLI filtering (`agr list --state interrupted`), TUI styling/details/help

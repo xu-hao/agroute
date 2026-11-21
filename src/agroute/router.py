@@ -127,6 +127,31 @@ def _extract_session_cost(entry, *, allow_legacy_cost=False):
 _CREDIT_COST_SPLIT_FORMATS = frozenset({"howhard-decision-v7", "howhard-decision-v8", "howhard-decision-v9"})
 
 
+def _decision_panels(decision, *, order=("cells", "candidates", "ranking")):
+    if not isinstance(decision, dict):
+        return []
+    panels = []
+    for panel_key in order:
+        panel = decision.get(panel_key)
+        if isinstance(panel, list):
+            panels.append(panel)
+    selection = decision.get("selection")
+    if isinstance(selection, dict) and isinstance(selection.get("cells"), list):
+        panels.append(selection["cells"])
+    return panels
+
+
+def _decision_selection_flag(decision, key, default=None):
+    if not isinstance(decision, dict):
+        return default
+    if decision.get(key) is not None:
+        return decision[key]
+    selection = decision.get("selection")
+    if isinstance(selection, dict) and selection.get(key) is not None:
+        return selection[key]
+    return default
+
+
 def _decision_has_credit_cost_split(decision):
     if decision.get("format") in _CREDIT_COST_SPLIT_FORMATS:
         return True
@@ -135,9 +160,8 @@ def _decision_has_credit_cost_split(decision):
         "needed_credit_usd" in chosen or "session_cost_usd" in chosen or "cost_per_credit" in chosen
     ):
         return True
-    for panel_key in ("cells", "candidates", "ranking"):
-        panel = decision.get(panel_key)
-        if isinstance(panel, list) and any(
+    for panel in _decision_panels(decision):
+        if any(
             isinstance(cell, dict)
             and ("needed_credit_usd" in cell or "session_cost_usd" in cell or "cost_per_credit" in cell)
             for cell in panel
@@ -147,10 +171,7 @@ def _decision_has_credit_cost_split(decision):
 
 
 def _find_panel_cell(decision, cell_key):
-    for panel_key in ("cells", "candidates", "ranking"):
-        panel = decision.get(panel_key)
-        if not isinstance(panel, list):
-            continue
+    for panel in _decision_panels(decision):
         for item in panel:
             if not isinstance(item, dict):
                 continue
@@ -751,11 +772,8 @@ class Router:
 
         epsilon = self.config.host_affinity_epsilon
         if epsilon > 0.0 and chosen_agent != host:
-            panel = None
-            for panel_key in ("candidates", "cells", "ranking"):
-                if isinstance(decision.get(panel_key), list):
-                    panel = decision[panel_key]
-                    break
+            panels = _decision_panels(decision, order=("candidates", "cells", "ranking"))
+            panel = panels[0] if panels else None
             if panel:
                 chosen_score = None
                 best_native = None
@@ -779,6 +797,7 @@ class Router:
                         ag == host
                         and (ag, nat_m, eff_raw) in admitted_meta
                         and item.get("cap_met") is not False
+                        and item.get("admissible") is not False
                     ):
                         nat_meta = admitted_meta[(ag, nat_m, eff_raw)]
                         nat_budget = nat_meta.get("credit_budget")
@@ -928,8 +947,8 @@ class Router:
             "target_agent": target_agent,
             "execution_mode": execution_mode,
             "decision_id": decision_id,
-            "cap_met": decision.get("cap_met"),
-            "needs_review": bool(decision.get("needs_review", False)),
+            "cap_met": _decision_selection_flag(decision, "cap_met"),
+            "needs_review": bool(_decision_selection_flag(decision, "needs_review", False)),
             "cost_policy": decision.get("cost_policy"),
             "howhard_cell": {
                 "model": qualified_target_model,
