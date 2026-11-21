@@ -114,3 +114,67 @@ def isolated_env(monkeypatch, tmp_path, request):
         encoding="utf-8",
     )
     monkeypatch.setenv("AGROUTE_SPOOL_DIR", str(spool_dir))
+
+
+def write_howhard_payload_decision(
+    hh_root,
+    decision_id: str,
+    document: dict,
+    *,
+    created_at: str = "2026-11-21T00:00:00+00:00",
+) -> None:
+    """Write a canonical howhard 4.0 receipt row into `<hh_root>/payloads.sqlite3`."""
+    from pathlib import Path
+    import sqlite3
+    import zstandard as zstd
+
+    hh_path = Path(hh_root)
+    hh_path.mkdir(parents=True, exist_ok=True)
+    db_path = hh_path / "payloads.sqlite3"
+    raw = (json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    compressed = zstd.ZstdCompressor(level=3).compress(raw)
+    chosen = document.get("chosen") if isinstance(document.get("chosen"), dict) else None
+    ctx = document.get("context") if isinstance(document.get("context"), dict) else {}
+    proj = ctx.get("project_context") if isinstance(ctx.get("project_context"), dict) else {}
+    sel = document.get("selection") if isinstance(document.get("selection"), dict) else {}
+    cap_met = sel.get("cap_met") if isinstance(sel.get("cap_met"), bool) else document.get("cap_met")
+    needs_review = sel.get("needs_review") if isinstance(sel.get("needs_review"), bool) else document.get("needs_review")
+    with sqlite3.connect(db_path) as db:
+        db.execute("CREATE TABLE IF NOT EXISTS requests (request_id TEXT PRIMARY KEY, payload BLOB NOT NULL)")
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS decisions (
+                decision_id TEXT PRIMARY KEY,
+                payload BLOB NOT NULL,
+                created_at TEXT NOT NULL,
+                chosen TEXT,
+                context_summary TEXT,
+                selection TEXT,
+                task_type TEXT,
+                risk_class TEXT,
+                cap_met INTEGER,
+                needs_review INTEGER
+            )"""
+        )
+        db.execute(
+            "INSERT OR REPLACE INTO decisions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                decision_id,
+                compressed,
+                created_at,
+                json.dumps(chosen, sort_keys=True, separators=(",", ":")) if chosen is not None else None,
+                json.dumps(
+                    {"task_text": ctx.get("task_text"), "project_fingerprint": proj.get("fingerprint")},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                json.dumps(
+                    {k: sel[k] for k in ("objective", "retry_policy", "on_cap_unmet") if k in sel},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                document.get("task_type") if isinstance(document.get("task_type"), str) else None,
+                document.get("risk_class") if isinstance(document.get("risk_class"), str) else None,
+                int(cap_met) if isinstance(cap_met, bool) else None,
+                int(needs_review) if isinstance(needs_review, bool) else None,
+            ),
+        )

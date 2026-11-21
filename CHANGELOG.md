@@ -2,13 +2,21 @@
 
 ## Unreleased
 
-- Migrate all legacy route/close events from `routes.jsonl` and `plans.jsonl` to
-  `routes.sqlite3` transactionally, verifying every line before removing migrated files
-  and preserving read-only access. Persist small decision summaries across processes
-  instead of retaining large howhard semantic receipts in RAM. Limit the TUI to all
-  active routes plus 200 completed rows by default (`--limit N`, `--all`), with complete
-  counts, history, lookups, and calibration retained. Issue #83 tracks lossless SQLite
-  storage, the decision-summary cache, and the UI-only cutoff.
+- Remove automatic runtime migration and all legacy `plans.jsonl`, `routes.jsonl`, and
+  `.howhard/decisions/*.json` awareness from `src/agroute/`, read `howhard` 4.0
+  `<howhard_root>/payloads.sqlite3` (`zstd`-compressed `decisions.payload` blobs and indexed
+  `decisions` summary columns) exclusively at runtime, accept 64-hex `decision_id` arguments
+  on `agr plan --decision`, add `zstandard>=0.23` to runtime dependencies, and provide
+  standalone offline `scripts/migrate-routes.py` (in the repository and source distribution,
+  excluded from the wheel) to migrate and unlink verified pre-0.6 JSONL route stores under
+  store identity and lock checks. Issue #86 tracks offline migration and `howhard` 4.0
+  `payloads.sqlite3` integration.
+
+- Store route and close events in `routes.sqlite3`, persist small decision summaries across
+  processes instead of retaining large howhard semantic receipts in RAM, and limit the TUI to
+  all active routes plus 200 completed rows by default (`--limit N`, `--all`), with complete
+  counts, history, lookups, and calibration retained. Issue #83 tracks SQLite route storage,
+  the decision-summary cache, and the UI-only cutoff.
 
 - Separate agroute `ROUTE` lifecycle from howhard `OUTCOME` in monitoring, preserve review
   warnings as `done*`, and add `agr close` for raw-observation linking, cancellation, and

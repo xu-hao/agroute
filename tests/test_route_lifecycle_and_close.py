@@ -19,7 +19,7 @@ def _seed_repo(tmp_path: Path) -> tuple[Path, Path, Path]:
     repo = tmp_path / "repo"
     git_dir = repo / ".git"
     hh_dir = git_dir / "howhard"
-    (hh_dir / "decisions").mkdir(parents=True)
+    hh_dir.mkdir(parents=True)
     state_dir = git_dir / "agroute"
     cfg = repo / "agroute.toml"
     cfg.write_text(

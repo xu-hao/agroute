@@ -17,8 +17,6 @@ from .validation import AgRouteError
 KNOWN_STORE_ENTRIES = {
     "usage.json",
     "usage.lock",
-    "plans.jsonl",
-    "routes.jsonl",
     "routes.sqlite3",
     "routes.sqlite3-wal",
     "routes.sqlite3-shm",

@@ -17,7 +17,7 @@ from textual.widgets import Static  # noqa: E402
 
 
 def _saved_v9_receipt(*, cap_met: bool = False, needs_review: bool = True) -> dict:
-    """Shape emitted on disk by howhard 3.4 (.git/howhard/decisions/<id>.json)."""
+    """Shape stored in howhard 4.0 payloads.sqlite3."""
     return {
         "format": "howhard-decision-v9",
         "project": "example",
@@ -103,10 +103,12 @@ def _saved_v9_receipt(*, cap_met: bool = False, needs_review: bool = True) -> di
 
 
 def test_routes_extract_selection_cells_cap_met_and_needs_review_from_saved_receipt(tmp_path):
+    from conftest import write_howhard_payload_decision
+
     repo = tmp_path / "repo"
     git_dir = repo / ".git"
     hh_dir = git_dir / "howhard"
-    (hh_dir / "decisions").mkdir(parents=True)
+    hh_dir.mkdir(parents=True)
     state_dir = git_dir / "agroute"
 
     dec_id = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
@@ -115,7 +117,7 @@ def test_routes_extract_selection_cells_cap_met_and_needs_review_from_saved_rece
         json.dumps({"at_utc": "2026-11-21T00:00:00Z", "decision_id": dec_id, "task_type": "contract-change"}) + "\n",
         encoding="utf-8",
     )
-    (hh_dir / "decisions" / f"{dec_id}.json").write_text(json.dumps(receipt), encoding="utf-8")
+    write_howhard_payload_decision(hh_dir, dec_id, receipt, created_at="2026-11-21T00:00:00Z")
 
     # _extract_forecasts reads selection.cells directly, and falls back to semantic.worlds.llm.
     extracted = _extract_forecasts(receipt)
@@ -179,10 +181,12 @@ effort = "high"
 
 @pytest.mark.asyncio
 async def test_tui_modal_formats_selection_cell_forecast_means(tmp_path):
+    from conftest import write_howhard_payload_decision
+
     repo = tmp_path / "repo"
     git_dir = repo / ".git"
     hh_dir = git_dir / "howhard"
-    (hh_dir / "decisions").mkdir(parents=True)
+    hh_dir.mkdir(parents=True)
     state_dir = git_dir / "agroute"
 
     dec_id = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
@@ -190,14 +194,14 @@ async def test_tui_modal_formats_selection_cell_forecast_means(tmp_path):
         json.dumps({"at_utc": "2026-11-21T00:00:00Z", "decision_id": dec_id, "task_type": "contract-change"}) + "\n",
         encoding="utf-8",
     )
-    (hh_dir / "decisions" / f"{dec_id}.json").write_text(
-        json.dumps(_saved_v9_receipt(cap_met=False, needs_review=True)),
-        encoding="utf-8",
+    write_howhard_payload_decision(
+        hh_dir, dec_id, _saved_v9_receipt(cap_met=False, needs_review=True), created_at="2026-11-21T00:00:00Z"
     )
 
     router = Router(project=repo, state_directory=state_dir, include_user_config=False)
     app = build_app(lambda: deepcopy(router.snapshot(all_repos=False, now="2026-11-21T00:05:00Z")), refresh_interval=60.0)
     async with app.run_test(size=(120, 30)) as pilot:
+        await app.workers.wait_for_complete()
         await pilot.pause()
         detail = str(app.query_one("#route-detail", Static).render())
         assert "review" in detail

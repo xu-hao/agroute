@@ -17,10 +17,12 @@ from textual.widgets import DataTable, Input, OptionList, Static  # noqa: E402
 
 
 def test_routes_correlate_flushed_outcomes_and_interrupted_cause(tmp_path):
+    from conftest import write_howhard_payload_decision
+
     repo = tmp_path / "repo"
     git_dir = repo / ".git"
     hh_dir = git_dir / "howhard"
-    (hh_dir / "decisions").mkdir(parents=True)
+    hh_dir.mkdir(parents=True)
     state_dir = git_dir / "agroute"
 
     dec_flushed = "1111111111111111111111111111111111111111111111111111111111111111"
@@ -32,17 +34,20 @@ def test_routes_correlate_flushed_outcomes_and_interrupted_cause(tmp_path):
         + "\n",
         encoding="utf-8",
     )
-    for dec_id, title in ((dec_flushed, "#74 Flushed clean run"), (dec_amended, "#74 Quota hit amended")):
-        (hh_dir / "decisions" / f"{dec_id}.json").write_text(
-            json.dumps(
-                {
-                    "chosen": {"model": "codex/gpt-6.2-sol", "effort": "high"},
-                    "task_type": "specified-implementation",
-                    "risk_class": "standard",
-                    "context": {"task_text": title},
-                }
-            ),
-            encoding="utf-8",
+    for dec_id, title, ts in (
+        (dec_flushed, "#74 Flushed clean run", "2026-11-20T10:00:00Z"),
+        (dec_amended, "#74 Quota hit amended", "2026-11-20T11:00:00Z"),
+    ):
+        write_howhard_payload_decision(
+            hh_dir,
+            dec_id,
+            {
+                "chosen": {"model": "codex/gpt-6.2-sol", "effort": "high"},
+                "task_type": "specified-implementation",
+                "risk_class": "standard",
+                "context": {"task_text": title},
+            },
+            created_at=ts,
         )
 
     # Flushed observations live in outcomes.jsonl; a pending amendment in pending.jsonl
