@@ -45,7 +45,7 @@ OUTLIER_MIN_FACTOR = 0.1
 OUTLIER_MAX_FACTOR = 10.0
 UNOBSERVED_ROUTE_TTL_SECONDS = 18000.0
 _MAX_OUTCOMES_TAIL_BYTES = 4 * 1024 * 1024
-_OBSERVED_OUTCOMES = frozenset({"clean", "loud", "silent"})
+_OBSERVED_OUTCOMES = frozenset({"clean", "loud", "silent", "interrupted"})
 
 _OBS_CACHE: dict[str, tuple[tuple[int, int] | None, tuple[int, int] | None, tuple[dict[str, dict], list[dict]]]] = {}
 _ROUTES_CACHE: dict[str, tuple[tuple[int, int] | None, list[dict]]] = {}

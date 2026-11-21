@@ -17,7 +17,7 @@ from .validation import AGENTS, AgRouteError, format_timestamp
 
 SNAPSHOT_FORMAT = "agroute-snapshot-v1"
 REPOS_FORMAT = "agroute-repositories-v1"
-OBSERVED_STATUSES = frozenset({"clean", "loud", "silent"})
+OBSERVED_STATUSES = frozenset({"clean", "loud", "silent", "interrupted"})
 
 _JSON_CACHE: dict[str, tuple[int, int, object]] = {}
 
@@ -269,19 +269,31 @@ def _extract_forecasts(decision_doc: dict | None) -> list[dict]:
 
 
 def _load_howhard_observations(hh_root: Path) -> tuple[dict[str, dict], list[dict]]:
-    pending = _read_cached_jsonl(hh_root / "pending.jsonl")
-    if not pending:
+    entries = list(_read_cached_jsonl(hh_root / "outcomes.jsonl"))
+    entries.extend(_read_cached_jsonl(hh_root / "pending.jsonl"))
+    if not entries:
         return {}, []
     by_id: dict[str, dict] = {}
     ordered_ids: list[str] = []
-    for item in pending:
+    for item in entries:
         obs_id = item.get("id")
         if not isinstance(obs_id, str) or not obs_id:
             continue
         amends = item.get("amends")
         if isinstance(amends, str) and amends in by_id:
             prior = by_id[amends]
-            merged = {**prior, **item}
+            merged = dict(prior)
+            for field in ("outcome", "cause", "note", "observed_at"):
+                if field in item:
+                    merged[field] = item[field]
+            for field in ("tokens", "seconds", "cost_usd"):
+                if item.get(field) is not None:
+                    merged[field] = item[field]
+            corr = item.get("measurement_corrections")
+            if isinstance(corr, dict):
+                for field in ("tokens", "seconds", "cost_usd"):
+                    if field in corr:
+                        merged[field] = corr[field]
             if not merged.get("decision_id") and prior.get("decision_id"):
                 merged["decision_id"] = prior["decision_id"]
             by_id[amends] = merged
@@ -392,6 +404,7 @@ def load_repository_routes(capture_root: Path, state_root: Path, repository_id: 
             "created_at": _normalize_iso_utc(rec.get("created_at")),
             "observed_at": _normalize_iso_utc(obs.get("observed_at")) if isinstance(obs, dict) and obs.get("observed_at") else None,
             "outcome": outcome,
+            "cause": str(obs.get("cause")) if isinstance(obs, dict) and obs.get("cause") else None,
             "execution_id": str(obs.get("id")) if isinstance(obs, dict) and obs.get("id") else None,
             "tokens": obs.get("tokens") if isinstance(obs, dict) and isinstance(obs.get("tokens"), int) else None,
             "seconds": float(obs["seconds"]) if isinstance(obs, dict) and type(obs.get("seconds")) in (int, float) else None,
@@ -480,6 +493,7 @@ def load_repository_routes(capture_root: Path, state_root: Path, repository_id: 
                 "created_at": _normalize_iso_utc(ev.get("at_utc")),
                 "observed_at": _normalize_iso_utc(obs.get("observed_at")) if isinstance(obs, dict) and obs.get("observed_at") else None,
                 "outcome": outcome,
+                "cause": str(obs.get("cause")) if isinstance(obs, dict) and obs.get("cause") else None,
                 "execution_id": str(obs.get("id")) if isinstance(obs, dict) and obs.get("id") else None,
                 "tokens": obs.get("tokens") if isinstance(obs, dict) and isinstance(obs.get("tokens"), int) else None,
                 "seconds": float(obs["seconds"]) if isinstance(obs, dict) and type(obs.get("seconds")) in (int, float) else None,
@@ -526,6 +540,7 @@ def load_repository_routes(capture_root: Path, state_root: Path, repository_id: 
                 "created_at": _normalize_iso_utc(obs.get("observed_at")),
                 "observed_at": _normalize_iso_utc(obs.get("observed_at")),
                 "outcome": outcome if outcome in OBSERVED_STATUSES else None,
+                "cause": str(obs.get("cause")) if obs.get("cause") else None,
                 "execution_id": obs_id,
                 "tokens": obs.get("tokens") if isinstance(obs.get("tokens"), int) else None,
                 "seconds": float(obs["seconds"]) if type(obs.get("seconds")) in (int, float) else None,

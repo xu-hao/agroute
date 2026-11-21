@@ -124,8 +124,11 @@ def _extract_session_cost(entry, *, allow_legacy_cost=False):
     return None
 
 
+_CREDIT_COST_SPLIT_FORMATS = frozenset({"howhard-decision-v7", "howhard-decision-v8", "howhard-decision-v9"})
+
+
 def _decision_has_credit_cost_split(decision):
-    if decision.get("format") == "howhard-decision-v7":
+    if decision.get("format") in _CREDIT_COST_SPLIT_FORMATS:
         return True
     chosen = decision.get("chosen")
     if isinstance(chosen, dict) and (
@@ -881,7 +884,7 @@ class Router:
                     "howhard",
                     "observe",
                     decision_id,
-                    "<clean|loud|silent>",
+                    "<clean|loud|silent|interrupted>",
                     "--id",
                     "<EXECUTION_ID>",
                     "--json",
@@ -904,7 +907,7 @@ class Router:
                     "<TASK>",
                     qualified_target_model,
                     target_effort,
-                    "<clean|loud|silent>",
+                    "<clean|loud|silent|interrupted>",
                     "--native",
                     "--id",
                     "<EXECUTION_ID>",

@@ -138,6 +138,7 @@ _STATUS_STYLES = {
     "clean": "bold green",
     "loud": "bold red",
     "silent": "bold magenta",
+    "interrupted": "bold dark_orange",
 }
 
 
@@ -210,6 +211,8 @@ def _detail_text(row: dict) -> str:
     affinity = " · host_affinity" if row.get("host_affinity_applied") else ""
     risk = row.get("risk_class") or "—"
     outcome = row.get("outcome") or "pending"
+    cause = row.get("cause")
+    outcome_text = f"{outcome} ({cause})" if cause else outcome
     exec_id = row.get("execution_id") or "—"
     tokens = f"{row['tokens']:,}" if isinstance(row.get("tokens"), int) else "—"
     cost = f"${row['cost_usd']:.4f}" if type(row.get("cost_usd")) in (int, float) else "—"
@@ -226,7 +229,7 @@ def _detail_text(row: dict) -> str:
         f"risk: {risk} · cap_met: {cap}{review}{affinity}\n"
         f"invocation: {_invocation_summary(row.get('invocation'))}\n"
         f"selection: session_cost_usd={session_cost} · needed_credit_usd={needed_credit} · available_credit_usd={available_credit}\n"
-        f"outcome: {outcome} · exec_id: {exec_id} · tokens: {tokens} · duration: {dur} · observed cost: {cost}\n"
+        f"outcome: {outcome_text} · exec_id: {exec_id} · tokens: {tokens} · duration: {dur} · observed cost: {cost}\n"
         f"label: {row['label']}\n"
         f"routed: {row['created_at']} · observed: {row.get('observed_at') or '—'}"
     )
@@ -253,6 +256,7 @@ def _modal_detail(row: dict) -> str:
         f"Routed at: {row['created_at']}",
         f"Observed at: {row.get('observed_at') or '—'}",
         f"Outcome: {row.get('outcome') or 'pending'}",
+        f"Cause: {row.get('cause') or '—'}",
         f"Execution ID: {row.get('execution_id') or '—'}",
         f"Tokens: {row['tokens'] if row.get('tokens') is not None else '—'}",
         f"Seconds: {row['seconds'] if row.get('seconds') is not None else '—'}",
@@ -1050,7 +1054,7 @@ def build_app(
 
         def action_state(self) -> None:
             states = {str(row["status"]) for row in self._filter_rows()}
-            states.update(("routed", "review", "clean", "loud", "silent"))
+            states.update(("routed", "review", "clean", "loud", "silent", "interrupted"))
             if self._state_filter is not None:
                 states.add(self._state_filter)
             choices = [(st, st) for st in sorted(states)]
@@ -1089,7 +1093,8 @@ def build_app(
                     + "\nreview   silent-risk cap unmet or review required"
                     + "\nclean    observed execution completed without rework or escaped defect"
                     + "\nloud     observed execution required caught rework/retry"
-                    + "\nsilent   observed execution had an escaped defect",
+                    + "\nsilent   observed execution had an escaped defect"
+                    + "\ninterrupted observed execution stopped operationally (e.g. usage_limit)",
                 )
             )
 

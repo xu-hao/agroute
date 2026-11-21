@@ -173,7 +173,7 @@ def _build_parser():
     p_list = subparsers.add_parser("list", help="Show active and observed model routes")
     p_list.add_argument("--repo", default=None, help="Filter by repository name or path")
     p_list.add_argument("--agent", default=None, help="Filter by target agent (codex|claude|agy)")
-    p_list.add_argument("--state", default=None, help="Filter by state (routed|review|clean|loud|silent)")
+    p_list.add_argument("--state", default=None, help="Filter by state (routed|review|clean|loud|silent|interrupted)")
     p_list.add_argument("--limit", type=int, default=50, help="Maximum routes to display (default: 50)")
     p_list.add_argument("--current-repo", action="store_true", help="Inspect only the current repository")
     _add_common_flags(p_list)
