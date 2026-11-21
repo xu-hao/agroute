@@ -311,7 +311,7 @@ required application dependency.
 | `usage.json` | Native usage, reset and availability evidence |
 | `prices.json` | Validated local price resolutions and expiry |
 | `credit_calibration.json` | Pool snapshots and calibration statistics |
-| `routes.jsonl` | Resolved plans and execution/decision links |
+| `routes.sqlite3` | Complete route/closure history and lightweight decision-summary cache (legacy JSONL migrates automatically) |
 | howhard's own store | Decisions, execution outcomes, accounting and semantic memory |
 
 `agr list`, `agr show` and `agr tui` combine route and howhard evidence

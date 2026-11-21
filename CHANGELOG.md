@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Migrate all legacy route/close events from `routes.jsonl` and `plans.jsonl` to
+  `routes.sqlite3` transactionally, verifying every line before removing migrated files
+  and preserving read-only access. Persist small decision summaries across processes
+  instead of retaining large howhard semantic receipts in RAM. Limit the TUI to all
+  active routes plus 200 completed rows by default (`--limit N`, `--all`), with complete
+  counts, history, lookups, and calibration retained. Issue #83 tracks lossless SQLite
+  storage, the decision-summary cache, and the UI-only cutoff.
+
 - Separate agroute `ROUTE` lifecycle from howhard `OUTCOME` in monitoring, preserve review
   warnings as `done*`, and add `agr close` for raw-observation linking, cancellation, and
   unscored completion. Model switches can create linked continuation routes using

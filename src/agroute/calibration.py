@@ -48,7 +48,6 @@ _MAX_OUTCOMES_TAIL_BYTES = 4 * 1024 * 1024
 _OBSERVED_OUTCOMES = frozenset({"clean", "loud", "silent", "interrupted"})
 
 _OBS_CACHE: dict[str, tuple[tuple[int, int] | None, tuple[int, int] | None, tuple[dict[str, dict], list[dict]]]] = {}
-_ROUTES_CACHE: dict[str, tuple[tuple[int, int] | None, list[dict]]] = {}
 
 
 def calibration_path(config) -> Path:
@@ -326,12 +325,9 @@ def _load_hh_observations(hh_root: Path) -> tuple[dict[str, dict], list[dict]]:
 
 
 def _load_routes_file(routes_path: Path) -> list[dict]:
-    sig = _stat_sig(routes_path)
-    key = str(routes_path)
-    cached = _ROUTES_CACHE.get(key)
-    if cached is not None and cached[0] == sig:
-        return cached[1]
-    raw_rows = _read_jsonl_tail(routes_path)
+    from .route_store import read_route_records
+
+    raw_rows = read_route_records(routes_path.parent)
     plan_rows: list[dict] = []
     close_by_route: dict[str, dict] = {}
     for rec in raw_rows:
@@ -385,7 +381,6 @@ def _load_routes_file(routes_path: Path) -> list[dict]:
         if route_id in close_by_route:
             entry.update(close_by_route[route_id])
         parsed.append(entry)
-    _ROUTES_CACHE[key] = (sig, parsed)
     return parsed
 
 
@@ -427,8 +422,8 @@ def _collect_telemetry_sources(config) -> tuple[dict[str, dict], list[dict], lis
     for repo in repos:
         sr = Path(repo["state_root"])
         cr = Path(repo["capture_root"])
-        rf = sr / "routes.jsonl"
-        if str(rf) not in seen_rf and rf.is_file():
+        rf = sr / "routes.sqlite3"
+        if str(rf) not in seen_rf and any((sr / name).is_file() for name in ("routes.sqlite3", "routes.jsonl", "plans.jsonl")):
             seen_rf.add(str(rf))
             route_files.append(rf)
         candidates = [sr.parent / "howhard", cr / ".howhard"]

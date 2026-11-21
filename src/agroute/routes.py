@@ -10,7 +10,8 @@ import json
 import os
 from pathlib import Path
 
-from .files import append_jsonl, atomic_write
+from .files import atomic_write
+from .route_store import append_route_records, decision_summary, read_route_records, writable_store
 from .state import claim
 from .usage import _now_utc, _usage_locked, reconcile_reservation_on_close_locked
 from .validation import AGENTS, AgRouteError, format_timestamp, number, text
@@ -34,6 +35,7 @@ def _stat_key(path: Path) -> tuple[int, int] | None:
 
 
 def _read_cached_json(path: Path) -> dict | None:
+    """Cache small registry documents; receipts use SQLite decision summaries."""
     key = str(path)
     sig = _stat_key(path)
     if sig is None:
@@ -41,14 +43,14 @@ def _read_cached_json(path: Path) -> dict | None:
         return None
     cached = _JSON_CACHE.get(key)
     if cached is not None and cached[:2] == sig:
-        return cached[2]  # type: ignore[return-value]
+        return cached[2]
     try:
-        data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
-    except (OSError, ValueError):
+        data = json.loads(path.read_bytes())
+    except (OSError, ValueError, UnicodeError):
         return None
     if not isinstance(data, dict):
         return None
-    _JSON_CACHE[key] = (sig[0], sig[1], data)
+    _JSON_CACHE[key] = (*sig, data)
     return data
 
 
@@ -278,12 +280,12 @@ def record_plan_route(
     if locked:
         claim(config)
         record["repository_id"] = config.project_identity or config.capture_root.name
-        append_jsonl(config.state_root / "routes.jsonl", record)
+        append_route_records(config.state_root, [record])
     else:
         with _usage_locked(config):
             claim(config)
             record["repository_id"] = config.project_identity or config.capture_root.name
-            append_jsonl(config.state_root / "routes.jsonl", record)
+            append_route_records(config.state_root, [record])
     register_repository(config)
     return route_id
 
@@ -291,6 +293,8 @@ def record_plan_route(
 def _extract_forecasts(decision_doc: dict | None) -> list[dict]:
     if not isinstance(decision_doc, dict):
         return []
+    if isinstance(decision_doc.get("forecasts"), list):
+        return decision_doc["forecasts"]
     selection = decision_doc.get("selection")
     if isinstance(selection, dict) and isinstance(selection.get("cells"), list) and selection["cells"]:
         return [f for f in selection["cells"] if isinstance(f, dict)]
@@ -338,6 +342,40 @@ def _chosen_selection_cell(decision_doc: dict | None, chosen: dict | None) -> di
             if isinstance(item, dict) and item.get("model") == target_model and item.get("effort") == target_effort:
                 return item
     return None
+
+
+def _summarize_decision(document: dict) -> dict:
+    """Keep only display metadata; never retain the multi-MB semantic payload."""
+    scalar_fields = (
+        "model", "family", "effort", "clean", "loud", "silent", "tokens", "seconds",
+        "C_run", "session_cost_usd", "needed_credit_usd", "cost_per_credit", "J",
+        "cap_met", "needs_review", "available_credit_usd", "credit_ok",
+    )
+
+    def cell_summary(cell):
+        result = {key: cell[key] for key in scalar_fields
+                  if isinstance(cell.get(key), (str, int, float, bool))}
+        for key in ("P_clean", "P_loud", "P_silent", "credit_budget"):
+            value = cell.get(key)
+            if isinstance(value, dict):
+                result[key] = {k: v for k, v in value.items() if isinstance(v, (int, float, bool))}
+        return result
+
+    chosen = document.get("chosen")
+    chosen = chosen if isinstance(chosen, dict) else {}
+    chosen_cell = _chosen_selection_cell(document, chosen)
+    context = document.get("context")
+    task_text = context.get("task_text") if isinstance(context, dict) else None
+    return {
+        "task_type": document.get("task_type"),
+        "risk_class": document.get("risk_class"),
+        "cap_met": _decision_selection_flag(document, "cap_met"),
+        "needs_review": _decision_selection_flag(document, "needs_review", False),
+        "chosen": cell_summary(chosen),
+        "context": {"task_text": task_text[:4000] if isinstance(task_text, str) else None},
+        "cells": [cell_summary(chosen_cell)] if chosen_cell is not None else [],
+        "forecasts": [cell_summary(cell) for cell in _extract_forecasts(document)[:8]],
+    }
 
 
 def _load_howhard_observations(hh_root: Path) -> tuple[dict[str, dict], list[dict]]:
@@ -413,7 +451,7 @@ def close_plan_route(
     note: str | None = None,
     now=None,
 ) -> dict:
-    """Append an `agroute-route-close-v1` record (and optional switched continuation route) in `routes.jsonl`."""
+    """Append an `agroute-route-close-v1` record (and optional switched continuation route) in `routes.sqlite3`."""
     needle = text(identifier, "route_id", max_length=128).strip()
     if status is None:
         close_status = "switched" if (switched_to is not None or superseded_by is not None) else "done"
@@ -440,8 +478,8 @@ def close_plan_route(
 
     now_dt = _now_utc(now)
     closed_iso = format_timestamp(now_dt)
-    routes_path = config.state_root / "routes.jsonl"
-    raw_records = _read_cached_jsonl(routes_path)
+    routes_path = config.state_root / "routes.sqlite3"
+    raw_records = read_route_records(config.state_root)
     plan_by_id: dict[str, dict] = {}
     for rec in raw_records:
         if rec.get("format") == ROUTE_CLOSE_FORMAT:
@@ -564,10 +602,11 @@ def close_plan_route(
     effective_res_credit = cred_val if cred_val is not None else linked_obs_credit
     with _usage_locked(config):
         claim(config)
-        append_jsonl(routes_path, close_record)
+        records = [close_record]
         if continuation_record is not None:
             continuation_record["repository_id"] = config.project_identity or config.capture_root.name
-            append_jsonl(routes_path, continuation_record)
+            records.append(continuation_record)
+        append_route_records(config.state_root, records)
         reconcile_reservation_on_close_locked(
             config,
             resolved_route_id,
@@ -584,7 +623,7 @@ def close_plan_route(
 
 def load_repository_routes(capture_root: Path, state_root: Path, repository_id: str) -> list[dict]:
     """Load and correlate agr plan records with agr close events, howhard decisions, and outcomes."""
-    raw_route_records = _read_cached_jsonl(state_root / "routes.jsonl")
+    raw_route_records = read_route_records(state_root)
     plan_records: list[dict] = []
     close_by_route: dict[str, dict] = {}
     for item in raw_route_records:
@@ -618,7 +657,7 @@ def load_repository_routes(capture_root: Path, state_root: Path, repository_id: 
         if dec_id:
             covered_decisions.add(dec_id)
 
-        dec_doc = _read_cached_json(hh_root / "decisions" / f"{dec_id}.json") if (dec_id and hh_root is not None) else None
+        dec_doc = decision_summary(state_root, dec_id, hh_root / "decisions" / f"{dec_id}.json", _summarize_decision) if (dec_id and hh_root is not None) else None
         close_rec = close_by_route.get(route_id)
 
         obs = obs_by_decision.get(dec_id) if dec_id else None
@@ -763,7 +802,7 @@ def load_repository_routes(capture_root: Path, state_root: Path, repository_id: 
         if not isinstance(dec_id, str) or not dec_id or dec_id in covered_decisions:
             continue
         covered_decisions.add(dec_id)
-        dec_doc = _read_cached_json(hh_root / "decisions" / f"{dec_id}.json") if hh_root is not None else None
+        dec_doc = decision_summary(state_root, dec_id, hh_root / "decisions" / f"{dec_id}.json", _summarize_decision) if hh_root is not None else None
         obs = obs_by_decision.get(dec_id)
         chosen = (dec_doc or {}).get("chosen") if isinstance(dec_doc, dict) else None
         raw_model = str(
@@ -910,6 +949,11 @@ def load_repository_routes(capture_root: Path, state_root: Path, repository_id: 
 def build_snapshot(router, *, all_repos: bool = True, now=None) -> dict:
     """Build a complete usage + routes snapshot for the TUI and CLI."""
     now_dt = _now_utc(now)
+    if writable_store(router.config.state_root) and _resolve_howhard_root(
+        router.config.capture_root, router.config.state_root
+    ) is not None:
+        with _usage_locked(router.config):
+            claim(router.config)
     usage = router.usage_show(now=now)
     repos = registered_repositories(router.config) if all_repos else [
         {
