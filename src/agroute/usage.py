@@ -1049,6 +1049,37 @@ def _clear_reservations(config, targets: list[str]) -> None:
         _write_reservations(config, kept)
 
 
+def reconcile_reservation_on_close_locked(
+    config,
+    route_id: str,
+    *,
+    close_status: str,
+    credit_usd: float | None = None,
+) -> None:
+    """Release or update an in-flight credit reservation when `agr close` closes `route_id`."""
+    current = read_reservations(config)
+    if not current:
+        return
+    kept: list[dict] = []
+    changed = False
+    for entry in current:
+        if entry["route_id"] != route_id:
+            kept.append(entry)
+            continue
+        if close_status == "cancelled" or (credit_usd is not None and credit_usd <= 0.0):
+            changed = True
+            continue
+        if credit_usd is not None and credit_usd > 0.0:
+            updated = deepcopy(entry)
+            updated["reserved_credit_usd"] = round(float(credit_usd), 6)
+            kept.append(updated)
+            changed = True
+            continue
+        kept.append(entry)
+    if changed:
+        _write_reservations(config, kept)
+
+
 def _state_window_for_pool(agent_name: str, effective_state: dict, pool_group: str, window: str) -> dict:
     if pool_group == "shared":
         return effective_state.get(window) or _empty_window()
@@ -1081,7 +1112,14 @@ def active_reserved_credit_by_pool(config, agent_name: str, effective_state: dic
         return {}
     from .calibration import _load_hh_observations
 
-    obs_by_decision, _ = _load_hh_observations(config.capture_root / ".howhard")
+    obs_by_decision: dict[str, dict] = {}
+    hh_candidates = [config.state_root.parent / "howhard", config.capture_root / ".howhard"]
+    if not getattr(config, "explicit_state", False):
+        hh_candidates.insert(1, config.capture_root / ".git" / "howhard")
+    for cand in hh_candidates:
+        if cand.is_dir():
+            dec_map, _ = _load_hh_observations(cand)
+            obs_by_decision.update(dec_map)
     totals: dict[tuple[str, str], float] = {}
     for entry in entries:
         created_dt = parse_timestamp(entry["created_at"])

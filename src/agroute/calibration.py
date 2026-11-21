@@ -332,8 +332,35 @@ def _load_routes_file(routes_path: Path) -> list[dict]:
     if cached is not None and cached[0] == sig:
         return cached[1]
     raw_rows = _read_jsonl_tail(routes_path)
-    parsed: list[dict] = []
+    plan_rows: list[dict] = []
+    close_by_route: dict[str, dict] = {}
     for rec in raw_rows:
+        if rec.get("format") == "agroute-route-close-v1":
+            rid = rec.get("route_id")
+            closed_raw = rec.get("closed_at")
+            c_status = rec.get("close_status")
+            if isinstance(rid, str) and rid and isinstance(closed_raw, str) and isinstance(c_status, str):
+                try:
+                    closed_dt = parse_timestamp(closed_raw, "route.closed_at")
+                except AgRouteError:
+                    continue
+                close_by_route[rid] = {
+                    "close_status": c_status,
+                    "closed_dt": closed_dt,
+                    "linked_execution_id": (
+                        rec.get("linked_execution_id") if isinstance(rec.get("linked_execution_id"), str) else None
+                    ),
+                    "credit_usd": (
+                        float(rec["credit_usd"])
+                        if type(rec.get("credit_usd")) in (int, float)
+                        else None
+                    ),
+                }
+            continue
+        plan_rows.append(rec)
+
+    parsed: list[dict] = []
+    for rec in plan_rows:
         route_id = rec.get("route_id")
         created_raw = rec.get("created_at")
         if not isinstance(route_id, str) or not route_id or not isinstance(created_raw, str):
@@ -347,15 +374,17 @@ def _load_routes_file(routes_path: Path) -> list[dict]:
         model = str(resolved.get("model") or "")
         if target_agent not in AGENTS or not model:
             continue
-        parsed.append(
-            {
-                "route_id": route_id,
-                "decision_id": rec.get("decision_id") if isinstance(rec.get("decision_id"), str) else None,
-                "agent": target_agent,
-                "model": model,
-                "created_dt": created_dt,
-            }
-        )
+        entry = {
+            "route_id": route_id,
+            "decision_id": rec.get("decision_id") if isinstance(rec.get("decision_id"), str) else None,
+            "agent": target_agent,
+            "model": model,
+            "effort": str(resolved.get("effort") or "standard"),
+            "created_dt": created_dt,
+        }
+        if route_id in close_by_route:
+            entry.update(close_by_route[route_id])
+        parsed.append(entry)
     _ROUTES_CACHE[key] = (sig, parsed)
     return parsed
 
@@ -423,6 +452,25 @@ def _collect_telemetry_sources(config) -> tuple[dict[str, dict], list[dict], lis
     for rf in route_files:
         for rec in _load_routes_file(rf):
             routes_by_id[rec["route_id"]] = rec
+            if (
+                rec.get("closed_dt") is not None
+                and rec.get("linked_execution_id") is None
+                and rec.get("close_status") in ("done", "switched")
+                and rec.get("credit_usd") is not None
+                and rec["credit_usd"] > 0.0
+            ):
+                synth_id = f"close:{rec['route_id']}"
+                obs_by_id[synth_id] = {
+                    "id": synth_id,
+                    "decision_id": None,
+                    "agent": rec["agent"],
+                    "model": rec["model"],
+                    "effort": rec.get("effort", "standard"),
+                    "outcome": rec["close_status"],
+                    "observed_dt": rec["closed_dt"],
+                    "observed_at": format_timestamp(rec["closed_dt"]),
+                    "credit_usd": rec["credit_usd"],
+                }
 
     return obs_by_decision, list(obs_by_id.values()), list(routes_by_id.values())
 
@@ -734,6 +782,7 @@ def record_usage_calibration_snapshot(
 
         if not telemetry_loaded:
             obs_by_decision, observations, routes = _collect_telemetry_sources(config)
+            obs_by_exec_id = {obs["id"]: obs for obs in observations}
             telemetry_loaded = True
 
         straddled = False
@@ -746,13 +795,28 @@ def record_usage_calibration_snapshot(
             if r_created > t_curr:
                 continue
             r_obs = obs_by_decision.get(route["decision_id"]) if route["decision_id"] else None
-            if r_obs is None:
+            if r_obs is None and route.get("linked_execution_id"):
+                r_obs = obs_by_exec_id.get(route["linked_execution_id"])
+            if r_obs is not None:
+                if r_created < t_curr < r_obs["observed_dt"]:
+                    straddled = True
+                    break
+            elif route.get("closed_dt") is not None:
+                c_status = route.get("close_status")
+                closed_dt = route["closed_dt"]
+                if c_status == "cancelled":
+                    continue
+                if route.get("credit_usd") is not None and route["credit_usd"] > 0.0:
+                    if r_created < t_curr < closed_dt:
+                        straddled = True
+                        break
+                elif r_created < t_curr and closed_dt > t_prev:
+                    straddled = True
+                    break
+            else:
                 if r_created >= t_prev or (t_curr - r_created).total_seconds() <= UNOBSERVED_ROUTE_TTL_SECONDS:
                     straddled = True
                     break
-            elif r_created < t_curr < r_obs["observed_dt"]:
-                straddled = True
-                break
         if straddled:
             continue
 

@@ -34,8 +34,8 @@ _MISSING = (
 )
 
 _COMPACT_TABLE_WIDTH = 80
-_COMPACT_MODEL_WIDTH = 13
-_COMPACT_LABEL_WIDTH = 8
+_COMPACT_MODEL_WIDTH = 10
+_COMPACT_LABEL_WIDTH = 4
 _WIDE_MODEL_WIDTH = 24
 
 
@@ -58,7 +58,7 @@ def _fitted_label_width(table: DataTable, row_count: int) -> int:
         return preferred
 
     columns = table.ordered_columns
-    label_index = 6
+    label_index = 7
     fixed_render_width = sum(
         column.width
         for index, column in enumerate(columns)
@@ -132,14 +132,70 @@ def _age(row: dict, now: datetime | None = None) -> str:
     return _elapsed(_moment(row.get("created_at")), now)
 
 
-_STATUS_STYLES = {
+_ROUTE_STYLES = {
     "routed": "bold cyan",
     "review": "bold yellow",
+    "done": "bold green",
+    "done*": "bold yellow",
+    "switched": "bold dark_orange",
+    "cancelled": "dim",
+}
+
+_OUTCOME_STYLES = {
     "clean": "bold green",
     "loud": "bold red",
     "silent": "bold magenta",
     "interrupted": "bold dark_orange",
+    "unscored": "dim",
 }
+
+
+def _row_route_status(row: dict) -> str | None:
+    if "route_status" in row:
+        val = row.get("route_status")
+        return str(val) if val else None
+    if row.get("execution_mode") == "raw":
+        return None
+    st = str(row.get("status") or "routed")
+    if st in OBSERVED_STATUSES:
+        return "done"
+    return st
+
+
+def _row_route_label(row: dict) -> str:
+    rs = _row_route_status(row)
+    if rs is None:
+        return "—"
+    if rs == "done" and (row.get("needs_review") or row.get("cap_met") is False):
+        return "done*"
+    return rs
+
+
+def _row_outcome_label(row: dict) -> str:
+    out = row.get("outcome")
+    if out:
+        return str(out)
+    st = row.get("status")
+    if st in OBSERVED_STATUSES:
+        return str(st)
+    return "—"
+
+
+def _is_active_row(row: dict) -> bool:
+    rs = _row_route_status(row)
+    return rs in ("routed", "review")
+
+
+def _row_matches_state(row: dict, needle: str) -> bool:
+    rs = _row_route_status(row)
+    out = _row_outcome_label(row)
+    return needle in (
+        rs,
+        _row_route_label(row),
+        row.get("outcome"),
+        None if out == "—" else out,
+        row.get("status"),
+    )
 
 
 class _KeyedText(Text):
@@ -210,9 +266,13 @@ def _detail_text(row: dict) -> str:
     review = " · needs_review" if row.get("needs_review") else ""
     affinity = " · host_affinity" if row.get("host_affinity_applied") else ""
     risk = row.get("risk_class") or "—"
-    outcome = row.get("outcome") or "pending"
+    route_lbl = _row_route_label(row)
+    outcome_raw = _row_outcome_label(row)
+    outcome = "pending" if outcome_raw == "—" else outcome_raw
     cause = row.get("cause")
     outcome_text = f"{outcome} ({cause})" if cause else outcome
+    if row.get("outcome_source") == "linked_raw":
+        outcome_text += " [linked --native]"
     exec_id = row.get("execution_id") or "—"
     tokens = f"{row['tokens']:,}" if isinstance(row.get("tokens"), int) else "—"
     cost = f"${row['cost_usd']:.4f}" if type(row.get("cost_usd")) in (int, float) else "—"
@@ -223,7 +283,7 @@ def _detail_text(row: dict) -> str:
                         if type(budget.get("available_credit_usd")) in (int, float) else "—")
     dur = f"{row['seconds']:.1f}s" if type(row.get("seconds")) in (int, float) else "—"
     return (
-        f"{row['route_id']} · {row['status']} · {row['execution_mode']} "
+        f"{row['route_id']} · route={route_lbl} · {row['execution_mode']} "
         f"({row['host_agent']} → {row['target_agent']}) · {_repository_label(row['repository'])}\n"
         f"target: {row['qualified_model']} ({row['effort']}) · type: {row['task_type']} · "
         f"risk: {risk} · cap_met: {cap}{review}{affinity}\n"
@@ -236,9 +296,13 @@ def _detail_text(row: dict) -> str:
 
 
 def _modal_detail(row: dict) -> str:
+    route_lbl = _row_route_label(row)
+    outcome_raw = _row_outcome_label(row)
+    outcome_disp = "pending" if outcome_raw == "—" else outcome_raw
     lines = [
         f"Route ID: {row['route_id']}",
         f"Decision ID: {row.get('decision_id') or '—'}",
+        f"Route status (agroute): {route_lbl}",
         f"Status: {row['status']}",
         f"Execution mode: {row['execution_mode']}",
         f"Host agent: {row['host_agent']}",
@@ -255,12 +319,16 @@ def _modal_detail(row: dict) -> str:
         f"Label: {row['label']}",
         f"Routed at: {row['created_at']}",
         f"Observed at: {row.get('observed_at') or '—'}",
-        f"Outcome: {row.get('outcome') or 'pending'}",
+        f"Outcome: {outcome_disp}",
+        f"Outcome source: {row.get('outcome_source') or '—'}",
         f"Cause: {row.get('cause') or '—'}",
         f"Execution ID: {row.get('execution_id') or '—'}",
+        f"Switched from: {row.get('switched_from') or '—'}",
+        f"Superseded by: {row.get('superseded_by') or '—'}",
         f"Tokens: {row['tokens'] if row.get('tokens') is not None else '—'}",
         f"Seconds: {row['seconds'] if row.get('seconds') is not None else '—'}",
         f"Observed cost USD: {row['cost_usd'] if row.get('cost_usd') is not None else '—'}",
+        f"Closed credit USD: {row.get('credit_usd', '—')}",
         f"Session cost USD: {row.get('session_cost_usd', '—')}",
         f"Needed credit USD: {row.get('needed_credit_usd', '—')}",
         f"Available credit USD: {(row.get('credit_budget') or {}).get('available_credit_usd', '—')}",
@@ -706,12 +774,13 @@ def build_app(
             table.cell_padding = 1
             model_width, label_width = _flexible_widths(table.size.width)
             for label, width in (
-                ("STATE", 7),
+                ("ROUTE", 8),
+                ("OUTCOME", 8),
                 ("MODE", 6),
-                ("REPO", 9),
-                ("AGENT", 9),
+                ("REPO", 8),
+                ("AGENT", 8),
                 ("MODEL", model_width),
-                ("EFFORT", 6),
+                ("EFFORT", 5),
                 ("LABEL", label_width),
                 ("AGE", 5),
             ):
@@ -807,7 +876,7 @@ def build_app(
             all_rows = list(snapshot.get("routes") or [])
             ordered = list(all_rows)
             if not self._show_history:
-                ordered = [row for row in ordered if row["status"] not in OBSERVED_STATUSES]
+                ordered = [row for row in ordered if _is_active_row(row)]
             if self._repository_filter is not None:
                 ordered = [
                     row
@@ -820,22 +889,29 @@ def build_app(
             if self._model_filter is not None:
                 ordered = [row for row in ordered if row["model"] == self._model_filter]
             if self._state_filter is not None:
-                ordered = [row for row in ordered if row["status"] == self._state_filter]
+                ordered = [row for row in ordered if _row_matches_state(row, self._state_filter)]
 
             self._rows = {row["route_id"]: row for row in ordered}
             model_width, _ = _flexible_widths(table.size.width)
-            table.ordered_columns[4].width = model_width
-            table.ordered_columns[6].width = _fitted_label_width(table, len(ordered))
+            table.ordered_columns[5].width = model_width
+            table.ordered_columns[7].width = _fitted_label_width(table, len(ordered))
             table.virtual_size = table.virtual_size.with_width(
                 sum(column.get_render_width(table) for column in table.ordered_columns)
             )
             now = _moment(snapshot.get("captured_at")) or datetime.now(timezone.utc)
-            rendered = {
-                row["route_id"]: (
+            rendered = {}
+            for row in ordered:
+                rt_lbl = _row_route_label(row)
+                out_lbl = _row_outcome_label(row)
+                rendered[row["route_id"]] = (
                     _compact_cell(
-                        row["status"],
-                        style=_STATUS_STYLES.get(row["status"]),
+                        rt_lbl,
+                        style=_ROUTE_STYLES.get(rt_lbl),
                         route_id=row["route_id"],
+                    ),
+                    _compact_cell(
+                        out_lbl,
+                        style=_OUTCOME_STYLES.get(out_lbl),
                     ),
                     _compact_cell(row["execution_mode"]),
                     _compact_cell(_repository_label(row["repository"])),
@@ -845,8 +921,6 @@ def build_app(
                     _compact_cell(row["label"]),
                     _compact_cell(_age(row, now)),
                 )
-                for row in ordered
-            }
 
             existing = [str(row.key.value) for row in table.ordered_rows]
             existing_set = set(existing)
@@ -980,7 +1054,7 @@ def build_app(
                 return []
             rows = list(self._snapshot.get("routes") or [])
             if not self._show_history:
-                rows = [r for r in rows if r["status"] not in OBSERVED_STATUSES]
+                rows = [r for r in rows if _is_active_row(r)]
             return rows
 
         def action_repository(self) -> None:
@@ -1063,14 +1137,34 @@ def build_app(
                 self._render_snapshot(self._snapshot)
 
         def action_state(self) -> None:
-            states = {str(row["status"]) for row in self._filter_rows()}
-            states.update(("routed", "review", "clean", "loud", "silent", "interrupted"))
+            states: set[str] = set()
+            for row in self._filter_rows():
+                rs = _row_route_status(row)
+                if rs:
+                    states.add(rs)
+                out = _row_outcome_label(row)
+                if out != "—":
+                    states.add(out)
+            states.update(
+                (
+                    "routed",
+                    "review",
+                    "done",
+                    "switched",
+                    "cancelled",
+                    "clean",
+                    "loud",
+                    "silent",
+                    "interrupted",
+                    "unscored",
+                )
+            )
             if self._state_filter is not None:
                 states.add(self._state_filter)
             choices = [(st, st) for st in sorted(states)]
             self.push_screen(
                 FilterPicker(
-                    "State filter",
+                    "Route / outcome filter",
                     "All states",
                     choices,
                     self._state_filter,
@@ -1099,12 +1193,18 @@ def build_app(
                 Show(
                     "Keys",
                     "\n".join(lines)
-                    + "\n\nrouted   decision/plan recorded, awaiting execution feedback"
-                    + "\nreview   silent-risk cap unmet or review required"
-                    + "\nclean    observed execution completed without rework or escaped defect"
-                    + "\nloud     observed execution required caught rework/retry"
-                    + "\nsilent   observed execution had an escaped defect"
-                    + "\ninterrupted observed execution stopped operationally (e.g. usage_limit)",
+                    + "\n\nROUTE (agroute lifecycle):"
+                    + "\n  routed      planned route in flight, awaiting completion"
+                    + "\n  review      planned route in flight with silent-risk review required"
+                    + "\n  done/done*  route finished (done* preserves needs_review / cap_met=false)"
+                    + "\n  switched    route handed off mid-task via model switch (agr close --status switched)"
+                    + "\n  cancelled   planned route declined or abandoned before execution (agr close --status cancelled)"
+                    + "\n\nOUTCOME (howhard observation):"
+                    + "\n  clean       observed execution completed without rework or escaped defect"
+                    + "\n  loud        observed execution required caught rework/retry"
+                    + "\n  silent      observed execution had an escaped defect"
+                    + "\n  interrupted observed execution stopped operationally (e.g. usage_limit)"
+                    + "\n  unscored    route closed as done in agroute without scoring howhard",
                 )
             )
 
