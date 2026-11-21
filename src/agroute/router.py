@@ -420,6 +420,11 @@ class Router:
                 )
                 continue
 
+            if priced:
+                for message in self._unmatched_price_warnings(name, cfg, surface_name, source_list):
+                    if message not in warnings:
+                        warnings.append(message)
+
             for cand in source_list:
                 mq = resolve_model_quota(
                     name,
@@ -517,6 +522,28 @@ class Router:
             price_request,
             credit_calibration_out,
         )
+
+    @staticmethod
+    def _unmatched_price_warnings(name, cfg, surface_name, source_list):
+        prices = cfg.get("prices") or {}
+        if not prices:
+            return []
+        known_models = {cand["model"] for cand in source_list}
+        unmatched = [model for model in prices if model not in known_models]
+        if unmatched:
+            other_surface = "cli" if surface_name == "native" else "native"
+            other_configured = cfg[f"{other_surface}_candidates"]
+            other_source = (
+                other_configured
+                if other_configured
+                else discover_agent_candidates(name, other_surface)
+            )
+            known_models.update(cand["model"] for cand in other_source)
+            unmatched = [model for model in unmatched if model not in known_models]
+        return [
+            f'agents.{name}.prices."{model}": matches no configured or discovered {name} candidate'
+            for model in sorted(unmatched)
+        ]
 
     @staticmethod
     def _record_pending_price(

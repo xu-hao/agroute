@@ -169,7 +169,7 @@ class Config:
     explicit_state: bool = False
 
 
-def _validate_rate_card(card, where):
+def _validate_rate_card(card, where, *, expected_model=None):
     keys(
         card,
         ["format", "source", "version", "effective_at", "provider", "model", "service_tier", "basis", "rates"],
@@ -179,6 +179,10 @@ def _validate_rate_card(card, where):
         raise AgRouteError(f"{where}: unsupported format or basis")
     for key in ("source", "version", "provider", "model"):
         text(card[key], f"{where}.{key}")
+    if expected_model is not None and card["model"] != expected_model:
+        raise AgRouteError(
+            f"{where}.model: expected candidate qualified model {expected_model!r}, got {card['model']!r}"
+        )
     if card["service_tier"] is not None:
         text(card["service_tier"], f"{where}.service_tier")
     parse_timestamp(card["effective_at"], f"{where}.effective_at")
@@ -190,7 +194,7 @@ def _validate_rate_card(card, where):
     return deepcopy(card)
 
 
-def _validate_candidate_list(items, where, *, agent):
+def _validate_candidate_list(items, where, *, agent, separator="/"):
     if not isinstance(items, list):
         raise AgRouteError(f"{where}: expected a list of candidate tables")
     seen = set()
@@ -223,7 +227,12 @@ def _validate_candidate_list(items, where, *, agent):
         if raw.get("usd_per_mtok") is not None:
             cell["usd_per_mtok"] = number(raw["usd_per_mtok"], f"{entry_where}.usd_per_mtok", positive=True)
         if raw.get("rate_card") is not None:
-            cell["rate_card"] = _validate_rate_card(raw["rate_card"], f"{entry_where}.rate_card")
+            expected_model = f"{agent}{separator}{model}"
+            cell["rate_card"] = _validate_rate_card(
+                raw["rate_card"],
+                f"{entry_where}.rate_card",
+                expected_model=expected_model,
+            )
         validated.append(cell)
     return validated
 
@@ -513,10 +522,10 @@ def _validate_merged(raw):
         if not isinstance(probe_cmd, list) or any(not isinstance(arg, str) or not arg for arg in probe_cmd):
             raise AgRouteError(f"{where}.usage_probe_cmd: expected a list of non-empty strings")
         native_cands = _validate_candidate_list(
-            spec["native_candidates"], f"{where}.native_candidates", agent=name
+            spec["native_candidates"], f"{where}.native_candidates", agent=name, separator=separator
         )
         cli_cands = _validate_candidate_list(
-            spec["cli_candidates"], f"{where}.cli_candidates", agent=name
+            spec["cli_candidates"], f"{where}.cli_candidates", agent=name, separator=separator
         )
         plan_id, preset_credit = _validate_plan(spec["plan"], f"{where}.plan", agent=name)
         monthly_override = (
