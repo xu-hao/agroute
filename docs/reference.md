@@ -80,7 +80,8 @@ these fields:
 - `provider`: whose price list it is.
 - `model`: the emitted provider-qualified cell model, for example `claude/claude-opus-5-5` or
   `agy/gemini-4-argon-high`. It follows `namespace_separator`, because `howhard` rejects a card
-  whose `model` differs from its cell's.
+  whose `model` differs from its cell's; configured candidate `rate_card.model` values are
+  checked against `<agent><namespace_separator><model>` and refused at config load on mismatch.
 - `service_tier = "standard"` and `basis = "estimate"`.
 - `rates`: all six categories (`input`, `output`, `cache_read`, `cache_write`,
   `cache_write_5m`, `cache_write_1h`) in USD per million tokens.
@@ -233,7 +234,12 @@ Each entry is strict and must take one of two forms:
 
 agroute refuses a partial, combined, unknown, non-numeric or negative entry at config load
 with an error that names the entry. It never merges an entry with a built-in card. Later
-configuration layers replace an earlier layer's entry for the same model only.
+configuration layers replace an earlier layer's entry for the same model only. Entries that do
+not match a local candidate are accepted at config load so shared user configs stay valid across
+hosts and surfaces; during `candidates` and `inventory` collection, any entry under
+`[agents.<agent>.prices."<model>"]` that matches no configured or discovered candidate on either
+surface (`native` or `cli`) of that enabled agent adds a warning to `warnings` (and a `# warning:`
+comment line to TOML inventory output).
 
 A six-rate entry is emitted as a card with these fields:
 
