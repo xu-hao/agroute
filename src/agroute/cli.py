@@ -418,10 +418,21 @@ def main(argv=None):
                     prompt = Path(args.prompt_file).read_text(encoding="utf-8")
                 except OSError as exc:
                     raise AgRouteError(f"plan: unable to read {args.prompt_file}: {exc}") from exc
-            try:
-                decision_obj = json.loads(Path(args.decision).read_text(encoding="utf-8"))
-            except (OSError, ValueError, UnicodeError) as exc:
-                raise AgRouteError(f"plan: invalid decision JSON file {args.decision}: {exc}") from exc
+            dec_arg = str(args.decision).strip()
+            dec_path = Path(args.decision)
+            decision_obj = None
+            if not dec_path.exists() and len(dec_arg) == 64 and all(ch in "0123456789abcdef" for ch in dec_arg):
+                from .route_store import load_howhard_decision_document
+                from .routes import _resolve_howhard_root
+
+                hh_root = _resolve_howhard_root(router.config.capture_root, router.config.state_root)
+                if hh_root is not None:
+                    decision_obj = load_howhard_decision_document(hh_root, dec_arg)
+            if decision_obj is None:
+                try:
+                    decision_obj = json.loads(dec_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError, UnicodeError) as exc:
+                    raise AgRouteError(f"plan: invalid decision JSON file {args.decision}: {exc}") from exc
             include = _parse_include_agents(args.include_agents)
             plan_obj = router.plan(
                 args.host,

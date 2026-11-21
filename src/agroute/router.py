@@ -209,16 +209,6 @@ class Router:
             include_user_config=include_user_config,
         )
 
-        from .route_store import LEGACY_FILES, read_route_records, writable_store
-        from .state import claim
-
-        if writable_store(self.config.state_root) and any(
-            (self.config.state_root / name).exists() for name in LEGACY_FILES
-        ):
-            with _usage_locked(self.config):
-                claim(self.config)
-                read_route_records(self.config.state_root)
-
     def paths(self):
         return {
             "capture_root": str(self.config.capture_root),

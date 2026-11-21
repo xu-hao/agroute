@@ -354,10 +354,12 @@ def test_dynamic_discovery_and_howhard_correlation(tmp_path):
     ]
 
     # 4. End-to-end correlation between agr plan, howhard decisions, and howhard pending.jsonl
+    from conftest import write_howhard_payload_decision
+
     repo = tmp_path / "repo"
     git_dir = repo / ".git"
     hh_dir = git_dir / "howhard"
-    (hh_dir / "decisions").mkdir(parents=True)
+    hh_dir.mkdir(parents=True)
     state_dir = git_dir / "agroute"
 
     dec_1 = "1111111111111111111111111111111111111111111111111111111111111111"
@@ -369,27 +371,27 @@ def test_dynamic_discovery_and_howhard_correlation(tmp_path):
         + "\n",
         encoding="utf-8",
     )
-    (hh_dir / "decisions" / f"{dec_1}.json").write_text(
-        json.dumps(
-            {
-                "chosen": {"model": "claude/claude-sonnet-4-6", "effort": "high"},
-                "task_type": "specified-implementation",
-                "risk_class": "standard",
-                "context": {"task_text": "#101 Build feature X\nBody text"},
-            }
-        ),
-        encoding="utf-8",
+    write_howhard_payload_decision(
+        hh_dir,
+        dec_1,
+        {
+            "chosen": {"model": "claude/claude-sonnet-4-6", "effort": "high"},
+            "task_type": "specified-implementation",
+            "risk_class": "standard",
+            "context": {"task_text": "#101 Build feature X\nBody text"},
+        },
+        created_at="2026-11-08T18:00:00+00:00",
     )
-    (hh_dir / "decisions" / f"{dec_2}.json").write_text(
-        json.dumps(
-            {
-                "chosen": {"model": "gpt-5.4", "effort": "high"},
-                "task_type": "guarded-landing",
-                "risk_class": "standard",
-                "context": {"task_text": "#102 Land feature X"},
-            }
-        ),
-        encoding="utf-8",
+    write_howhard_payload_decision(
+        hh_dir,
+        dec_2,
+        {
+            "chosen": {"model": "gpt-5.4", "effort": "high"},
+            "task_type": "guarded-landing",
+            "risk_class": "standard",
+            "context": {"task_text": "#102 Land feature X"},
+        },
+        created_at="2026-11-08T19:00:00+00:00",
     )
     (hh_dir / "pending.jsonl").write_text(
         json.dumps(

@@ -11,7 +11,13 @@ import os
 from pathlib import Path
 
 from .files import atomic_write
-from .route_store import append_route_records, decision_summary, read_route_records, writable_store
+from .route_store import (
+    append_route_records,
+    decision_summary,
+    howhard_payload_decisions,
+    read_route_records,
+    writable_store,
+)
 from .state import claim
 from .usage import _now_utc, _usage_locked, reconcile_reservation_on_close_locked
 from .validation import AGENTS, AgRouteError, format_timestamp, number, text
@@ -641,7 +647,8 @@ def load_repository_routes(capture_root: Path, state_root: Path, repository_id: 
     hh_events: list[dict] = []
     if hh_root is not None:
         obs_by_decision, raw_observations = _load_howhard_observations(hh_root)
-        hh_events = _read_cached_jsonl(hh_root / "decision-events.jsonl")
+        hh_events = list(_read_cached_jsonl(hh_root / "decision-events.jsonl"))
+        hh_events.extend(howhard_payload_decisions(hh_root))
 
     raw_by_id = {str(o.get("id")): o for o in raw_observations if o.get("id")}
     linked_raw_ids: set[str] = set()
@@ -657,7 +664,7 @@ def load_repository_routes(capture_root: Path, state_root: Path, repository_id: 
         if dec_id:
             covered_decisions.add(dec_id)
 
-        dec_doc = decision_summary(state_root, dec_id, hh_root / "decisions" / f"{dec_id}.json", _summarize_decision) if (dec_id and hh_root is not None) else None
+        dec_doc = decision_summary(state_root, dec_id, hh_root, _summarize_decision) if (dec_id and hh_root is not None) else None
         close_rec = close_by_route.get(route_id)
 
         obs = obs_by_decision.get(dec_id) if dec_id else None
@@ -802,7 +809,7 @@ def load_repository_routes(capture_root: Path, state_root: Path, repository_id: 
         if not isinstance(dec_id, str) or not dec_id or dec_id in covered_decisions:
             continue
         covered_decisions.add(dec_id)
-        dec_doc = decision_summary(state_root, dec_id, hh_root / "decisions" / f"{dec_id}.json", _summarize_decision) if hh_root is not None else None
+        dec_doc = decision_summary(state_root, dec_id, hh_root, _summarize_decision) if hh_root is not None else None
         obs = obs_by_decision.get(dec_id)
         chosen = (dec_doc or {}).get("chosen") if isinstance(dec_doc, dict) else None
         raw_model = str(

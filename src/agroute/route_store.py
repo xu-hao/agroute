@@ -1,11 +1,10 @@
-"""Lossless SQLite route events and cross-process decision-summary caching.
+"""Lossless SQLite route events and cross-process howhard 4.0 decision-summary caching.
 
-SQLite's immediate transactions serialize migration and cache misses. The default
+SQLite's immediate transactions serialize writes and cache misses. The default
 rollback journal also permits read-only access without writable WAL sidecars.
 """
 
 from contextlib import contextmanager
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -14,7 +13,8 @@ import sqlite3
 from .validation import AgRouteError
 
 DATABASE = "routes.sqlite3"
-LEGACY_FILES = ("plans.jsonl", "routes.jsonl")
+HOWHARD_PAYLOADS_DB = "payloads.sqlite3"
+_HEX64 = frozenset("0123456789abcdef")
 
 
 def writable_store(root: Path) -> bool:
@@ -35,28 +35,36 @@ def _connect(root: Path, *, writable: bool):
             root.mkdir(parents=True, exist_ok=True)
             connection = sqlite3.connect(root / DATABASE, timeout=30, isolation_level=None)
         elif (root / DATABASE).exists():
-            connection = sqlite3.connect((root / DATABASE).resolve().as_uri() + "?mode=ro",
-                                         uri=True, timeout=30, isolation_level=None)
+            connection = sqlite3.connect(
+                (root / DATABASE).resolve().as_uri() + "?mode=ro",
+                uri=True,
+                timeout=30,
+                isolation_level=None,
+            )
         if connection is not None:
             connection.execute("PRAGMA busy_timeout = 30000")
             if writable:
                 connection.execute("BEGIN IMMEDIATE")
                 try:
-                    connection.execute("""CREATE TABLE IF NOT EXISTS route_events (
+                    connection.execute(
+                        """CREATE TABLE IF NOT EXISTS route_events (
                         sequence INTEGER PRIMARY KEY,
                         payload BLOB NOT NULL,
                         source TEXT,
                         line_number INTEGER,
                         digest TEXT,
                         UNIQUE(source, line_number, digest)
-                    )""")
-                    connection.execute("""CREATE TABLE IF NOT EXISTS decision_summaries (
+                    )"""
+                    )
+                    connection.execute(
+                        """CREATE TABLE IF NOT EXISTS decision_summaries (
                         decision_id TEXT NOT NULL,
                         mtime_ns INTEGER NOT NULL,
                         size INTEGER NOT NULL,
                         summary TEXT NOT NULL,
                         PRIMARY KEY(decision_id, mtime_ns, size)
-                    )""")
+                    )"""
+                    )
                     connection.commit()
                 except BaseException:
                     connection.rollback()
@@ -69,64 +77,6 @@ def _connect(root: Path, *, writable: bool):
             connection.close()
 
 
-def _legacy_lines(root: Path):
-    for name in LEGACY_FILES:
-        path = root / name
-        try:
-            with path.open("rb") as stream:
-                signature = os.fstat(stream.fileno())
-                lines = stream.readlines()
-        except FileNotFoundError:
-            continue
-        yield path, signature, lines
-
-
-def _line_key(source: str, index: int, payload: bytes):
-    return source, index, hashlib.sha256(payload).hexdigest()
-
-
-def _signature(stat):
-    return stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_size
-
-
-def _migrate(db, root: Path):
-    """Commit and verify every byte before unlinking any legacy input."""
-    db.execute("BEGIN IMMEDIATE")
-    imported = []
-    try:
-        for path, signature, lines in _legacy_lines(root):
-            for index, payload in enumerate(lines):
-                key = _line_key(path.name, index, payload)
-                db.execute("INSERT OR IGNORE INTO route_events(payload, source, line_number, digest) VALUES (?, ?, ?, ?)",
-                           (payload, *key))
-                stored = db.execute("SELECT payload FROM route_events WHERE source=? AND line_number=? AND digest=?",
-                                    key).fetchone()
-                if stored is None or stored[0] != payload:
-                    raise AgRouteError(f"route migration failed to preserve {path}:{index + 1}")
-            try:
-                unchanged = _signature(path.stat()) == _signature(signature)
-            except FileNotFoundError:
-                # Another importer may have committed and unlinked this same snapshot.
-                unchanged = True
-            if not unchanged:
-                raise AgRouteError(f"route migration input changed: {path}; retry")
-            imported.append((path, signature))
-        db.commit()
-    except BaseException:
-        db.rollback()
-        raise
-    # A crash here is safe: source/line/digest uniqueness makes a retry idempotent.
-    for path, signature in imported:
-        try:
-            if _signature(path.stat()) == _signature(signature):
-                path.unlink()
-        except FileNotFoundError:
-            pass
-        except PermissionError:
-            # A permission change after commit leaves a mergeable, deduplicated input.
-            pass
-
-
 def _decode(payload):
     try:
         record = json.loads(payload)
@@ -136,86 +86,218 @@ def _decode(payload):
 
 
 def read_route_records(root: Path) -> list[dict]:
-    """Read all events; migrate writable legacy stores or merge read-only inputs."""
-    writable = writable_store(root)
-    if not (root / DATABASE).exists() and not any((root / name).exists() for name in LEGACY_FILES):
+    """Read all route and close events from `<state_root>/routes.sqlite3`."""
+    db_path = root / DATABASE
+    if db_path.is_symlink() or not db_path.is_file():
         return []
-    with _connect(root, writable=writable) as db:
-        if db is not None and writable:
-            _migrate(db, root)
-        rows = []
-        imported = set()
-        if db is not None:
-            for payload, source, index, digest in db.execute(
-                "SELECT payload, source, line_number, digest FROM route_events ORDER BY sequence"
-            ):
-                record = _decode(payload)
-                if record is not None:
-                    rows.append(record)
-                if source is not None:
-                    imported.add((source, index, digest))
-        for path, _, lines in _legacy_lines(root):
-            for index, payload in enumerate(lines):
-                if _line_key(path.name, index, payload) not in imported:
-                    record = _decode(payload)
-                    if record is not None:
-                        rows.append(record)
+    with _connect(root, writable=False) as db:
+        if db is None:
+            return []
+        rows: list[dict] = []
+        for (payload,) in db.execute("SELECT payload FROM route_events ORDER BY sequence"):
+            record = _decode(payload)
+            if record is not None:
+                rows.append(record)
         return rows
 
 
 def append_route_records(root: Path, records: list[dict]) -> None:
+    if (root / DATABASE).is_symlink():
+        raise AgRouteError(f"route store: refusing symlink at {root / DATABASE}")
     if not writable_store(root):
         raise AgRouteError(f"route store is read-only: {root}")
     with _connect(root, writable=True) as db:
-        _migrate(db, root)
         db.execute("BEGIN IMMEDIATE")
         try:
-            db.executemany("INSERT INTO route_events(payload) VALUES (?)",
-                           [(json.dumps(record, ensure_ascii=False).encode("utf-8"),) for record in records])
+            db.executemany(
+                "INSERT INTO route_events(payload) VALUES (?)",
+                [(json.dumps(record, ensure_ascii=False).encode("utf-8"),) for record in records],
+            )
             db.commit()
         except BaseException:
             db.rollback()
             raise
 
 
-def decision_summary(root: Path, decision_id: str, path: Path, extract) -> dict | None:
-    """Parse a receipt at most once per signature across writable-store processes."""
-    if not path.is_file():
+def _decompress_zstd(blob: bytes) -> bytes | None:
+    try:
+        from compression import zstd as std_zstd  # type: ignore[import-not-found]
+
+        return std_zstd.decompress(blob)
+    except ImportError:
+        pass
+    except Exception:
+        return None
+    try:
+        import zstandard
+
+        return zstandard.ZstdDecompressor().decompress(blob)
+    except ImportError:
+        return None
+    except Exception:
+        return None
+
+
+def _connect_howhard_payloads_ro(hh_root: Path | None):
+    if hh_root is None:
+        return None
+    path = hh_root / HOWHARD_PAYLOADS_DB
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        db = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=30)
+        db.execute("PRAGMA busy_timeout = 30000")
+        return db
+    except sqlite3.Error:
+        return None
+
+
+def _summary_from_howhard_columns(
+    chosen_raw,
+    context_raw,
+    task_type,
+    risk_class,
+    cap_met,
+    needs_review,
+) -> dict:
+    chosen: dict = {}
+    if isinstance(chosen_raw, str):
+        try:
+            parsed = json.loads(chosen_raw)
+            if isinstance(parsed, dict):
+                chosen = {k: parsed[k] for k in ("model", "family", "effort") if isinstance(parsed.get(k), str)}
+        except ValueError:
+            pass
+    task_text = None
+    if isinstance(context_raw, str):
+        try:
+            ctx = json.loads(context_raw)
+            if isinstance(ctx, dict) and isinstance(ctx.get("task_text"), str):
+                task_text = ctx["task_text"][:4000]
+        except ValueError:
+            pass
+    return {
+        "task_type": task_type if isinstance(task_type, str) else None,
+        "risk_class": risk_class if isinstance(risk_class, str) else None,
+        "cap_met": bool(cap_met) if isinstance(cap_met, int) else None,
+        "needs_review": bool(needs_review) if isinstance(needs_review, int) else False,
+        "chosen": chosen,
+        "context": {"task_text": task_text},
+        "cells": [],
+        "forecasts": [],
+    }
+
+
+def howhard_payload_decisions(hh_root: Path | None) -> list[dict]:
+    """List indexed decision rows from `<hh_root>/payloads.sqlite3` without inflating blobs."""
+    db = _connect_howhard_payloads_ro(hh_root)
+    if db is None:
+        return []
+    try:
+        rows = db.execute(
+            "SELECT decision_id, created_at, task_type FROM decisions ORDER BY created_at DESC, decision_id DESC"
+        ).fetchall()
+        return [
+            {
+                "decision_id": str(dec_id),
+                "at_utc": str(created_at) if created_at is not None else None,
+                "task_type": str(task_type) if isinstance(task_type, str) else None,
+            }
+            for dec_id, created_at, task_type in rows
+            if isinstance(dec_id, str) and dec_id
+        ]
+    except sqlite3.Error:
+        return []
+    finally:
+        db.close()
+
+
+def load_howhard_decision_document(hh_root: Path | None, decision_id: str) -> dict | None:
+    """Inflate one canonical receipt JSON dict from `<hh_root>/payloads.sqlite3` by 64-hex ID."""
+    if len(decision_id) != 64 or not all(ch in _HEX64 for ch in decision_id):
+        return None
+    db = _connect_howhard_payloads_ro(hh_root)
+    if db is None:
+        return None
+    try:
+        row = db.execute("SELECT payload FROM decisions WHERE decision_id=?", (decision_id,)).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        db.close()
+    if row is None or not isinstance(row[0], (bytes, bytearray, memoryview)):
+        return None
+    raw = _decompress_zstd(bytes(row[0]))
+    if raw is None:
+        return None
+    doc = _decode(raw)
+    if doc is not None:
+        doc.setdefault("decision_id", decision_id)
+    return doc
+
+
+def decision_summary(root: Path, decision_id: str, hh_root: Path | None, extract) -> dict | None:
+    """Decompress a `howhard` 4.0 receipt at most once across writable-store processes."""
+    if not decision_id:
         return None
     writable = writable_store(root)
     with _connect(root, writable=writable) as db:
-        for _ in range(3):
-            if db is not None and writable:
-                # Hold the lock through extraction so concurrent cold readers do not reparse.
-                db.execute("BEGIN IMMEDIATE")
+        if db is not None and writable:
+            db.execute("BEGIN IMMEDIATE")
+        try:
+            cached = (
+                db.execute(
+                    "SELECT summary, size FROM decision_summaries WHERE decision_id=? AND mtime_ns=-1 ORDER BY size DESC LIMIT 1",
+                    (decision_id,),
+                ).fetchone()
+                if db is not None
+                else None
+            )
+            if cached is not None and cached[1] > 0:
+                return json.loads(cached[0])
+
+            hh_db = _connect_howhard_payloads_ro(hh_root)
+            if hh_db is None:
+                return json.loads(cached[0]) if cached is not None else None
             try:
-                try:
-                    stat = path.stat()
-                except OSError:
-                    return None
-                key = decision_id, stat.st_mtime_ns, stat.st_size
-                cached = db.execute(
-                    "SELECT summary FROM decision_summaries WHERE decision_id=? AND mtime_ns=? AND size=?", key
-                ).fetchone() if db is not None else None
-                if cached is not None:
-                    return json.loads(cached[0])
-                try:
-                    document = json.loads(path.read_bytes())
-                    current_stat = path.stat()
-                except (OSError, ValueError, UnicodeError):
-                    return None
-                if _signature(current_stat) != _signature(stat):
-                    del document
-                    continue
-                if not isinstance(document, dict):
-                    return None
-                summary = extract(document)
-                del document
-                if db is not None and writable:
-                    db.execute("INSERT OR REPLACE INTO decision_summaries VALUES (?, ?, ?, ?)",
-                               (*key, json.dumps(summary)))
-                return summary
+                row = hh_db.execute(
+                    "SELECT payload, chosen, context_summary, task_type, risk_class, cap_met, needs_review "
+                    "FROM decisions WHERE decision_id=?",
+                    (decision_id,),
+                ).fetchone()
+            except sqlite3.Error:
+                row = None
             finally:
+                hh_db.close()
+
+            if row is None:
+                return json.loads(cached[0]) if cached is not None else None
+
+            blob = bytes(row[0]) if isinstance(row[0], (bytes, bytearray, memoryview)) else b""
+            raw = _decompress_zstd(blob) if blob else None
+            document = _decode(raw) if raw is not None else None
+            if document is not None:
+                summary = extract(document)
+                del document, raw
+                size_marker = max(1, len(blob))
                 if db is not None and writable:
-                    db.commit()
-    return None
+                    db.execute("DELETE FROM decision_summaries WHERE decision_id=? AND mtime_ns=-1", (decision_id,))
+                    db.execute(
+                        "INSERT OR REPLACE INTO decision_summaries VALUES (?, -1, ?, ?)",
+                        (decision_id, size_marker, json.dumps(summary)),
+                    )
+                return summary
+
+            if cached is not None:
+                return json.loads(cached[0])
+
+            summary = _summary_from_howhard_columns(*row[1:])
+            if db is not None and writable:
+                db.execute(
+                    "INSERT OR REPLACE INTO decision_summaries VALUES (?, -1, 0, ?)",
+                    (decision_id, json.dumps(summary)),
+                )
+            return summary
+        finally:
+            if db is not None and writable:
+                db.commit()

@@ -17,6 +17,7 @@ with zipfile.ZipFile(wheel) as archive:
     assert "agroute/data/default_config.toml" in names
     assert "agroute/py.typed" in names
     assert not any(name.startswith("agroute/skills/") for name in names)
+    assert not any("migrate" in name for name in names)
     metadata = archive.read(f"agroute-{expected}.dist-info/METADATA").decode()
     assert f"Version: {expected}\n" in metadata
     entrypoints = archive.read(f"agroute-{expected}.dist-info/entry_points.txt").decode()
@@ -27,6 +28,7 @@ sdist = Path("dist") / f"agroute-{expected}.tar.gz"
 with tarfile.open(sdist) as archive:
     sdist_names = archive.getnames()
     assert f"agroute-{expected}/tests/conftest.py" in sdist_names
+    assert f"agroute-{expected}/scripts/migrate-routes.py" in sdist_names
     for name in ("SKILL.md", "references/hosts.md", "references/workflow.md", "references/usage.md"):
         assert f"agroute-{expected}/skills/agroute/{name}" in sdist_names
     for name in ("plugin.json", ".claude-plugin/plugin.json", ".antigravity-plugin/plugin.json"):

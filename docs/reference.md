@@ -599,8 +599,9 @@ When that condition holds, `agr plan` selects the native host cell, sets
 `howhard observe ... --native` instead of attaching the unexecuted cross-agent receipt.
 
 For a `howhard-decision-v7`, `howhard-decision-v8`, or `howhard-decision-v9` panel (whether
-top-level `cells` from live `howhard decide` output or nested under `selection.cells` in a
-saved `.git/howhard/decisions/<id>.json` receipt), `agr plan` reads `session_cost_usd` as
+top-level `cells` from live `howhard decide` output, loaded by 64-hex `decision_id` from
+`howhard` 4.0 `<howhard_root>/payloads.sqlite3`, or nested under `selection.cells` in a
+saved receipt), `agr plan` reads `session_cost_usd` as
 cost, `needed_credit_usd` as quota credit, and `cap_met`/`needs_review` from top-level or
 `selection`. It validates `needed_credit_usd` against
 `credit_budget["available_credit_usd"]`, refusing an over-budget target with the separate
@@ -647,7 +648,7 @@ and queried with `get_adapter(name)`.
 
 Every `agr plan` resolution appends a record to `<state_root>/routes.sqlite3` and registers
 the repository in `${AGROUTE_SPOOL_DIR:-~/.local/share/agroute}/repositories.json`. `agroute`
-correlates these records with `.git/howhard/` (`decision-events.jsonl`, `decisions/*.json`,
+correlates these records with `.git/howhard/` (`payloads.sqlite3`, `decision-events.jsonl`,
 `outcomes.jsonl`, and `pending.jsonl`, including `amends` chains). Automatic receipt linking
 uses only `decision_id`; keep howhard's `--id` as a human-readable execution ID.
 
@@ -687,21 +688,31 @@ serialize concurrent writers safely; the rollback journal permits read-only read
 without writable WAL sidecars. The database and its `-wal`, `-shm`, and `-journal` sidecars
 are recognized store entries; an unclaimed database is refused by identity validation.
 
-Opening a writable legacy store automatically imports `plans.jsonl` and `routes.jsonl`
-inside a transaction. Every input line is retained byte-for-byte, including duplicate,
-blank, malformed, and unknown-format lines. Source name, line number, and content digest
-make retries idempotent. Imported payloads are verified before commit; the corresponding
-unchanged input files are unlinked only afterward. A crash before unlink is safe to retry.
-Read-only stores merge unmigrated JSONL inputs with SQLite in memory, deduplicating lines
-already imported; no migration write or unlink is required. `agr show` and quota calibration
-continue to read the full history.
+Pre-0.6 stores migrate `plans.jsonl` and `routes.jsonl` offline via standalone
+`scripts/migrate-routes.py` (included in the source repository and `.tar.gz` source
+distribution, never installed into the Python wheel):
 
-The `decision_summaries` table caches lightweight howhard metadata by
-`(decision_id, mtime_ns, size)`: a 4,000-character task excerpt, task/risk classification,
-review flags, chosen cell costs, and the first eight forecasts. A writable-store cache miss
-is serialized across processes, so an unchanged multi-MB receipt is parsed once. Raw
-`decision.semantic` objects are released immediately and never retained in the in-memory
-JSON cache. Read-only cache misses are extracted in memory without requiring a write.
+```sh
+python scripts/migrate-routes.py --directory /path/to/repo --json
+python scripts/migrate-routes.py --all-registered --json
+```
+
+`scripts/migrate-routes.py` verifies claimed store identity (`store.json`), refuses symlinks
+and unclaimed directories without unlinking, imports every JSONL line byte-for-byte into
+`route_events` inside an immediate SQLite transaction (deduplicated by source name, line
+number, and SHA-256 digest so crash retries are idempotent), verifies pre-commit and
+post-commit round-trip preservation, and unlinks unchanged input files only afterward.
+Runtime commands and Python APIs have zero awareness of retired `plans.jsonl`, `routes.jsonl`,
+or `.howhard/decisions/*.json` files and never perform automatic migration.
+
+The `decision_summaries` table caches lightweight `howhard` 4.0 metadata extracted from
+`<howhard_root>/payloads.sqlite3` (`decisions` table, refusing symlinks): a 4,000-character
+task excerpt, task/risk classification, review flags, chosen cell costs, and the first eight
+forecasts. A writable-store cache miss is serialized across processes, so each immutable
+`zstd`-compressed receipt blob is inflated at most once (falling back to uncompressed
+`decisions` summary columns if decompression is unavailable). Raw `decision.semantic` objects
+are released immediately and never retained in memory. Read-only cache misses are extracted
+in memory without requiring a write.
 
 The TUI defaults to all active `routed` / `review` rows plus the newest 200 completed or
 closed rows. `--limit N` changes the completed-history allowance (`0` shows only active

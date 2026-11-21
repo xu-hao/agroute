@@ -423,7 +423,7 @@ def _collect_telemetry_sources(config) -> tuple[dict[str, dict], list[dict], lis
         sr = Path(repo["state_root"])
         cr = Path(repo["capture_root"])
         rf = sr / "routes.sqlite3"
-        if str(rf) not in seen_rf and any((sr / name).is_file() for name in ("routes.sqlite3", "routes.jsonl", "plans.jsonl")):
+        if str(rf) not in seen_rf and rf.is_file():
             seen_rf.add(str(rf))
             route_files.append(rf)
         candidates = [sr.parent / "howhard", cr / ".howhard"]
