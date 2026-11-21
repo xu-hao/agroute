@@ -8,8 +8,8 @@
 3. Project `agroute.toml` in the current directory, or `--config PATH`.
 
 Unknown keys, out-of-range percentages, negative or non-finite credit reserves, negative
-`host_affinity_epsilon`, bare models containing `/` or `:`, and `model_default` effort strings
-are refused before any state is modified.
+`host_affinity_epsilon`, bare models containing `/` or `:`, `model_default` effort strings, and
+configured candidate `rate_card.model` mismatches are refused before any state is modified.
 
 ## Dynamic model discovery
 
@@ -29,13 +29,17 @@ Prices follow the {ref}`rate-card precedence <price-precedence>`:
   `rate_card`, but not both, and that price wins.
 - Otherwise a per-model entry under `[agents.<agent>.prices."<model>"]` applies. It holds
   either `usd_per_mtok` alone or all six rate categories, and works alongside discovery.
-  See {ref}`per-model user prices <per-model-prices>`.
+  Entries that match no local candidate are allowed at config load (so shared user configs stay
+  valid across hosts and surfaces) and emit a routing warning when they match no configured or
+  discovered candidate on an enabled agent. See {ref}`per-model user prices <per-model-prices>`.
 - Otherwise the non-expired snapshot entry from `agr prices resolve --file <path>`
   (`<state_root>/prices.json`) or the built-in catalog prices the cell, whichever took effect
   later (or via a labelled `"alias"` guess; see {ref}`calling-agent price resolution <calling-agent-price-resolution>`).
 
-A candidate `rate_card`'s `model` must be the qualified cell model, for example
-`agy/gpt-oss-120b-medium`, because `howhard` rejects a mismatch.
+A configured candidate `rate_card`'s `model` must match the cell's emitted qualified model ID
+(`<agent><namespace_separator><model>`, for example `agy/gpt-oss-120b-medium` or
+`claude:claude-sonnet-5-5`); `agroute` refuses mismatches at config load with an error naming
+`agents.<agent>.<surface>[i].rate_card.model`, before `howhard` can reject the inventory.
 
 ## Example `agroute.toml`
 

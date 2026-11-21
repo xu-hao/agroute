@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Validate configured candidate `rate_card.model` values at config load against the cell's
+  emitted qualified model ID (`<agent><namespace_separator><model>`), refusing mismatches with a
+  named `agents.<agent>.<surface>[i].rate_card.model` error, and emit a routing warning in
+  `warnings` (and `# warning:` lines in TOML inventory output) when `[agents.<agent>.prices."<model>"]`
+  matches no configured or discovered candidate on either surface of that enabled agent. Issue #32
+  tracks these remaining price-catalog follow-ups (Items 2, 5, and 6 shipped in `v0.3.1`, and Item 1
+  was superseded by offline calling-agent price resolution in #41).
+
 - Support `howhard` 3.4's `interrupted` outcome and `howhard-decision-v8`/`v9` receipts across
   route correlation (`routes.py`), credit calibration (`calibration.py`), execution planning
   (`router.py`), CLI filtering (`agr list --state interrupted`), TUI styling/details/help
