@@ -558,3 +558,158 @@ def test_toml_inventory_round_trips_configured_cards_with_any_text(tmp_path, cap
               str(tmp_path / "state"), "--now", NOW, "--config", str(config)]
     assert main(["inventory", *common]) == 0
     assert tomllib.loads(capsys.readouterr().out)["inventories"]["router"] == payload["candidates"]
+
+
+def _inline_rate_card(model, *, basis="estimate"):
+    card = {
+        "format": "howhard-rate-card-v1",
+        "source": "https://example.invalid/negotiated",
+        "version": "contract-1",
+        "effective_at": "2026-01-01T00:00:00+00:00",
+        "provider": "anthropic",
+        "model": model,
+        "service_tier": "standard",
+        "basis": basis,
+    }
+    fields = ", ".join(f"{k} = {json.dumps(v)}" for k, v in card.items())
+    rates = ", ".join(f"{k} = {v}" for k, v in USER_RATES.items())
+    return f"{{ {fields}, rates = {{ {rates} }} }}"
+
+
+@pytest.mark.parametrize(
+    "config_text,expected_path,expected_model,actual_model",
+    [
+        (
+            '[[agents.claude.native_candidates]]\nmodel = "claude-sonnet-5-5"\neffort = "high"\n'
+            f'rate_card = {_inline_rate_card("claude/claude-opus-5-5")}\n',
+            r"agents\.claude\.native_candidates\[0\]\.rate_card\.model",
+            "claude/claude-sonnet-5-5",
+            "claude/claude-opus-5-5",
+        ),
+        (
+            '[[agents.codex.cli_candidates]]\nmodel = "gpt-6.1-terra"\neffort = "low"\n\n'
+            '[[agents.codex.cli_candidates]]\nmodel = "gpt-6.1-sol"\neffort = "high"\n'
+            f'rate_card = {_inline_rate_card("agy/gpt-6.1-sol")}\n',
+            r"agents\.codex\.cli_candidates\[1\]\.rate_card\.model",
+            "codex/gpt-6.1-sol",
+            "agy/gpt-6.1-sol",
+        ),
+        (
+            '[[agents.claude.native_candidates]]\nmodel = "claude-sonnet-5-5"\neffort = "high"\n'
+            f'rate_card = {_inline_rate_card("claude-sonnet-5-5")}\n',
+            r"agents\.claude\.native_candidates\[0\]\.rate_card\.model",
+            "claude/claude-sonnet-5-5",
+            "claude-sonnet-5-5",
+        ),
+        (
+            '[[agents.claude.native_candidates]]\nmodel = "claude-sonnet-5-5"\neffort = "high"\n'
+            f'rate_card = {_inline_rate_card("claude:claude-sonnet-5-5")}\n',
+            r"agents\.claude\.native_candidates\[0\]\.rate_card\.model",
+            "claude/claude-sonnet-5-5",
+            "claude:claude-sonnet-5-5",
+        ),
+        (
+            '[routing]\nnamespace_separator = ":"\n\n'
+            '[[agents.claude.cli_candidates]]\nmodel = "claude-sonnet-5-5"\neffort = "high"\n'
+            f'rate_card = {_inline_rate_card("claude/claude-sonnet-5-5")}\n',
+            r"agents\.claude\.cli_candidates\[0\]\.rate_card\.model",
+            "claude:claude-sonnet-5-5",
+            "claude/claude-sonnet-5-5",
+        ),
+    ],
+)
+def test_configured_candidate_rate_card_model_mismatch_refused_at_config_load(
+    tmp_path, config_text, expected_path, expected_model, actual_model
+):
+    config = tmp_path / "agroute.toml"
+    config.write_text(config_text, encoding="utf-8")
+    with pytest.raises(
+        AgRouteError,
+        match=f"{expected_path}.*{expected_model}.*{actual_model}",
+    ):
+        load_config(config, include_user_config=False)
+
+
+def test_configured_candidate_rate_card_model_accepts_custom_namespace_separator(tmp_path, capsys):
+    config = tmp_path / "agroute.toml"
+    config.write_text(
+        '[routing]\nnamespace_separator = ":"\n\n'
+        '[[agents.claude.cli_candidates]]\nmodel = "claude-sonnet-5-5"\neffort = "high"\n'
+        f'rate_card = {_inline_rate_card("claude:claude-sonnet-5-5")}\n',
+        encoding="utf-8",
+    )
+    cells, _ = cli_candidates(tmp_path, capsys, "codex", "claude", "--config", str(config))
+    assert set(cells) == {"claude:claude-sonnet-5-5"}
+    assert cells["claude:claude-sonnet-5-5"]["rate_card"]["model"] == "claude:claude-sonnet-5-5"
+
+
+def test_unmatched_per_model_price_warns_in_candidates_and_toml_inventory(tmp_path, capsys):
+    write_agy_cache(parse_agy_models_output(AGY_MODELS))
+    config = tmp_path / "agroute.toml"
+    config.write_text(
+        price_entry("agy", "gemini-4-argon", USER_RATES)
+        + price_entry("agy", "gpt-oss-120b-medium", {"usd_per_mtok": 0.25}),
+        encoding="utf-8",
+    )
+    # Must NOT refuse at config load so user-global overrides remain valid across hosts/surfaces.
+    loaded = load_config(config, include_user_config=False)
+    assert set(loaded.agents["agy"]["prices"]) == {"gemini-4-argon", "gpt-oss-120b-medium"}
+
+    cells, payload = cli_candidates(tmp_path, capsys, "agy", "agy", "--config", str(config))
+    assert cells["agy/gpt-oss-120b-medium"]["usd_per_mtok"] == 0.25
+    assert any(
+        'agents.agy.prices."gemini-4-argon"' in w and "candidate" in w
+        for w in payload["warnings"]
+    )
+    assert all("gpt-oss-120b-medium" not in w for w in payload["warnings"])
+
+    common = [
+        "--host", "agy", "--include-agents", "agy", "--no-user-config",
+        "--state-dir", str(tmp_path / "state"), "--now", NOW, "--config", str(config),
+    ]
+    assert main(["inventory", *common, "--format", "json"]) == 0
+    inv_json = json.loads(capsys.readouterr().out)
+    assert inv_json["warnings"] == payload["warnings"]
+
+    assert main(["inventory", *common]) == 0
+    rendered = capsys.readouterr().out
+    warning_lines = [line for line in rendered.splitlines() if line.startswith("# warning: ")]
+    assert any('agents.agy.prices."gemini-4-argon"' in line for line in warning_lines)
+    assert tomllib.loads(rendered)["inventories"]["router"] == payload["candidates"]
+
+
+def test_per_model_price_matching_other_surface_excluded_candidate_or_disabled_agent_does_not_warn(
+    tmp_path, capsys
+):
+    write_agy_cache([
+        {"model": "gemini-4-argon-high", "effort": "high"},
+        {"model": "claude-opus-5-5-high", "effort": "high"},
+    ])
+    config = tmp_path / "agroute.toml"
+    config.write_text(
+        "[agents.agy]\n"
+        'exclude_quota_groups = ["3p"]\n\n'
+        + AGY_TIER_CONFIG
+        + price_entry("agy", "flash", {"usd_per_mtok": 0.9})
+        + price_entry("agy", "gemini-4-argon-high", USER_RATES)
+        + price_entry("agy", "claude-opus-5-5-high", USER_RATES)
+        + "\n[agents.codex]\nenabled = false\n"
+        + price_entry("codex", "nonexistent-codex-model", {"usd_per_mtok": 1.0}),
+        encoding="utf-8",
+    )
+    # Active surface is `cli`: `flash` matches `native`, `claude-opus-5-5-high` is excluded by 3p,
+    # and `codex` is disabled. None of those should produce unmatched-price warnings.
+    cells_cli, payload_cli = cli_candidates(
+        tmp_path, capsys, "claude", "agy,codex", "--config", str(config)
+    )
+    assert set(cells_cli) == {"agy/gemini-4-argon-high"}
+    assert_user_card(cells_cli["agy/gemini-4-argon-high"], "agy")
+    assert [w for w in payload_cli["warnings"] if ".prices." in w] == []
+
+    # Active surface is `native`: `gemini-4-argon-high` and `claude-opus-5-5-high` match `cli`.
+    cells_nat, payload_nat = cli_candidates(
+        tmp_path, capsys, "agy", "agy", "--config", str(config)
+    )
+    assert cells_nat["agy/flash"]["usd_per_mtok"] == 0.9
+    assert payload_nat["warnings"] == []
+
