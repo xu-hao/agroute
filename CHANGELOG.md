@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.6.0 (2026-11-21)
+
+- Release agroute 0.6.0 with synchronized package and plugin versions. Issue #76 tracks
+  the release metadata, distribution validation, PyPI publication, and GitHub release.
+
 - Remove automatic runtime migration and all legacy `plans.jsonl`, `routes.jsonl`, and
   `.howhard/decisions/*.json` awareness from `src/agroute/`, read `howhard` 4.0
   `<howhard_root>/payloads.sqlite3` (`zstd`-compressed `decisions.payload` blobs and indexed

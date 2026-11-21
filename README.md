@@ -26,20 +26,20 @@ writable semantic memory remain in `howhard`.
 
 ## Quickstart
 
-You need Python 3.11+, a POSIX shell, Git, [`howhard` 2.1.0+](https://pypi.org/project/howhard/2.1.0/)
+You need Python 3.11+, a POSIX shell, Git, [`howhard` 4.0.0+](https://pypi.org/project/howhard/4.0.0/)
 and a current Codex, Claude Code or Antigravity client with native plugin support.
 
-Install the Python backend from [PyPI](https://pypi.org/project/agroute/0.5.2/) in your
+Install the Python backend from [PyPI](https://pypi.org/project/agroute/0.6.0/) in your
 project directory:
 
 ```sh
 python3 -m venv .venv-agroute
 . .venv-agroute/bin/activate
-python -m pip install "agroute==0.5.2" "howhard>=2.1.0"
+python -m pip install "agroute==0.6.0" "howhard>=4.0.0"
 agr --version
 ```
 
-Expect `agr 0.5.2`. Keep the environment active and start your agent from the same
+Expect `agr 0.6.0`. Keep the environment active and start your agent from the same
 shell so it can find `agr` and `howhard`. An existing GUI session may need the
 absolute path to `.venv-agroute/bin/agr` in your project.
 
