@@ -92,7 +92,11 @@ The returned `agroute-execution-plan-v1` object includes:
 
 ## 4. Execute and record outcome in `howhard`
 
-Execute the task using the native tool or CLI command in `invocation`. Then record the actual
+Execute the task using the native tool or CLI command in `invocation`. If the host refuses
+or terminates the worker with an HTTP 429 / usage-limit error, immediately report it to
+`agroute` (`agr usage set --agent AGENT --tier TIER --rate-limited --cooldown-until RESET_AT`
+or `agr usage ingest --agent AGENT [--tier TIER] --text "HTTP 429: ..."`) before re-running
+`agr candidates` for a fallback route. Then record the actual
 outcome in `howhard` (`clean`, `loud`, `silent`, or `interrupted` with `--cause usage_limit` /
 `provider_error` / `host_error` / `cancelled` / `unrecorded` for operational interruptions rather
 than `loud` model failures):

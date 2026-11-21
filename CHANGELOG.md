@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Tighten routing quota freshness automatically when a usable window has less than
+  `usage_low_headroom_pct` (default `20%`) remaining before its cutoff (down to
+  `usage_low_headroom_stale_after_seconds`, default `60`s), record atomic in-flight credit
+  reservations in `<state_root>/reservations.json` across consumed quota pools on `agr plan`
+  (updated by measured `howhard` observations and released on fresh probes/clears/resets),
+  and support tier-scoped host 429 refusals via `agr usage set --tier ... --rate-limited` and
+  `agr usage ingest [--tier ...] --text ...` without poisoning partial probes for other
+  windows. Issue #66 tracks headroom-scaled freshness, in-flight reservations, and host 429
+  ingestion.
+
 - Read `selection.cells`, `selection.cap_met`, and `selection.needs_review` (and fall back to
   `semantic.worlds.llm` when `selection.cells` is absent) from saved `howhard` decision
   receipts across `routes.py`, `router.plan()`, and `tui.py`, formatting `P_clean`/`P_loud`/

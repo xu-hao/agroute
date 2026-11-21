@@ -358,7 +358,17 @@ historically measured credit amount. The next calibration write emits v2 with `s
   learned credit statistics.
 
 For a known credit ceiling `C_credit` and usage percentage `u`, remaining credit is
-`round(max(0, C_credit * (100 - u) / 100 - max(C_credit * rho / 100, kappa)), 6)`. The
+`round(max(0, C_credit * (100 - u) / 100 - max(C_credit * rho / 100, kappa) - R_inflight), 6)`,
+where `R_inflight` is the sum of active in-flight credit reservations on that pool and window.
+When `agr plan` admits a cell with a positive `needed_credit_usd`, it verifies available credit
+and records an in-flight reservation in `<state_root>/reservations.json` under the usage lock
+across every consumed quota pool (including overlapping pools such as Claude `fable` and
+`shared`) so back-to-back launches cannot overcommit the same stale snapshot. A reservation is
+updated with measured spend once a matching `howhard` observation lands before the next probe,
+released when a fresh probe/ingest/set updates that window or `agr usage clear` runs, and
+expires automatically when the window resets or after 5 hours. When active, each window's
+`credit_calibration` metadata reports `reserved_credit_usd`. Raw `used_pct` is never inflated
+by reservations, keeping credit calibration grounded in measured usage deltas. The
 percentage reserve `rho` is `host_reserve_pct` for the current host and `0.0` for other agents.
 The credit reserve `kappa` is `host_reserve_credit_usd` for the current host plus
 `min_remaining_credit_usd` for any host, and the same amount applies to every window: the
@@ -435,8 +445,15 @@ Post-execution token and cost accounting belongs to `howhard` (`howhard usage co
 
 `candidates`, `inventory`, and `plan` refresh missing, stale, or expired known quota
 evidence for each enabled provider in scope before admitting it, including providers
-currently blocked by quota. Evidence is fresh for the configured per-agent age bound.
-Freshness is evaluated separately for each known window or availability scope: a report
+currently blocked by quota. Evidence is fresh for the configured per-agent age bound
+(`usage_stale_after_seconds`, default `1800`s). When a usable window's headroom before its
+effective cutoff drops below `usage_low_headroom_pct` (default `20.0%`), its routing freshness
+bound tightens to `usage_low_headroom_stale_after_seconds` (default `60`s), forcing a fresh
+probe before filtering near-cap buckets while avoiding double-probing back-to-back
+`candidates` and `plan` calls or re-probing already-exhausted windows. Explicit, unexpired
+tier or scoped rejections (`status = "rejected"` with `now < reset_at`) remain authoritative
+until `reset_at` or a probe reports headroom on that tier, without failing partial probes that
+refresh other windows. Freshness is evaluated separately for each known window or availability scope: a report
 updates only the scopes it covers, and cannot refresh an older retained scope. A first-ever
 unreported window remains unknown (`null`); no required counter is invented. An expired
 scope triggers a refresh, and a recognized current report may retire scopes already expired

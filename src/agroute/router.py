@@ -20,6 +20,8 @@ from .pricing import needs_price_resolution, rate_card, resolve_price, user_rate
 from .routes import build_snapshot, find_route, record_plan_route, register_repository
 from .usage import (
     _now_utc,
+    _usage_locked,
+    active_reserved_credit_by_pool,
     apply_usage_patch,
     clear_usage,
     effective_agent_state,
@@ -29,6 +31,7 @@ from .usage import (
     parse_native_usage,
     probe_usage,
     read_store,
+    record_credit_reservation_locked,
     resolve_model_quota,
     routing_freshness_reason,
     usage_warnings,
@@ -216,7 +219,7 @@ class Router:
             "user_config_path": str(self.config.user_config_path) if self.config.user_config_path else None,
         }
 
-    def _agent_model_quotas(self, name, cfg, eff, *, calibration_store=None):
+    def _agent_model_quotas(self, name, cfg, eff, *, calibration_store=None, reserved_credit_by_pool=None):
         nat_cands = deepcopy(cfg["native_candidates"]) if cfg["native_candidates"] else discover_agent_candidates(name, "native")
         cli_cands = deepcopy(cfg["cli_candidates"]) if cfg["cli_candidates"] else discover_agent_candidates(name, "cli")
         models_map = {}
@@ -231,6 +234,7 @@ class Router:
                     is_host=is_host,
                     surface=surface,
                     calibration_store=calibration_store,
+                    reserved_credit_by_pool=reserved_credit_by_pool,
                 )
                 if mid not in models_map:
                     entry = {
@@ -266,6 +270,7 @@ class Router:
             cfg = self.config.agents[name]
             warnings.extend(usage_warnings(name, store["agents"][name], cfg, now_dt))
             eff = visible_agent_state(name, store["agents"][name], cfg, now_dt)
+            reserved_by_pool = active_reserved_credit_by_pool(self.config, name, eff, now_dt)
             effective_plan, _ = resolve_effective_plan_credit(
                 name, cfg, eff.get("detected_plan")
             )
@@ -286,12 +291,19 @@ class Router:
                     eff,
                     is_host=False,
                     calibration_store=cal_store,
+                    reserved_credit_by_pool=reserved_by_pool,
                 ),
                 "eligible_as_target": ok_target,
                 "target_exclusion_reason": reason_target,
                 "eligible_as_host_native": ok_host,
                 "host_native_exclusion_reason": reason_host,
-                "models": self._agent_model_quotas(name, cfg, eff, calibration_store=cal_store),
+                "models": self._agent_model_quotas(
+                    name,
+                    cfg,
+                    eff,
+                    calibration_store=cal_store,
+                    reserved_credit_by_pool=reserved_by_pool,
+                ),
             }
         return {
             "format": "agroute-usage-snapshot-v1",
@@ -321,23 +333,41 @@ class Router:
             patch["session_5h"] = {"used_pct": session_used_pct, "reset_at": session_reset_at}
         if weekly_used_pct is not None or weekly_reset_at is not None:
             patch["weekly_7d"] = {"used_pct": weekly_used_pct, "reset_at": weekly_reset_at}
-        if rate_limited is not None:
-            patch["rate_limited"] = boolean(rate_limited, "rate_limited")
-        if cooldown_until is not None:
-            patch["cooldown_until"] = cooldown_until
         if tier is not None or tier_used_pct is not None or tier_reset_at is not None:
             if tier is None:
                 raise AgRouteError("usage set: --tier is required when setting tier usage or reset")
             text(tier, "tier", label=True, max_length=64)
-            patch["tiers"] = {tier: {"used_pct": tier_used_pct, "reset_at": tier_reset_at}}
+            if rate_limited is not None:
+                if tier_reset_at is not None and cooldown_until is not None and tier_reset_at != cooldown_until:
+                    raise AgRouteError(
+                        "usage set: specify either --tier-reset-at or --cooldown-until for a tier, not conflicting values"
+                    )
+                effective_tier_reset = tier_reset_at if tier_reset_at is not None else cooldown_until
+                is_rl = boolean(rate_limited, "rate_limited")
+                patch["tiers"] = {
+                    tier: {
+                        "used_pct": tier_used_pct,
+                        "reset_at": effective_tier_reset,
+                        "status": "rejected" if is_rl else "allowed",
+                    }
+                }
+            else:
+                patch["tiers"] = {tier: {"used_pct": tier_used_pct, "reset_at": tier_reset_at}}
+                if cooldown_until is not None:
+                    patch["cooldown_until"] = cooldown_until
+        else:
+            if rate_limited is not None:
+                patch["rate_limited"] = boolean(rate_limited, "rate_limited")
+            if cooldown_until is not None:
+                patch["cooldown_until"] = cooldown_until
         if not patch:
             raise AgRouteError("usage set: at least one quota or cooldown field must be specified")
         updated = apply_usage_patch(self.config, agent, patch, source="set", now=now)
         return {"agent": agent, "usage": updated}
 
-    def usage_ingest(self, agent, raw_text, *, now=None):
+    def usage_ingest(self, agent, raw_text, *, tier=None, now=None):
         agent_id(agent, "agent")
-        patch = parse_native_usage(agent, raw_text)
+        patch = parse_native_usage(agent, raw_text, tier=tier)
         updated = apply_usage_patch(self.config, agent, patch, source="ingest", now=now)
         return {"agent": agent, "usage": updated}
 
@@ -377,7 +407,7 @@ class Router:
             # Put host agent first so native candidates appear first in deterministic order
             agent_order = [host] + [a for a in AGENTS if a != host]
 
-        store, refresh_failures = ensure_fresh_usage(self.config, agent_order, now=now)
+        store, refresh_failures = ensure_fresh_usage(self.config, agent_order, host=host, now=now)
         now_dt = _now_utc(now)
         cal_store = read_calibration_store(self.config)
 
@@ -395,6 +425,7 @@ class Router:
             adapter = get_adapter(name)
             warnings.extend(usage_warnings(name, store["agents"][name], cfg, now_dt))
             eff = visible_agent_state(name, store["agents"][name], cfg, now_dt)
+            reserved_by_pool = active_reserved_credit_by_pool(self.config, name, eff, now_dt)
             is_host = name == host
             cal_summary = build_agent_calibration_summary(
                 name,
@@ -402,11 +433,12 @@ class Router:
                 eff,
                 is_host=is_host,
                 calibration_store=cal_store,
+                reserved_credit_by_pool=reserved_by_pool,
             )
             if cal_summary:
                 credit_calibration_out[name] = cal_summary
             ok_agent, reason_agent = evaluate_agent_quota(name, cfg, eff, is_host=is_host)
-            freshness = routing_freshness_reason(store["agents"][name], cfg, now_dt)
+            freshness = routing_freshness_reason(store["agents"][name], cfg, now_dt, is_host=is_host)
             if cfg["enabled"] and freshness and name not in refresh_failures:
                 refresh_failures[name] = (f"{name} quota refresh infrastructure incident at admission: {freshness}; "
                                           f"retry with agr usage probe --agent {name}")
@@ -455,6 +487,7 @@ class Router:
                     is_host=is_host,
                     surface=surface_name,
                     calibration_store=cal_store,
+                    reserved_credit_by_pool=reserved_by_pool,
                 )
                 if not mq["eligible"]:
                     excluded.append(
@@ -509,6 +542,12 @@ class Router:
                         for window in ("session_5h", "weekly_7d")
                         if f"{window}_remaining_credit_usd" in (mq.get("credit_budget") or {})
                     },
+                    "window_reserved": {
+                        window: mq["credit_calibration"][window].get("reserved_credit_usd", 0.0)
+                        for window in ("session_5h", "weekly_7d")
+                        if f"{window}_remaining_credit_usd" in (mq.get("credit_budget") or {})
+                    },
+                    "reservation_pools": deepcopy(mq.get("reservation_pools", [])),
                     "monthly_cost_usd": mq.get("monthly_cost_usd"),
                     "weekly_cost_usd": mq.get("weekly_cost_usd"),
                     "cost_per_credit": mq.get("cost_per_credit", 1.0),
@@ -857,25 +896,34 @@ class Router:
         meta = admitted_meta[(target_agent, target_model, target_effort)]
         qualified_target_model = meta["qualified_model"]
         live_budget = meta.get("credit_budget")
-        if live_budget is not None and needed_credit is not None:
-            if needed_credit > live_budget["available_credit_usd"]:
+        window_reserves = dict(meta["window_reserves"])
+        window_reserved = dict(meta.get("window_reserved", {}))
+        reservation_pools = deepcopy(meta.get("reservation_pools", []))
+
+        def _check_credit_fit(budget, reserves, reserved):
+            if budget is not None and needed_credit is not None and needed_credit > budget["available_credit_usd"]:
                 window_parts = []
-                if "session_5h_remaining_credit_usd" in live_budget:
+                if "session_5h_remaining_credit_usd" in budget:
                     window_parts.append(
-                        f"session_5h_remaining_credit_usd={live_budget['session_5h_remaining_credit_usd']:.6g}"
+                        f"session_5h_remaining_credit_usd={budget['session_5h_remaining_credit_usd']:.6g}"
                     )
-                if "weekly_7d_remaining_credit_usd" in live_budget:
+                if "weekly_7d_remaining_credit_usd" in budget:
                     window_parts.append(
-                        f"weekly_7d_remaining_credit_usd={live_budget['weekly_7d_remaining_credit_usd']:.6g}"
+                        f"weekly_7d_remaining_credit_usd={budget['weekly_7d_remaining_credit_usd']:.6g}"
                     )
-                for window, held_back in meta["window_reserves"].items():
+                for window, held_back in reserves.items():
                     if held_back > 0.0:
                         window_parts.append(f"{window}_reserve_credit_usd={held_back:.6g}")
+                for window, in_flight in reserved.items():
+                    if in_flight > 0.0:
+                        window_parts.append(f"{window}_reserved_credit_usd={in_flight:.6g}")
                 window_detail = f" ({', '.join(window_parts)})" if window_parts else ""
                 raise AgRouteError(
                     f"plan: chosen cell ({qualified_target_model!r}, {target_effort!r}) requires {needed_credit:.6g} USD credit, "
-                    f"exceeding remaining credit {live_budget['available_credit_usd']:.6g} USD{window_detail}"
+                    f"exceeding remaining credit {budget['available_credit_usd']:.6g} USD{window_detail}"
                 )
+
+        _check_credit_fit(live_budget, window_reserves, window_reserved)
         cell_cost_per_credit = meta.get("cost_per_credit", 1.0)
         if isinstance(target_panel_item, dict) and type(target_panel_item.get("cost_per_credit")) in (int, float):
             cell_cost_per_credit = float(target_panel_item["cost_per_credit"])
@@ -1005,7 +1053,59 @@ class Router:
             result["monthly_cost_usd"] = meta["monthly_cost_usd"]
         if meta.get("weekly_cost_usd") is not None:
             result["weekly_cost_usd"] = meta["weekly_cost_usd"]
-        result["route_id"] = record_plan_route(self.config, result)
+        if needed_credit is not None and needed_credit > 0.0 and reservation_pools:
+            # Re-verify against live reservations and record atomically under the usage lock.
+            with _usage_locked(self.config):
+                live_store = read_store(self.config)
+                live_eff = visible_agent_state(
+                    target_agent, live_store["agents"][target_agent], self.config.agents[target_agent], now_dt
+                )
+                live_reserved = active_reserved_credit_by_pool(self.config, target_agent, live_eff, now_dt)
+                live_cal_store = read_calibration_store(self.config)
+                live_mq = resolve_model_quota(
+                    target_agent,
+                    self.config.agents[target_agent],
+                    live_eff,
+                    meta["candidate"],
+                    is_host=(target_agent == host),
+                    surface=meta["surface"],
+                    calibration_store=live_cal_store,
+                    reserved_credit_by_pool=live_reserved,
+                )
+                if not live_mq["eligible"]:
+                    raise AgRouteError(
+                        f"plan: chosen cell ({qualified_target_model!r}, {target_effort!r}) is not an eligible route "
+                        f"for host '{host}' ({live_mq['exclusion_reason']})"
+                    )
+                locked_budget = live_mq.get("credit_budget")
+                locked_reserves = {
+                    window: live_mq["credit_calibration"][window]["reserve_credit_usd"]
+                    for window in ("session_5h", "weekly_7d")
+                    if f"{window}_remaining_credit_usd" in (locked_budget or {})
+                }
+                locked_reserved = {
+                    window: live_mq["credit_calibration"][window].get("reserved_credit_usd", 0.0)
+                    for window in ("session_5h", "weekly_7d")
+                    if f"{window}_remaining_credit_usd" in (locked_budget or {})
+                }
+                _check_credit_fit(locked_budget, locked_reserves, locked_reserved)
+                if locked_budget is not None:
+                    result["credit_budget"] = deepcopy(locked_budget)
+                route_id = record_plan_route(self.config, result, locked=True)
+                record_credit_reservation_locked(
+                    self.config,
+                    route_id=route_id,
+                    decision_id=decision_id,
+                    agent=target_agent,
+                    model=target_model,
+                    pools=live_mq.get("reservation_pools") or reservation_pools,
+                    reserved_credit_usd=needed_credit,
+                    created_at=result["evaluated_at"],
+                    now_dt=now_dt,
+                )
+                result["route_id"] = route_id
+        else:
+            result["route_id"] = record_plan_route(self.config, result)
         return result
 
     def snapshot(self, *, all_repos=True, now=None):
@@ -1057,6 +1157,7 @@ class Router:
         for name in AGENTS:
             cfg = self.config.agents[name]
             eff = effective_agent_state(store["agents"][name], now_dt)
+            reserved_by_pool = active_reserved_credit_by_pool(self.config, name, eff, now_dt)
             effective_plan, _ = resolve_effective_plan_credit(
                 name, cfg, eff.get("detected_plan")
             )
@@ -1071,7 +1172,13 @@ class Router:
                 "native_candidates": deepcopy(nat_cfg) if nat_cfg else discover_agent_candidates(name, "native", refresh=refresh),
                 "cli_source": "configured" if cli_cfg else "discovered",
                 "cli_candidates": deepcopy(cli_cfg) if cli_cfg else discover_agent_candidates(name, "cli", refresh=refresh),
-                "models": self._agent_model_quotas(name, cfg, eff, calibration_store=cal_store),
+                "models": self._agent_model_quotas(
+                    name,
+                    cfg,
+                    eff,
+                    calibration_store=cal_store,
+                    reserved_credit_by_pool=reserved_by_pool,
+                ),
             }
         return {
             "format": "agroute-models-v1",

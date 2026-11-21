@@ -32,6 +32,8 @@ from .validation import (
 )
 
 USAGE_STORE_FORMAT = "agroute-usage-store-v1"
+RESERVATIONS_STORE_FORMAT = "agroute-reservations-v1"
+RESERVATION_TTL_SECONDS = 18000.0
 PROBE_TIMEOUT_SECONDS = 15
 REFRESH_ATTEMPTS = 2
 # Patch marker: the report covers every quota window the agent currently has.
@@ -614,7 +616,31 @@ def _current_probe_evidence(patch, cfg, now_dt):
     return False
 
 
-def _freshness_reason(state, cfg, now_dt):
+def effective_stale_after_seconds(key, win, cfg, *, is_host=False):
+    """Scale freshness down to the low-headroom floor as a usable window nears its cutoff."""
+    base = float(cfg["usage_stale_after_seconds"])
+    threshold = float(cfg.get("usage_low_headroom_pct", 20.0))
+    floor = min(base, float(cfg.get("usage_low_headroom_stale_after_seconds", 60.0)))
+    used = win.get("used_pct") if isinstance(win, dict) else None
+    if threshold <= 0.0 or used is None:
+        return base
+    reserve = float(cfg.get("host_reserve_pct", 0.0)) if is_host else 0.0
+    if key == "session_5h":
+        limit = max(0.0, float(cfg["max_session_used_pct"]) - reserve)
+    elif key == "weekly_7d":
+        limit = max(0.0, float(cfg["max_weekly_used_pct"]) - reserve)
+    elif key.startswith("tiers."):
+        win_limit = float(cfg["max_session_used_pct"] if key.endswith("-5h") else cfg["max_weekly_used_pct"])
+        limit = min(float(cfg["max_tier_used_pct"]), max(0.0, win_limit - reserve))
+    else:
+        limit = 100.0
+    headroom = limit - float(used)
+    if 0.0 < headroom < threshold:
+        return floor
+    return base
+
+
+def _freshness_reason(state, cfg, now_dt, *, is_host=False):
     """Check each known scope; a recent sibling never renews its clock."""
     probe = state.get("probe", {})
     failed, succeeded = probe.get("failed_at"), probe.get("succeeded_at")
@@ -627,9 +653,18 @@ def _freshness_reason(state, cfg, now_dt):
         found = True
         if win.get("reset_at") and now_dt >= parse_timestamp(win["reset_at"]):
             return f"{key} evidence expired at {win['reset_at']}"
+        if (
+            (key.startswith("tiers.") or key.startswith("scope_availability."))
+            and win.get("status") == "rejected"
+            and win.get("reset_at") is not None
+            and now_dt < parse_timestamp(win["reset_at"])
+        ):
+            # An explicit, unexpired tier/scoped refusal remains authoritative until reset or probe recovery.
+            continue
         observed = win.get("measured_at") if win.get("used_pct") is not None else None
         observed = observed or win.get("observed_at") or state.get("updated_at")
-        if observed is None or not 0 <= (now_dt - parse_timestamp(observed)).total_seconds() <= cfg["usage_stale_after_seconds"]:
+        max_age = effective_stale_after_seconds(key, win, cfg, is_host=is_host)
+        if observed is None or not 0 <= (now_dt - parse_timestamp(observed)).total_seconds() <= max_age:
             return f"{key} evidence stale since {observed or 'unknown'}"
     # Explicit global availability/cooldown evidence has the snapshot's clock.
     if state.get("rate_limited") or state.get("cooldown_until") or not found:
@@ -658,12 +693,12 @@ def _fresh_global_block(state, cfg, now_dt):
     return False
 
 
-def routing_freshness_reason(state, cfg, now_dt):
+def routing_freshness_reason(state, cfg, now_dt, *, is_host=False):
     """Availability requires current scopes; current denial can safely block."""
-    return None if _fresh_global_block(state, cfg, now_dt) else _freshness_reason(state, cfg, now_dt)
+    return None if _fresh_global_block(state, cfg, now_dt) else _freshness_reason(state, cfg, now_dt, is_host=is_host)
 
 
-def ensure_fresh_usage(config, targets, *, now=None):
+def ensure_fresh_usage(config, targets, *, host=None, now=None):
     """Refresh routing inputs with one retry, isolating infrastructure failures."""
     store = read_store(config)
     names = list(dict.fromkeys(targets))
@@ -674,14 +709,15 @@ def ensure_fresh_usage(config, targets, *, now=None):
         pending = []
         for name in names:
             cfg, state = config.agents[name], store["agents"][name]
-            if not cfg["enabled"] or _fresh_global_block(state, cfg, now_dt) or _freshness_reason(state, cfg, now_dt) is None:
+            is_host = name == host
+            if not cfg["enabled"] or _fresh_global_block(state, cfg, now_dt) or _freshness_reason(state, cfg, now_dt, is_host=is_host) is None:
                 failures.pop(name, None)
             else:
                 pending.append(name)
         if not any(attempts[name] < REFRESH_ATTEMPTS for name in pending):
             for name in pending:
                 if name not in failures:
-                    reason = _freshness_reason(store["agents"][name], config.agents[name], now_dt)
+                    reason = _freshness_reason(store["agents"][name], config.agents[name], now_dt, is_host=(name == host))
                     exc = AgRouteError(f"usage probe: refresh budget exhausted with {reason}")
                     _record_probe_failure(config, name, exc, now)
                     failures[name] = (f"{name} quota refresh infrastructure incident after {REFRESH_ATTEMPTS} attempts: "
@@ -697,7 +733,7 @@ def ensure_fresh_usage(config, targets, *, now=None):
                 store = read_store(config)
                 now_dt = _now_utc(now)
                 state = store["agents"][name]
-                reason = None if _fresh_global_block(state, cfg, now_dt) else _freshness_reason(state, cfg, now_dt)
+                reason = None if _fresh_global_block(state, cfg, now_dt) else _freshness_reason(state, cfg, now_dt, is_host=(name == host))
                 if reason is not None:
                     raise AgRouteError(f"usage probe: {reason} after partial report")
             except AgRouteError as exc:
@@ -793,15 +829,291 @@ def evaluate_candidate_tier(agent_cfg, effective_state, candidate):
     for tok in model_tokens:
         if tok not in keys_to_check:
             keys_to_check.append(tok)
+    tiers = effective_state.get("tiers") or {}
     for key in keys_to_check:
-        tier_win = effective_state["tiers"].get(key)
-        if tier_win is not None and tier_win["used_pct"] is not None:
-            if tier_win["used_pct"] >= max_tier:
+        for tier_key in (key, f"{key}-5h", f"{key}-weekly"):
+            tier_win = tiers.get(tier_key)
+            if tier_win is None:
+                continue
+            if tier_win.get("status") == "rejected":
+                until = f" until {tier_win['reset_at']}" if tier_win.get("reset_at") else ""
+                return False, f"tier '{tier_key}' limit rejected{until}"
+            if tier_win.get("used_pct") is not None and tier_win["used_pct"] >= max_tier:
                 return (
                     False,
-                    f"tier '{key}' used_pct ({tier_win['used_pct']:.1f}%) >= max_tier_used_pct ({max_tier:.1f}%)",
+                    f"tier '{tier_key}' used_pct ({tier_win['used_pct']:.1f}%) >= max_tier_used_pct ({max_tier:.1f}%)",
                 )
     return True, None
+
+
+def _reservations_path(config) -> Path:
+    return config.state_root / "reservations.json"
+
+
+def _validate_reservation_entry(raw: dict, where: str) -> dict:
+    table(raw, where)
+    keys(
+        raw,
+        ["route_id", "agent", "model", "reserved_credit_usd", "created_at", "pools"],
+        ["decision_id"],
+        where=where,
+    )
+    route_id = text(raw["route_id"], f"{where}.route_id", max_length=128)
+    agent = agent_id(raw["agent"], f"{where}.agent")
+    model = text(raw["model"], f"{where}.model", max_length=256)
+    amount = number(raw["reserved_credit_usd"], f"{where}.reserved_credit_usd", positive=True)
+    created_at = format_timestamp(parse_timestamp(raw["created_at"], f"{where}.created_at"))
+    decision_id = raw.get("decision_id")
+    if decision_id is not None:
+        decision_id = text(decision_id, f"{where}.decision_id", max_length=128)
+    pools_raw = raw["pools"]
+    if not isinstance(pools_raw, list):
+        raise AgRouteError(f"{where}.pools: expected a list")
+    pools = []
+    for idx, entry in enumerate(pools_raw):
+        p_where = f"{where}.pools[{idx}]"
+        table(entry, p_where)
+        keys(entry, ["pool_group", "window"], ["reset_at"], where=p_where)
+        pg = text(entry["pool_group"], f"{p_where}.pool_group", label=True, max_length=64).lower()
+        win = text(entry["window"], f"{p_where}.window", label=True, max_length=32)
+        if win not in ("session_5h", "weekly_7d"):
+            raise AgRouteError(f"{p_where}.window: expected 'session_5h' or 'weekly_7d'")
+        reset_at = entry.get("reset_at")
+        if reset_at is not None:
+            reset_at = format_timestamp(parse_timestamp(reset_at, f"{p_where}.reset_at"))
+        pools.append({"pool_group": pg, "window": win, "reset_at": reset_at})
+    out = {
+        "route_id": route_id,
+        "agent": agent,
+        "model": model,
+        "reserved_credit_usd": round(float(amount), 6),
+        "created_at": created_at,
+        "pools": pools,
+    }
+    if decision_id is not None:
+        out["decision_id"] = decision_id
+    return out
+
+
+def read_reservations(config) -> list[dict]:
+    """Read and validate `<state_root>/reservations.json`, or return an empty list."""
+    check(config)
+    path = _reservations_path(config)
+    if not path.exists():
+        return []
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeError) as exc:
+        raise AgRouteError(f"reservations store: invalid JSON at {path}: {exc}") from exc
+    table(raw, "reservations store")
+    keys(raw, ["format", "reservations"], where="reservations store")
+    if raw["format"] != RESERVATIONS_STORE_FORMAT:
+        raise AgRouteError(f"reservations store: unsupported format {raw['format']!r}")
+    items = raw["reservations"]
+    if not isinstance(items, list):
+        raise AgRouteError("reservations store.reservations: expected a list")
+    return [_validate_reservation_entry(item, f"reservations[{idx}]") for idx, item in enumerate(items)]
+
+
+def _write_reservations(config, reservations: list[dict]) -> None:
+    """Persist `<state_root>/reservations.json` (caller holds `_usage_locked`)."""
+    normalized = [_validate_reservation_entry(item, f"reservations[{idx}]") for idx, item in enumerate(reservations)]
+    claim(config)
+    atomic_write(
+        _reservations_path(config),
+        json.dumps({"format": RESERVATIONS_STORE_FORMAT, "reservations": normalized}, indent=2, sort_keys=True) + "\n",
+    )
+
+
+def record_credit_reservation_locked(
+    config,
+    *,
+    route_id: str,
+    decision_id: str | None,
+    agent: str,
+    model: str,
+    pools: list[dict],
+    reserved_credit_usd: float,
+    created_at: str,
+    now_dt=None,
+) -> None:
+    """Record a pending in-flight credit reservation while caller holds `_usage_locked`."""
+    if not pools or reserved_credit_usd <= 0.0:
+        return
+    current = read_reservations(config)
+    if now_dt is not None:
+        kept = []
+        for entry in current:
+            created_dt = parse_timestamp(entry["created_at"])
+            if (now_dt - created_dt).total_seconds() > RESERVATION_TTL_SECONDS:
+                continue
+            rem_pools = [
+                p for p in entry["pools"]
+                if p.get("reset_at") is None or now_dt < parse_timestamp(p["reset_at"])
+            ]
+            if rem_pools:
+                entry = deepcopy(entry)
+                entry["pools"] = rem_pools
+                kept.append(entry)
+        current = kept
+    entry = {
+        "route_id": route_id,
+        "agent": agent,
+        "model": model,
+        "reserved_credit_usd": round(float(reserved_credit_usd), 6),
+        "created_at": created_at,
+        "pools": deepcopy(pools),
+    }
+    if decision_id:
+        entry["decision_id"] = decision_id
+    current.append(entry)
+    _write_reservations(config, current)
+
+
+def _pool_matches_tier_key(pool_group: str, tier_base: str) -> bool:
+    return tier_base == pool_group or tier_base.startswith(pool_group + "-")
+
+
+def _release_reservations_for_patch(config, agent: str, patch: dict) -> None:
+    """Release reservations covered by fresh percentage measurements in `patch` (caller holds `_usage_locked`)."""
+    if not _reservations_path(config).exists():
+        return
+    current = read_reservations(config)
+    if not any(entry["agent"] == agent for entry in current):
+        return
+    if patch.get(COMPLETE_REPORT):
+        kept = [entry for entry in current if entry["agent"] != agent]
+        if len(kept) != len(current):
+            _write_reservations(config, kept)
+        return
+
+    released_exact: set[tuple[str, str]] = set()
+    released_tier_bases: list[tuple[str, str]] = []
+    if isinstance(patch.get("session_5h"), dict) and patch["session_5h"].get("used_pct") is not None:
+        released_exact.add(("shared", "session_5h"))
+        if agent == "agy":
+            released_exact.add(("gemini", "session_5h"))
+    if isinstance(patch.get("weekly_7d"), dict) and patch["weekly_7d"].get("used_pct") is not None:
+        released_exact.add(("shared", "weekly_7d"))
+        if agent == "agy":
+            released_exact.add(("gemini", "weekly_7d"))
+    for tk, twin in (patch.get("tiers") or {}).items():
+        if not isinstance(twin, dict) or twin.get("used_pct") is None:
+            continue
+        low = str(tk).lower()
+        if low.endswith("-5h"):
+            released_tier_bases.append((low[:-3], "session_5h"))
+        elif low.endswith("-weekly"):
+            released_tier_bases.append((low[:-7], "weekly_7d"))
+        else:
+            released_tier_bases.append((low, "weekly_7d"))
+
+    if not released_exact and not released_tier_bases:
+        return
+
+    changed = False
+    kept = []
+    for entry in current:
+        if entry["agent"] != agent:
+            kept.append(entry)
+            continue
+        rem_pools = []
+        for p in entry["pools"]:
+            key = (p["pool_group"], p["window"])
+            hit = key in released_exact or any(
+                win == p["window"] and _pool_matches_tier_key(p["pool_group"], base)
+                for base, win in released_tier_bases
+            )
+            if hit:
+                changed = True
+            else:
+                rem_pools.append(p)
+        if rem_pools:
+            updated_entry = deepcopy(entry)
+            updated_entry["pools"] = rem_pools
+            kept.append(updated_entry)
+        else:
+            changed = True
+    if changed:
+        _write_reservations(config, kept)
+
+
+def _clear_reservations(config, targets: list[str]) -> None:
+    """Drop all reservations for cleared agents (caller holds `_usage_locked`)."""
+    if not _reservations_path(config).exists():
+        return
+    current = read_reservations(config)
+    target_set = set(targets)
+    kept = [entry for entry in current if entry["agent"] not in target_set]
+    if len(kept) != len(current):
+        _write_reservations(config, kept)
+
+
+def _state_window_for_pool(agent_name: str, effective_state: dict, pool_group: str, window: str) -> dict:
+    if pool_group == "shared":
+        return effective_state.get(window) or _empty_window()
+    tiers = effective_state.get("tiers") or {}
+    if window == "session_5h":
+        for candidate_key in (f"{pool_group}-5h",):
+            if candidate_key in tiers:
+                return tiers[candidate_key]
+        for tk, twin in tiers.items():
+            if tk.endswith("-5h") and _pool_matches_tier_key(pool_group, tk[:-3]):
+                return twin
+        if agent_name == "agy" and pool_group == "gemini":
+            return effective_state.get("session_5h") or _empty_window()
+        return _empty_window()
+    for candidate_key in (f"{pool_group}-weekly", pool_group):
+        if candidate_key in tiers:
+            return tiers[candidate_key]
+    for tk, twin in tiers.items():
+        if tk.endswith("-weekly") and _pool_matches_tier_key(pool_group, tk[:-7]):
+            return twin
+    if agent_name == "agy" and pool_group == "gemini":
+        return effective_state.get("weekly_7d") or _empty_window()
+    return _empty_window()
+
+
+def active_reserved_credit_by_pool(config, agent_name: str, effective_state: dict, now_dt) -> dict[tuple[str, str], float]:
+    """Sum active in-flight credit reservations per `(pool_group, window)` for `agent_name`."""
+    entries = [e for e in read_reservations(config) if e["agent"] == agent_name]
+    if not entries:
+        return {}
+    from .calibration import _load_hh_observations
+
+    obs_by_decision, _ = _load_hh_observations(config.capture_root / ".howhard")
+    totals: dict[tuple[str, str], float] = {}
+    for entry in entries:
+        created_dt = parse_timestamp(entry["created_at"])
+        age = (now_dt - created_dt).total_seconds()
+        if age < 0 or age > RESERVATION_TTL_SECONDS:
+            continue
+        decision_id = entry.get("decision_id")
+        obs = obs_by_decision.get(decision_id) if decision_id else None
+        for p in entry["pools"]:
+            if p.get("reset_at") is not None and now_dt >= parse_timestamp(p["reset_at"]):
+                continue
+            win = _state_window_for_pool(agent_name, effective_state, p["pool_group"], p["window"])
+            measured_raw = win.get("measured_at") if win.get("used_pct") is not None else None
+            measured_dt = parse_timestamp(measured_raw) if measured_raw else None
+            if measured_dt is not None and measured_dt > created_dt:
+                continue
+            if obs is not None:
+                obs_dt = obs.get("observed_dt")
+                if measured_dt is not None and obs_dt is not None and obs_dt <= measured_dt:
+                    continue
+                if obs.get("credit_usd") is not None:
+                    amount = max(0.0, float(obs["credit_usd"]))
+                elif obs.get("outcome") == "interrupted":
+                    amount = 0.0
+                else:
+                    amount = float(entry["reserved_credit_usd"])
+            else:
+                amount = float(entry["reserved_credit_usd"])
+            if amount > 0.0:
+                key = (p["pool_group"], p["window"])
+                totals[key] = round(totals.get(key, 0.0) + amount, 6)
+    return totals
 
 
 def resolve_model_quota(
@@ -813,6 +1125,7 @@ def resolve_model_quota(
     is_host=False,
     surface="cli",
     calibration_store=None,
+    reserved_credit_by_pool=None,
 ):
     """Resolve effective 5h/7d quota windows and eligibility for a specific model."""
     model_id = str(candidate["model"])
@@ -828,7 +1141,12 @@ def resolve_model_quota(
         quota_group = "shared"
         quota_pools = [(quota_group, s5, w7)]
 
-    from .calibration import credit_reserve_usd, resolve_calibrated_quota_credit
+    from .calibration import (
+        _canonical_pool_group_for_window,
+        credit_reserve_usd,
+        resolve_calibrated_quota_credit,
+    )
+    from .config import resolve_plan_credit_sources
 
     reserve = agent_cfg["host_reserve_pct"] if is_host else 0.0
     reserve_credit = credit_reserve_usd(agent_cfg, is_host=is_host)
@@ -843,7 +1161,33 @@ def resolve_model_quota(
         reserve_credit_usd=reserve_credit,
         calibration_store=calibration_store,
         quota_pools=quota_pools,
+        reserved_credit_by_pool=reserved_credit_by_pool,
     )
+    _, preset_credit, manual_credit, _ = resolve_plan_credit_sources(
+        agent_name, agent_cfg, effective_state.get("detected_plan")
+    )
+    reservation_pools: list[dict] = []
+    seen_res_keys: set[tuple[str, str]] = set()
+    for window, win_idx in (("session_5h", 1), ("weekly_7d", 2)):
+        for pool_entry in quota_pools:
+            p_group = pool_entry[0]
+            win_dict = pool_entry[win_idx]
+            canon_group, prior_c, manual_c = _canonical_pool_group_for_window(
+                agent_name, p_group, window, preset_credit, manual_credit
+            )
+            if prior_c is None and manual_c is None:
+                continue
+            rkey = (canon_group, window)
+            if rkey in seen_res_keys:
+                continue
+            seen_res_keys.add(rkey)
+            reservation_pools.append(
+                {
+                    "pool_group": canon_group,
+                    "window": window,
+                    "reset_at": win_dict.get("reset_at") if isinstance(win_dict, dict) else None,
+                }
+            )
     rem_5h = credit_budget.get("session_5h_remaining_credit_usd") if credit_budget else None
     rem_7d = credit_budget.get("weekly_7d_remaining_credit_usd") if credit_budget else None
     # A window without a known credit ceiling keeps only its percentage limits.
@@ -863,6 +1207,7 @@ def resolve_model_quota(
             "eligible": eligible,
             "exclusion_reason": exclusion_reason,
             "credit_reserve_warnings": list(reserve_warnings),
+            "reservation_pools": deepcopy(reservation_pools),
         }
         if credit_budget is not None:
             res["credit_budget"] = deepcopy(credit_budget)
@@ -901,8 +1246,14 @@ def resolve_model_quota(
     if credit_budget is not None and credit_budget["available_credit_usd"] <= 0.0:
         exhausted_win = "session_5h" if (rem_5h is not None and rem_5h <= 0.0) else "weekly_7d"
         held_back = credit_calibration[exhausted_win]["reserve_credit_usd"]
-        after_reserve = f" after {held_back:.6g} USD reserve" if held_back > 0.0 else ""
-        return _result(False, f"{exhausted_win} credit_budget exhausted (0 USD remaining{after_reserve})")
+        reserved_amt = credit_calibration[exhausted_win].get("reserved_credit_usd", 0.0)
+        parts = []
+        if held_back > 0.0:
+            parts.append(f"{held_back:.6g} USD reserve")
+        if reserved_amt > 0.0:
+            parts.append(f"{reserved_amt:.6g} USD reserved")
+        after_detail = f" after {' and '.join(parts)}" if parts else ""
+        return _result(False, f"{exhausted_win} credit_budget exhausted (0 USD remaining{after_detail})")
 
     max_session = max(0.0, agent_cfg["max_session_used_pct"] - reserve)
     max_weekly = max(0.0, agent_cfg["max_weekly_used_pct"] - reserve)
@@ -1414,6 +1765,7 @@ _RESET_RE = re.compile(
     re.IGNORECASE,
 )
 _CLAUDE_LIMIT_RE = re.compile(r"Claude AI usage limit reached\|(\d+)", re.IGNORECASE)
+_HIT_LIMIT_RE = re.compile(r"\bhit\s+your\b.{0,40}\blimit\b", re.IGNORECASE)
 _TIER_LINE_RE = re.compile(
     r"(?:tier\s+([a-z0-9._-]+)|(?:current\s+week|weekly|limit|quota)\s*\(\s*([a-z0-9._-]+)\s*\)|^\s*([a-z0-9._-]+)\s*:\s*\d)",
     re.IGNORECASE,
@@ -1441,7 +1793,21 @@ def _parse_text_usage(raw_text, patch):
             if reset_match
             else None
         )
-        if any(phrase in lower for phrase in ("rate limit reached", "quota exceeded", "usage limit reached")):
+        if (
+            any(
+                phrase in lower
+                for phrase in (
+                    "rate limit reached",
+                    "rate limit exceeded",
+                    "quota exceeded",
+                    "usage limit reached",
+                    "rate_limit_error",
+                    "too many requests",
+                    "http 429",
+                )
+            )
+            or _HIT_LIMIT_RE.search(lower)
+        ):
             patch["rate_limited"] = True
             if reset_iso is not None:
                 patch["cooldown_until"] = reset_iso
@@ -1488,8 +1854,10 @@ def _parse_text_usage(raw_text, patch):
     return changed
 
 
-def parse_native_usage(agent, raw_text):
+def parse_native_usage(agent, raw_text, *, tier=None):
     agent_id(agent, "agent")
+    if tier is not None:
+        tier = text(tier, "tier", label=True, max_length=64)
     if not isinstance(raw_text, str) or not raw_text.strip():
         raise AgRouteError("usage ingest: input text is empty")
     patch = {}
@@ -1498,7 +1866,26 @@ def parse_native_usage(agent, raw_text):
         recognized = _parse_text_usage(raw_text, patch)
     if not recognized:
         raise AgRouteError(f"usage ingest: no recognizable native usage or rate-limit data found for '{agent}'")
-    if agent == "claude" and patch.get("rate_limited") is True:
+    if tier is not None:
+        rejected_reset = patch.get("cooldown_until")
+        scoped_rejected = patch.get("rate_limited") is True
+        if not scoped_rejected:
+            for slot in ("availability", "weekly_7d", "session_5h"):
+                win = patch.get(slot)
+                if isinstance(win, dict) and win.get("status") == "rejected":
+                    scoped_rejected = True
+                    rejected_reset = rejected_reset or win.get("reset_at")
+                    if win.get("used_pct") is None:
+                        patch.pop(slot, None)
+        if scoped_rejected:
+            patch.pop("rate_limited", None)
+            patch.pop("cooldown_until", None)
+            tiers = patch.setdefault("tiers", {})
+            tier_win = dict(tiers.get(tier, _empty_window()))
+            tier_win["status"] = "rejected"
+            tier_win["reset_at"] = rejected_reset or tier_win.get("reset_at")
+            tiers[tier] = tier_win
+    elif agent == "claude" and patch.get("rate_limited") is True:
         slot = "weekly_7d" if "weekly limit" in raw_text.lower() else "availability"
         win = patch.get(slot, _empty_window())
         win["status"] = "rejected"
@@ -1580,6 +1967,7 @@ def apply_usage_patch(config, agent, patch, *, source="ingest", now=None):
         store["agents"][agent] = current
         write_store(config, store)
         if source in ("probe", "ingest", "set"):
+            _release_reservations_for_patch(config, agent, patch)
             from .calibration import record_usage_calibration_snapshot
 
             record_usage_calibration_snapshot(config, agent, current, now_dt)
@@ -1597,6 +1985,7 @@ def clear_usage(config, agent=None):
         for name in targets:
             store["agents"][name] = _empty_agent_state()
         write_store(config, store)
+        _clear_reservations(config, targets)
         from .calibration import reset_calibration_snapshots
 
         reset_calibration_snapshots(config, targets)
