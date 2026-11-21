@@ -619,8 +619,11 @@ their live outcome state (`pending`, `clean`, `loud`, `silent`, `review`, `plann
 task summary.
 
 - `agr tui [--repo NAME] [--agent AGENT] [--current-repo] [--refresh-interval SEC] [--no-probe]`:
-  interactive Textual terminal dashboard showing live agent quota/eligibility badges, active and
-  historical model routes, `Enter` route detail modal, `u` live usage & eligibility modal,
+  interactive Textual terminal dashboard showing live agent quota/eligibility badges (with
+  5h/7d percentages and estimated remaining quota credit when calibrated), active and
+  historical model routes, `Enter` route detail modal, `u` live usage & eligibility modal
+  (showing estimated used/ceiling/remaining credit alongside 5h/7d percentages, per-pool
+  calibrated credit summaries, and per-model window credit),
   `h` history toggle, and filter pickers for repository (`p`), target agent (`a`), model (`m`),
   and state (`s`). Enabled providers with missing, stale, failed, or expired usage are
   probed off the UI loop automatically, with a 60-second retry cooldown and one probe

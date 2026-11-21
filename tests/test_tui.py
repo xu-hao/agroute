@@ -517,3 +517,184 @@ def test_cli_tui_wires_probe_factory(monkeypatch):
     monkeypatch.setattr(cli.tui, 'run', fake_run)
     assert cli.main(['tui', '--now', '2026-11-09T12:00:00Z']) == 0
     assert calls == [(False, '2026-11-09T12:00:00Z'), (True, '2026-11-09T12:00:00Z')]
+
+
+@pytest.mark.asyncio
+async def test_tui_shows_estimated_credit_alongside_percentages():
+    snap = _make_snapshot()
+    snap["agents"]["codex"]["effective_plan"] = "plus-20"
+    snap["agents"]["codex"]["credit_calibration"] = {
+        "shared": {
+            "plan": "plus-20",
+            "available_credit_usd": 1.6,
+            "session_5h": {
+                "pool_group": "shared",
+                "calibrated_credit_usd": 20.0,
+                "used_pct": 42.0,
+                "remaining_credit_usd": 1.6,
+                "reserve_credit_usd": 10.0,
+            },
+            "weekly_7d": {
+                "pool_group": "shared",
+                "calibrated_credit_usd": 50.0,
+                "used_pct": 18.0,
+                "remaining_credit_usd": 31.0,
+                "reserve_credit_usd": 10.0,
+            },
+        }
+    }
+    snap["agents"]["codex"]["models"] = {
+        "gpt-6.2-sol": {
+            "quota_group": "shared",
+            "session_5h": {"used_pct": 42.0},
+            "weekly_7d": {"used_pct": 18.0},
+            "eligible": True,
+            "cost_per_credit": 0.0933,
+            "credit_budget": {
+                "available_credit_usd": 1.6,
+                "session_5h_remaining_credit_usd": 1.6,
+                "weekly_7d_remaining_credit_usd": 31.0,
+            },
+        }
+    }
+    snap["agents"]["claude"]["effective_plan"] = "max-20x"
+    snap["agents"]["claude"]["session_5h"] = {"used_pct": None, "reset_at": None}
+    snap["agents"]["claude"]["credit_calibration"] = {
+        "shared": {
+            "plan": "max-20x",
+            "available_credit_usd": 620.0,
+            "session_5h": {
+                "pool_group": "shared",
+                "calibrated_credit_usd": 360.0,
+                "used_pct": None,
+                "remaining_credit_usd": None,
+                "reserve_credit_usd": 10.0,
+            },
+            "weekly_7d": {
+                "pool_group": "shared",
+                "calibrated_credit_usd": 900.0,
+                "used_pct": 30.0,
+                "remaining_credit_usd": 620.0,
+                "reserve_credit_usd": 10.0,
+            },
+        },
+        "fable": {
+            "plan": "max-20x",
+            "available_credit_usd": 200.0,
+            "weekly_7d": {
+                "pool_group": "fable",
+                "calibrated_credit_usd": 300.0,
+                "used_pct": 30.0,
+                "remaining_credit_usd": 200.0,
+                "reserve_credit_usd": 10.0,
+            },
+        },
+    }
+    snap["agents"]["agy"]["effective_plan"] = "ultra-200"
+    snap["agents"]["agy"]["session_5h"] = {"used_pct": 5.44, "reset_at": "2026-11-09T02:00:00Z"}
+    snap["agents"]["agy"]["weekly_7d"] = {"used_pct": 16.73, "reset_at": "2026-11-15T00:00:00Z"}
+    snap["agents"]["agy"]["credit_calibration"] = {
+        "3p": {
+            "plan": "ultra-200",
+            "available_credit_usd": 15.0,
+            "session_5h": {
+                "pool_group": "3p",
+                "calibrated_credit_usd": 25.0,
+                "used_pct": 0.0,
+                "remaining_credit_usd": 15.0,
+                "reserve_credit_usd": 10.0,
+            },
+            "weekly_7d": {
+                "pool_group": "3p",
+                "calibrated_credit_usd": 50.0,
+                "used_pct": 6.25,
+                "remaining_credit_usd": 36.875,
+                "reserve_credit_usd": 10.0,
+            },
+        },
+        "gemini": {
+            "plan": "ultra-200",
+            "available_credit_usd": 292.592,
+            "session_5h": {
+                "pool_group": "gemini",
+                "calibrated_credit_usd": 320.0,
+                "used_pct": 5.44,
+                "remaining_credit_usd": 292.592,
+                "reserve_credit_usd": 10.0,
+            },
+            "weekly_7d": {
+                "pool_group": "gemini",
+                "calibrated_credit_usd": 1350.0,
+                "used_pct": 16.73,
+                "remaining_credit_usd": 1114.145,
+                "reserve_credit_usd": 10.0,
+            },
+        },
+    }
+
+    app = build_app(lambda: deepcopy(snap), refresh_interval=60.0)
+    async with app.run_test(size=(140, 32)) as pilot:
+        await pilot.pause()
+
+        status = str(app.query_one("#route-status", Static).render())
+        assert "codex 42%/18% (~$1.60/$31)" in status
+        assert "claude —/30% (—/~$620)" in status
+        assert "agy 5%/17% (~$293/$1114)" in status
+
+        await pilot.press("u")
+        await pilot.pause()
+        usage_body = str(app.screen.query_one("#show-body", Static).render())
+        # Agent top-level 5h/7d lines include estimated credit used/ceiling/left/reserve.
+        assert "5h session used: 42.0% (~$8.40/$20.00 credit, ~$1.60 left, $10.00 reserve)" in usage_body
+        assert "7d weekly used:  18.0% (~$9.00/$50.00 credit, ~$31.00 left, $10.00 reserve)" in usage_body
+        assert "5h session used: —% (est. ceiling ~$360.00 credit, $10.00 reserve)" in usage_body
+        assert "5h session used: 5.44% (~$17.41/$320.00 credit, ~$292.59 left, $10.00 reserve)" in usage_body
+        # Multi-pool summaries show all calibrated pools (including claude fable and agy 3p/gemini).
+        assert "Estimated credit pools (plan: max-20x):" in usage_body
+        assert "fable: available=~$200.00 credit" in usage_body
+        assert "Estimated credit pools (plan: ultra-200):" in usage_body
+        assert "3p: available=~$15.00 credit" in usage_body
+        assert "gemini: available=~$292.59 credit" in usage_body
+        # Per-model quota shows estimated remaining credit alongside 5h and 7d percentages.
+        assert "codex/gpt-6.2-sol [shared]: 5h=42.0% (~$1.60 left) 7d=18.0% (~$31.00 left)" in usage_body
+        await pilot.press("q")
+        await pilot.pause()
+
+
+@pytest.mark.asyncio
+async def test_tui_end_to_end_router_snapshot_renders_calibrated_credit(tmp_path):
+    cfg = tmp_path / "agroute.toml"
+    cfg.write_text(
+        """
+[agents.codex]
+plan = "plus-20"
+min_remaining_credit_usd = 5.0
+
+[[agents.codex.cli_candidates]]
+model = "gpt-6.2-sol"
+effort = "high"
+""",
+        encoding="utf-8",
+    )
+    router = Router(cfg, project=tmp_path, state_directory=tmp_path / "state", include_user_config=False)
+    router.usage_set(
+        "codex",
+        session_used_pct=25.0,
+        weekly_used_pct=40.0,
+        now="2026-11-20T12:00:00Z",
+    )
+
+    app = build_app(lambda: router.snapshot(all_repos=False, now="2026-11-20T12:00:00Z"), refresh_interval=60.0)
+    async with app.run_test(size=(130, 30)) as pilot:
+        await pilot.pause()
+        status = str(app.query_one("#route-status", Static).render())
+        # plus-20 defaults: 5h=$20 (25% used -> $15 - $5 reserve = $10), 7d=$50 (40% used -> $30 - $5 reserve = $25)
+        assert "codex 25%/40% (~$10/$25)" in status
+
+        await pilot.press("u")
+        await pilot.pause()
+        usage_body = str(app.screen.query_one("#show-body", Static).render())
+        assert "5h session used: 25.0% (~$5.00/$20.00 credit, ~$10.00 left, $5.00 reserve)" in usage_body
+        assert "7d weekly used:  40.0% (~$20.00/$50.00 credit, ~$25.00 left, $5.00 reserve)" in usage_body
+        assert "Estimated credit pools (plan: plus-20):" in usage_body
+        assert "codex/gpt-6.2-sol [shared]: 5h=25.0% (~$10.00 left) 7d=40.0% (~$25.00 left)" in usage_body
