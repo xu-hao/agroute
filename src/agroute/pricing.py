@@ -15,6 +15,7 @@ from .validation import format_timestamp, parse_timestamp
 RATE_CARD_FORMAT = "howhard-rate-card-v1"
 RATE_CATEGORIES = ("input", "output", "cache_read", "cache_write", "cache_write_5m", "cache_write_1h")
 VERIFIED_AT = "2026-11-12T02:18:20+00:00"
+VERIFIED_AT_2026_11_21 = "2026-11-21T00:00:00+00:00"
 GUESS_VERSION = "agroute-guess-2026-11-12"
 USER_SOURCE = "user config"
 USER_VERSION = "user-config"
@@ -29,10 +30,20 @@ _OPENAI = {
     "source": "https://developers.openai.com/api/docs/pricing",
     "version": "openai-list-2026-11-12",
 }
+_OPENAI_2026_11_21 = {
+    "provider": "openai",
+    "source": "https://developers.openai.com/api/docs/pricing",
+    "version": "openai-list-2026-11-21",
+}
 _GOOGLE = {
     "provider": "google",
     "source": "https://cloud.google.com/vertex-ai/generative-ai/pricing",
     "version": "google-cloud-list-2026-11-12",
+}
+_GOOGLE_2026_11_21 = {
+    "provider": "google",
+    "source": "https://cloud.google.com/vertex-ai/generative-ai/pricing",
+    "version": "google-cloud-list-2026-11-21",
 }
 _OPENAI_OSS = {
     "provider": "openai-oss",
@@ -113,12 +124,15 @@ _CATALOG = {
     "claude-haiku-4-5": _entry(_ANTHROPIC, (VERIFIED_AT, anthropic_rates(1, 5, 0.10, 1.25, 2))),
     "claude-haiku-4-5-20251001": _entry(_ANTHROPIC, (VERIFIED_AT, anthropic_rates(1, 5, 0.10, 1.25, 2))),
     # Standard short-context rows (prompts up to 272K input tokens).
+    "gpt-6.2-astra": _entry(_OPENAI_2026_11_21, (VERIFIED_AT_2026_11_21, openai_rates(8.00, 40.00, 0.40, 10.00))),
+    "gpt-6.2-sol": _entry(_OPENAI_2026_11_21, (VERIFIED_AT_2026_11_21, openai_rates(2.00, 10.00, 0.10, 2.50))),
     "gpt-6-astra": _entry(_OPENAI, (VERIFIED_AT, openai_rates(10.00, 50.00, 1.00, 12.50))),
     "gpt-6-sol": _entry(_OPENAI, (VERIFIED_AT, openai_rates(2.00, 10.00, 0.20, 2.50))),
     "gpt-6.1-sol": _entry(_OPENAI, (VERIFIED_AT, openai_rates(2.00, 10.00, 0.10, 2.50))),
     "gpt-6.1-terra": _entry(_OPENAI, (VERIFIED_AT, openai_rates(1.00, 5.00, 0.05, 1.25))),
     "gpt-6-luna": _entry(_OPENAI, (VERIFIED_AT, openai_rates(0.10, 0.50, 0.01, 0.125))),
     # Google Cloud Global Standard rates, with published scheduled changes.
+    "gemini-4-neon": _entry(_GOOGLE_2026_11_21, (VERIFIED_AT_2026_11_21, google_rates(3.00, 15.00, 0.15))),
     "gemini-4-hydrogen": _entry(_GOOGLE, (VERIFIED_AT, google_rates(1.50, 7.50, 0.075))),
     "gemini-4-carbon": _entry(
         _GOOGLE,
@@ -211,6 +225,8 @@ def resolve_price(key, at, snapshot=None, *, _seen=()):
 
     status = entry["status"]
     if status == "unlisted":
+        if builtin is not None and builtin["effective"] >= entry["resolved"]:
+            return builtin
         return None
     if status == "alias":
         target = entry["alias_of"]
@@ -240,16 +256,23 @@ def needs_price_resolution(key, at, snapshot=None, *, _seen=()):
     """Return True when a discovered model key lacks a built-in/active entry or has an expired entry."""
     if not key or key.startswith("agy:") or key in _seen:
         return False
+    builtin = _builtin(key, at)
     if snapshot is not None and key in snapshot["models"]:
         raw_entry = snapshot["models"][key]
+        if (
+            raw_entry["status"] == "unlisted"
+            and builtin is not None
+            and builtin["effective"] >= raw_entry["resolved"]
+        ):
+            return False
         if at >= raw_entry["expires"]:
-            return True
+            return builtin is None
         if raw_entry["resolved"] <= at:
             if raw_entry["status"] in ("priced", "unlisted"):
                 return False
             if raw_entry["status"] == "alias":
                 return resolve_price(key, at, snapshot, _seen=_seen) is None
-    return _builtin(key, at) is None
+    return builtin is None
 
 
 def rate_card(price, model):

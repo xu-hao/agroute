@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Harden `"unlisted"` calling-agent price caching and expand the built-in rate catalog: shorten
+  the default `"unlisted"` negative-cache TTL from 7 days to 1 day, require a live web lookup
+  and non-empty `checked_sources` (`http://`/`https://` URLs) on new `"unlisted"` resolutions
+  in `agr prices resolve` (while keeping legacy on-disk snapshots readable), let newer built-in
+  catalog cards (`effective_at >= resolved_at`) supersede older `"unlisted"` entries in
+  `resolve_price` and `needs_price_resolution`, and add verified built-in rates (effective
+  `2026-11-21T00:00:00+00:00`) for `gemini-4-neon`, `gpt-6.2-astra`, and `gpt-6.2-sol`. Issue
+  #73 tracks the unlisted-pricing safeguards and built-in catalog additions.
+
 - Read `selection.cells`, `selection.cap_met`, and `selection.needs_review` (and fall back to
   `semantic.worlds.llm` when `selection.cells` is absent) from saved `howhard` decision
   receipts across `routes.py`, `router.plan()`, and `tui.py`, formatting `P_clean`/`P_loud`/

@@ -28,7 +28,7 @@ SHOW_FORMAT = "agroute-price-show-v1"
 
 DEFAULT_PRICED_TTL_DAYS = 30
 DEFAULT_ALIAS_TTL_DAYS = 30
-DEFAULT_UNLISTED_TTL_DAYS = 7
+DEFAULT_UNLISTED_TTL_DAYS = 1
 
 VALID_STATUSES = ("priced", "alias", "unlisted")
 
@@ -36,6 +36,9 @@ PRICE_REQUEST_CONTRACT = (
     "Resolve every entry in `unpriced_models` and write a JSON object "
     '`{"models": {"<key>": <resolution>, ...}}` to a local file, then run '
     "`agr prices resolve --file <path> --json`. "
+    'Before marking any model `"unlisted"`, you MUST perform a live web lookup against official '
+    "first-party provider pricing pages; never guess from training data or mark a model "
+    '`"unlisted"` when offline. '
     "Each `<resolution>` must use one of three statuses:\n"
     '1. `"priced"`: official first-party provider list pricing in USD per 1M tokens across all six '
     "categories (`input`, `output`, `cache_read`, `cache_write`, `cache_write_5m`, `cache_write_1h`; "
@@ -49,9 +52,11 @@ PRICE_REQUEST_CONTRACT = (
     '(produces a labelled `guess:` card): '
     '`{"status": "alias", "alias_of": "<catalog_key>", "reason": "<why this maps to alias_of>"}` '
     "(default TTL: 30 days).\n"
-    '3. `"unlisted"`: internal/experimental model with no published token pricing and no clear catalog '
-    "alias (negative cache entry so the model stays unpriced without re-prompting until expiry): "
-    '`{"status": "unlisted", "reason": "<why unlisted>"}` (default TTL: 7 days).'
+    '3. `"unlisted"`: internal/experimental model confirmed absent from official provider pricing '
+    "via a live web lookup, with no clear catalog alias (short negative cache so the model stays "
+    "unpriced without re-prompting until expiry): "
+    '`{"status": "unlisted", "reason": "<why unlisted>", "checked_sources": ["<official URL>", ...]}` '
+    "(default TTL: 1 day)."
 )
 
 
@@ -64,6 +69,19 @@ def _validate_model_key(raw_key: str, where: str) -> str:
     if "/" in key or ":" in key or key.strip() != key:
         raise AgRouteError(f"{where}: expected bare catalog key without agent prefix, got {raw_key!r}")
     return key
+
+
+def _validate_checked_sources(raw_sources: object, where: str) -> list[str]:
+    if not isinstance(raw_sources, list) or not raw_sources:
+        raise AgRouteError(f"{where}: expected a list with at least one checked source URL")
+    urls: list[str] = []
+    for idx, item in enumerate(raw_sources):
+        url = text(item, f"{where}[{idx}]", max_length=512).strip()
+        if not (url.startswith("http://") or url.startswith("https://")) or len(url.split("://", 1)[1].strip("/")) == 0:
+            raise AgRouteError(f"{where}[{idx}]: expected an http:// or https:// URL, got {url!r}")
+        if url not in urls:
+            urls.append(url)
+    return urls
 
 
 def _validate_entry(model: str, raw_entry: dict, where: str, *, default_now: datetime | None = None) -> dict:
@@ -79,8 +97,10 @@ def _validate_entry(model: str, raw_entry: dict, where: str, *, default_now: dat
         keys(raw_entry, ["status", "provider", "source", "rates", *required_time], optional_time, where=where)
     elif status == "alias":
         keys(raw_entry, ["status", "alias_of", "reason", *required_time], optional_time, where=where)
+    elif default_now is not None:
+        keys(raw_entry, ["status", "reason", "checked_sources"], optional_time, where=where)
     else:
-        keys(raw_entry, ["status", "reason", *required_time], optional_time, where=where)
+        keys(raw_entry, ["status", "reason", *required_time], ["checked_sources"], where=where)
 
     if raw_entry.get("resolved_at") is not None:
         resolved_dt = parse_timestamp(raw_entry["resolved_at"], f"{where}.resolved_at")
@@ -146,7 +166,7 @@ def _validate_entry(model: str, raw_entry: dict, where: str, *, default_now: dat
         }
 
     reason = text(raw_entry["reason"], f"{where}.reason", max_length=512)
-    return {
+    entry = {
         "status": "unlisted",
         "reason": reason,
         "resolved_at": resolved_iso,
@@ -154,6 +174,12 @@ def _validate_entry(model: str, raw_entry: dict, where: str, *, default_now: dat
         "resolved": resolved_dt,
         "expires": expires_dt,
     }
+    if "checked_sources" in raw_entry:
+        entry["checked_sources"] = _validate_checked_sources(
+            raw_entry["checked_sources"],
+            f"{where}.checked_sources",
+        )
+    return entry
 
 
 def _strip_runtime_fields(entry: dict) -> dict:
@@ -178,6 +204,11 @@ def _validate_alias_targets(models: dict[str, dict], where: str) -> None:
                 if target_entry["status"] == "alias":
                     cur = target_entry["alias_of"]
                     continue
+                builtin_entry = _CATALOG.get(cur)
+                if builtin_entry is not None and any(
+                    period[0] >= target_entry["resolved"] for period in builtin_entry["periods"]
+                ):
+                    break
                 raise AgRouteError(
                     f"{where}.{start_key}.alias_of: target {cur!r} is marked 'unlisted' and has no price"
                 )

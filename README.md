@@ -186,8 +186,9 @@ The calling agent looks up official first-party provider pricing (or classifies 
 harness model as an `"alias"` of a known catalog key or `"unlisted"`) and persists the
 resolution locally via `agr prices resolve --file <path> --json` (inspected with
 `agr prices show --json`). `"priced"` and `"alias"` entries carry a 30-day default TTL,
-while `"unlisted"` negative-cache entries carry a 7-day default TTL so unpriced internal
-models do not re-prompt on every call. See
+while `"unlisted"` negative-cache entries require a live web lookup with `checked_sources`
+and carry a 1-day default TTL (and are superseded automatically if a newer built-in catalog
+card is shipped) so unpriced internal models do not re-prompt on every call. See
 [calling-agent price resolution](docs/reference.md#calling-agent-price-resolution).
 
 ### Subscription cost and quota credit
