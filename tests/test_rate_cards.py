@@ -560,6 +560,74 @@ def test_toml_inventory_round_trips_configured_cards_with_any_text(tmp_path, cap
     assert tomllib.loads(capsys.readouterr().out)["inventories"]["router"] == payload["candidates"]
 
 
+def test_builtin_cards_for_2026_11_21_models(tmp_path, capsys):
+    verified_nov21 = "2026-11-21T00:00:00+00:00"
+    google_nov21 = ("google", "https://cloud.google.com/vertex-ai/generative-ai/pricing", "google-cloud-list-2026-11-21")
+    openai_nov21 = ("openai", "https://developers.openai.com/api/docs/pricing", "openai-list-2026-11-21")
+
+    write_agy_cache(
+        parse_agy_models_output(
+            "Fetching available models...\n"
+            "gemini-4-neon-high\tGemini 4 Neon (High)\n"
+            "gemini-4-neon-xhigh\tGemini 4 Neon (XHigh)\n"
+            "gemini-4-neon-medium\tGemini 4 Neon (Medium)\n"
+            "gemini-4-neon-low\tGemini 4 Neon (Low)\n"
+        )
+    )
+    write_codex_cache(["gpt-6.2-astra", "gpt-6.2-sol"])
+
+    # Unpriced before the 2026-11-21 verification boundary.
+    before_cells, _ = cli_candidates(tmp_path, capsys, "agy", "agy,codex", now="2026-11-20T23:59:59Z")
+    for key in (
+        "agy/gemini-4-neon-high",
+        "agy/gemini-4-neon-xhigh",
+        "agy/gemini-4-neon-medium",
+        "agy/gemini-4-neon-low",
+        "codex/gpt-6.2-astra",
+        "codex/gpt-6.2-sol",
+    ):
+        assert_unpriced(before_cells[key])
+
+    # Priced at and after 2026-11-21T00:00:00Z.
+    at_cells, _ = cli_candidates(tmp_path, capsys, "agy", "agy,codex", now="2026-11-21T00:00:00Z")
+    neon_rates = {
+        "input": 3.00,
+        "output": 15.00,
+        "cache_read": 0.15,
+        "cache_write": 3.00,
+        "cache_write_5m": 3.00,
+        "cache_write_1h": 3.00,
+    }
+    for effort in ("low", "medium", "high", "xhigh"):
+        assert_card(at_cells[f"agy/gemini-4-neon-{effort}"], google_nov21, neon_rates, verified_nov21)
+    assert_card(
+        at_cells["codex/gpt-6.2-astra"],
+        openai_nov21,
+        {
+            "input": 8.00,
+            "output": 40.00,
+            "cache_read": 0.40,
+            "cache_write": 10.00,
+            "cache_write_5m": 10.00,
+            "cache_write_1h": 10.00,
+        },
+        verified_nov21,
+    )
+    assert_card(
+        at_cells["codex/gpt-6.2-sol"],
+        openai_nov21,
+        {
+            "input": 2.00,
+            "output": 10.00,
+            "cache_read": 0.10,
+            "cache_write": 2.50,
+            "cache_write_5m": 2.50,
+            "cache_write_1h": 2.50,
+        },
+        verified_nov21,
+    )
+
+
 def _inline_rate_card(model, *, basis="estimate"):
     card = {
         "format": "howhard-rate-card-v1",
@@ -712,4 +780,3 @@ def test_per_model_price_matching_other_surface_excluded_candidate_or_disabled_a
     )
     assert cells_nat["agy/flash"]["usd_per_mtok"] == 0.9
     assert payload_nat["warnings"] == []
-

@@ -31,7 +31,7 @@ returns a non-null `price_request`, inspect `price_request.unpriced_models` and 
 # 1. Inspect pending unknown models (if not already read from `candidates --json`)
 agr prices pending --host agy --json
 
-# 2. Write resolutions (`"priced"`, `"alias"`, or `"unlisted"`) and persist locally
+# 2. Write resolutions (`"priced"`, `"alias"`, or `"unlisted"` with `checked_sources` after a live web lookup) and persist locally
 agr prices resolve --file /tmp/task-price-resolutions.json --json
 
 # 3. Re-emit candidates now that prices.json is populated

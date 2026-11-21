@@ -131,6 +131,7 @@ def test_price_request_surfaces_unpriced_models_and_display_names(tmp_path, caps
     assert req["format"] == "agroute-price-request-v1"
     assert req["resolve_command"] == "agr prices resolve --file <path> --json"
     assert "priced" in req["contract"] and "alias" in req["contract"] and "unlisted" in req["contract"]
+    assert "checked_sources" in req["contract"] and "live web lookup" in req["contract"]
     by_key = {row["key"]: row for row in req["unpriced_models"]}
     assert set(by_key) == {"claude-next-6-0", "gemini-pro-orchestrator", "gpt-7-nova"}
     assert by_key["gemini-pro-orchestrator"] == {
@@ -215,6 +216,7 @@ def test_prices_resolve_supports_priced_alias_and_unlisted_with_ttls(tmp_path, c
                     "gpt-7-nova": {
                         "status": "unlisted",
                         "reason": "Internal preview slug with no published API token rates",
+                        "checked_sources": ["https://developers.openai.com/api/docs/pricing"],
                     },
                 }
             }
@@ -244,7 +246,10 @@ def test_prices_resolve_supports_priced_alias_and_unlisted_with_ttls(tmp_path, c
     assert resolve_report["resolved_models"] == ["claude-next-6-0", "gemini-pro-orchestrator", "gpt-7-nova"]
     assert resolve_report["models"]["claude-next-6-0"]["expires_at"] == "2026-12-12T12:00:00Z"
     assert resolve_report["models"]["gemini-pro-orchestrator"]["expires_at"] == "2026-12-12T12:00:00Z"
-    assert resolve_report["models"]["gpt-7-nova"]["expires_at"] == "2026-11-19T12:00:00Z"
+    assert resolve_report["models"]["gpt-7-nova"]["expires_at"] == "2026-11-13T12:00:00Z"
+    assert resolve_report["models"]["gpt-7-nova"]["checked_sources"] == [
+        "https://developers.openai.com/api/docs/pricing"
+    ]
 
     snap_disk = json.loads((state_dir / "prices.json").read_text(encoding="utf-8"))
     assert snap_disk["format"] == "agroute-price-snapshot-v2"
@@ -294,13 +299,13 @@ def test_prices_resolve_supports_priced_alias_and_unlisted_with_ttls(tmp_path, c
     # `unlisted` stays unpriced without re-triggering `price_request` before expiry
     assert "rate_card" not in by_model[("codex/gpt-7-nova", "high")]
 
-    # After 8 days (`2026-11-20`), 7-day `unlisted` expires and re-prompts; 30-day `priced`/`alias` stay active
-    later_8d = "2026-11-20T12:00:01Z"
-    res_8d = router.candidates("agy", now=later_8d)
-    req_8d = res_8d["price_request"]
-    assert req_8d is not None
-    assert [m["key"] for m in req_8d["unpriced_models"]] == ["gpt-7-nova"]
-    assert req_8d["unpriced_models"][0]["expired_at"] == "2026-11-19T12:00:00Z"
+    # After 1 day (`2026-11-13`), 1-day `unlisted` expires and re-prompts; 30-day `priced`/`alias` stay active
+    later_1d = "2026-11-13T12:00:01Z"
+    res_1d = router.candidates("agy", now=later_1d)
+    req_1d = res_1d["price_request"]
+    assert req_1d is not None
+    assert [m["key"] for m in req_1d["unpriced_models"]] == ["gpt-7-nova"]
+    assert req_1d["unpriced_models"][0]["expired_at"] == "2026-11-13T12:00:00Z"
 
     # On `2026-12-02`, the `gemini-pro-orchestrator -> gemini-4-carbon` alias automatically tracks Carbon's scheduled price change
     res_dec = router.candidates("agy", include_agents=["agy"], now="2026-12-02T00:00:00Z")
@@ -374,8 +379,44 @@ def test_resolved_price_precedence_against_builtin_and_user_config(tmp_path):
     [
         ({"models": {}}, "expected at least one model resolution"),
         (
-            {"models": {"claude/foo": {"status": "unlisted", "reason": "bad key"}}},
+            {
+                "models": {
+                    "claude/foo": {
+                        "status": "unlisted",
+                        "reason": "bad key",
+                        "checked_sources": ["https://platform.claude.com/docs/en/about-claude/pricing"],
+                    }
+                }
+            },
             "bare catalog key",
+        ),
+        (
+            {"models": {"missing-sources": {"status": "unlisted", "reason": "did not check web"}}},
+            "missing keys \\['checked_sources'\\]",
+        ),
+        (
+            {
+                "models": {
+                    "empty-sources": {
+                        "status": "unlisted",
+                        "reason": "no URLs",
+                        "checked_sources": [],
+                    }
+                }
+            },
+            "at least one",
+        ),
+        (
+            {
+                "models": {
+                    "bad-url": {
+                        "status": "unlisted",
+                        "reason": "not a URL",
+                        "checked_sources": ["cloud.google.com/pricing"],
+                    }
+                }
+            },
+            "http:// or https://",
         ),
         (
             {"models": {"self-model": {"status": "alias", "alias_of": "self-model", "reason": "loop"}}},
@@ -397,7 +438,11 @@ def test_resolved_price_precedence_against_builtin_and_user_config(tmp_path):
         (
             {
                 "models": {
-                    "neg-target": {"status": "unlisted", "reason": "no price"},
+                    "neg-target": {
+                        "status": "unlisted",
+                        "reason": "no price",
+                        "checked_sources": ["https://example.invalid/pricing"],
+                    },
                     "bad-alias": {"status": "alias", "alias_of": "neg-target", "reason": "points to unlisted"},
                 }
             },
@@ -409,6 +454,7 @@ def test_resolved_price_precedence_against_builtin_and_user_config(tmp_path):
                     "bad-exp": {
                         "status": "unlisted",
                         "reason": "expired before resolved",
+                        "checked_sources": ["https://example.invalid/pricing"],
                         "resolved_at": "2026-11-12T12:00:00Z",
                         "expires_at": "2026-11-12T12:00:00Z",
                     }
@@ -438,7 +484,15 @@ def test_corrupt_or_unclaimed_prices_snapshot_refusal_and_repair(tmp_path):
     state_dir = tmp_path / "state"
     router = Router(project=tmp_path, state_directory=state_dir, include_user_config=False)
     router.prices_resolve(
-        {"models": {"temp-model": {"status": "unlisted", "reason": "initial"}}},
+        {
+            "models": {
+                "temp-model": {
+                    "status": "unlisted",
+                    "reason": "initial",
+                    "checked_sources": ["https://example.invalid/pricing"],
+                }
+            }
+        },
         now=NOW,
     )
     (state_dir / "prices.json").write_text("{corrupt json", encoding="utf-8")
@@ -446,8 +500,163 @@ def test_corrupt_or_unclaimed_prices_snapshot_refusal_and_repair(tmp_path):
         router.candidates("agy", include_agents=["agy"], now=NOW)
 
     repaired = router.prices_resolve(
-        {"models": {"temp-model": {"status": "unlisted", "reason": "repaired"}}},
+        {
+            "models": {
+                "temp-model": {
+                    "status": "unlisted",
+                    "reason": "repaired",
+                    "checked_sources": ["https://example.invalid/pricing"],
+                }
+            }
+        },
         now=NOW,
     )
     assert repaired["previous_snapshot_error"] is not None
     assert router.candidates("agy", include_agents=["agy"], now=NOW)["candidates"]
+
+
+def test_newer_builtin_supersedes_older_unlisted_including_legacy_snapshot(tmp_path):
+    _write_agy_cache(
+        "Fetching available models...\n"
+        "gemini-4-neon-high\tGemini 4 Neon (High)\n"
+        "gemini-4-carbon-high\tGemini 4 Carbon (High)\n"
+        "gemini-pro-orchestrator-neon\tOrchestrator (Neon)\n"
+    )
+    _write_codex_cache(
+        [
+            {
+                "slug": "gpt-7-nova",
+                "display_name": "GPT-7 Nova",
+                "visibility": "list",
+                "priority": 1,
+                "supported_reasoning_levels": [{"effort": "high"}],
+            }
+        ]
+    )
+    state_dir = tmp_path / "state"
+    cfg_path = tmp_path / "agroute.toml"
+    cfg_path.write_text('[agents.agy]\nplan = "ultra-200"\n', encoding="utf-8")
+    router = Router(cfg_path, project=tmp_path, state_directory=state_dir, include_user_config=False)
+    router.usage_set(
+        "agy",
+        session_used_pct=10.0,
+        session_reset_at="2026-11-21T05:00:00Z",
+        weekly_used_pct=15.0,
+        weekly_reset_at="2026-11-27T00:00:00Z",
+        now="2026-11-21T00:30:00Z",
+    )
+
+    # Seed a legacy on-disk prices.json lacking `checked_sources` (pre-issue-73 format)
+    # where `gemini-4-neon` was mistakenly marked `unlisted` on 2026-11-19.
+    (state_dir / "prices.json").write_text(
+        json.dumps(
+            {
+                "format": "agroute-price-snapshot-v2",
+                "updated_at": "2026-11-19T21:38:12Z",
+                "models": {
+                    "gemini-4-neon": {
+                        "status": "unlisted",
+                        "reason": "Internal/experimental Gemini 4 Neon model with no published token pricing",
+                        "resolved_at": "2026-11-19T21:38:12Z",
+                        "expires_at": "2026-11-26T21:38:12Z",
+                    },
+                    "gpt-7-nova": {
+                        "status": "unlisted",
+                        "reason": "Internal preview model",
+                        "resolved_at": "2026-11-19T21:38:12Z",
+                        "expires_at": "2026-11-26T21:38:12Z",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    at = "2026-11-21T00:30:00Z"
+    res = router.candidates("agy", include_agents=["agy", "codex"], now=at)
+    by_model = {c["model"]: c for c in res["candidates"]}
+
+    # Built-in `gemini-4-neon` (effective 2026-11-21T00:00:00+00:00) supersedes the 2026-11-19 `unlisted` entry,
+    # so `agy/gemini-4-neon-high` is priced and admitted under the active `credit_budget`.
+    assert "agy/gemini-4-neon-high" in by_model
+    card = by_model["agy/gemini-4-neon-high"]["rate_card"]
+    assert card["provider"] == "google"
+    assert card["version"] == "google-cloud-list-2026-11-21"
+    assert card["rates"]["input"] == pytest.approx(3.0)
+    assert card["rates"]["output"] == pytest.approx(15.0)
+    assert card["rates"]["cache_read"] == pytest.approx(0.15)
+
+    # `gpt-7-nova` has no built-in card, so its active legacy `unlisted` entry still keeps it unpriced
+    # and suppresses `price_request` for it; only `gemini-pro-orchestrator-neon` needs resolution.
+    assert "rate_card" not in by_model["codex/gpt-7-nova"]
+    assert res["price_request"] is not None
+    assert [m["key"] for m in res["price_request"]["unpriced_models"]] == ["gemini-pro-orchestrator-neon"]
+
+    # Aliasing `gemini-pro-orchestrator-neon` to `gemini-4-neon` succeeds even while the older `unlisted`
+    # entry for `gemini-4-neon` remains in `prices.json`, because built-in `_CATALOG` supersedes it.
+    alias_res = router.prices_resolve(
+        {
+            "models": {
+                "gemini-pro-orchestrator-neon": {
+                    "status": "alias",
+                    "alias_of": "gemini-4-neon",
+                    "reason": "Antigravity Orchestrator (Neon) backed by Gemini 4 Neon",
+                }
+            }
+        },
+        now=at,
+    )
+    assert alias_res["models"]["gemini-pro-orchestrator-neon"]["effective_rates"]["input"] == pytest.approx(3.0)
+
+    # `prices_show` reports the superseding built-in effective_rates on `gemini-4-neon`.
+    shown = router.prices_show(now=at)
+    assert shown["models"]["gemini-4-neon"]["effective_rates"]["input"] == pytest.approx(3.0)
+
+    # Conversely, a newer `unlisted` entry resolved AFTER the built-in effective_at still suppresses pricing
+    # (and refuses leaving an alias dangling at an unlisted target until the alias is also updated).
+    later = "2026-11-22T00:00:00Z"
+    with pytest.raises(AgRouteError, match="marked 'unlisted'"):
+        router.prices_resolve(
+            {
+                "models": {
+                    "gemini-4-neon": {
+                        "status": "unlisted",
+                        "reason": "Delisted after 2026-11-21",
+                        "checked_sources": ["https://cloud.google.com/vertex-ai/generative-ai/pricing"],
+                    }
+                }
+            },
+            now=later,
+        )
+    router.prices_resolve(
+        {
+            "models": {
+                "gemini-4-neon": {
+                    "status": "unlisted",
+                    "reason": "Delisted after 2026-11-21",
+                    "checked_sources": ["https://cloud.google.com/vertex-ai/generative-ai/pricing"],
+                },
+                "gemini-pro-orchestrator-neon": {
+                    "status": "unlisted",
+                    "reason": "Backed by delisted Gemini 4 Neon",
+                    "checked_sources": ["https://cloud.google.com/vertex-ai/generative-ai/pricing"],
+                },
+            }
+        },
+        now=later,
+    )
+    router.usage_set(
+        "agy",
+        session_used_pct=10.0,
+        session_reset_at="2026-11-22T05:00:00Z",
+        weekly_used_pct=15.0,
+        weekly_reset_at="2026-11-27T00:00:00Z",
+        now=later,
+    )
+    res_later = router.candidates("agy", include_agents=["agy"], now=later)
+    assert "agy/gemini-4-carbon-high" in {c["model"] for c in res_later["candidates"]}
+    assert all(c["model"] != "agy/gemini-4-neon-high" for c in res_later["candidates"])
+    assert any(
+        e["model"] == "gemini-4-neon-high" and "no known price" in e["reason"]
+        for e in res_later["excluded"]
+    )
