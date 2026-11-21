@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Read `selection.cells`, `selection.cap_met`, and `selection.needs_review` (and fall back to
+  `semantic.worlds.llm` when `selection.cells` is absent) from saved `howhard` decision
+  receipts across `routes.py`, `router.plan()`, and `tui.py`, formatting `P_clean`/`P_loud`/
+  `P_silent` mean panels and surfacing review state and selection costs in `agr tui` and
+  `agr show`. Issue #77 tracks saved `howhard` receipt selection correlation.
+
 - Validate configured candidate `rate_card.model` values at config load against the cell's
   emitted qualified model ID (`<agent><namespace_separator><model>`), refusing mismatches with a
   named `agents.<agent>.<surface>[i].rate_card.model` error, and emit a routing warning in

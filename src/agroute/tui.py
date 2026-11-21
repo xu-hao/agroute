@@ -278,9 +278,19 @@ def _modal_detail(row: dict) -> str:
             clean = item.get("clean")
             loud = item.get("loud")
             silent = item.get("silent")
-            if type(clean) in (int, float):
+            if not _is_num(clean) and isinstance(item.get("P_clean"), dict):
+                clean = item["P_clean"].get("mean")
+                loud = (item.get("P_loud") or {}).get("mean") if isinstance(item.get("P_loud"), dict) else None
+                silent = (item.get("P_silent") or {}).get("mean") if isinstance(item.get("P_silent"), dict) else None
+            if _is_num(clean):
+                extras = []
+                if _is_num(item.get("J")):
+                    extras.append(f"J=${float(item['J']):.2f}")
+                if _is_num(item.get("needed_credit_usd")):
+                    extras.append(f"credit=${float(item['needed_credit_usd']):.2f}")
+                suffix = f" ({', '.join(extras)})" if extras else ""
                 lines.append(
-                    f"  {model} ({eff}): clean={clean:.3f} loud={float(loud or 0):.3f} silent={float(silent or 0):.3f}"
+                    f"  {model} ({eff}): clean={float(clean):.3f} loud={float(loud or 0):.3f} silent={float(silent or 0):.3f}{suffix}"
                 )
             else:
                 lines.append(f"  {json.dumps(item, sort_keys=True)}")
