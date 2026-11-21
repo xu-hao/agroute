@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Show estimated quota credit alongside percentages in `agr tui`: status-bar agent badges
+  display compact 5h/7d remaining credit estimates when calibrated, and the `u` Usage &
+  Eligibility modal shows estimated used/ceiling/remaining (and reserve) credit on agent
+  5h/7d lines, a per-pool `Estimated credit pools` summary, and per-window remaining credit
+  on per-model quota lines. Issue #71 tracks estimated credit display in the TUI.
+
 ## 0.5.2 (2026-11-18)
 
 - Release agroute 0.5.2 with synchronized package and plugin versions. Issue #69 tracks

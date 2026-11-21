@@ -287,6 +287,79 @@ def _modal_detail(row: dict) -> str:
     return "\n".join(lines)
 
 
+def _is_num(value: object) -> bool:
+    return type(value) in (int, float)
+
+
+def _fmt_credit(amount: float, *, compact: bool = False) -> str:
+    value = float(amount)
+    if not compact:
+        return f"${value:.2f}"
+    if value >= 100.0:
+        return f"${value:.0f}"
+    if value >= 10.0 and abs(value - round(value)) < 0.05:
+        return f"${value:.0f}"
+    if value >= 10.0:
+        return f"${value:.1f}"
+    return f"${value:.2f}"
+
+
+def _primary_credit_pool(name: str, info: dict) -> dict | None:
+    cal = info.get("credit_calibration")
+    if not isinstance(cal, dict) or not cal:
+        return None
+    if isinstance(cal.get("shared"), dict):
+        return cal["shared"]
+    if name == "agy" and isinstance(cal.get("gemini"), dict):
+        return cal["gemini"]
+    if len(cal) == 1:
+        sole = next(iter(cal.values()))
+        return sole if isinstance(sole, dict) else None
+    return None
+
+
+def _window_credit_detail(win_cal: dict | None, used_pct: object) -> str:
+    if not isinstance(win_cal, dict):
+        return ""
+    ceiling = win_cal.get("calibrated_credit_usd")
+    rem = win_cal.get("remaining_credit_usd")
+    reserve = win_cal.get("reserve_credit_usd")
+    if not _is_num(ceiling):
+        if _is_num(rem):
+            return f" (~{_fmt_credit(rem)} left)"
+        return ""
+    if _is_num(used_pct):
+        used_credit = max(0.0, float(used_pct) / 100.0 * float(ceiling))
+        parts = [f"~{_fmt_credit(used_credit)}/{_fmt_credit(ceiling)} credit"]
+        if _is_num(rem):
+            parts.append(f"~{_fmt_credit(rem)} left")
+        if _is_num(reserve) and float(reserve) > 0.0:
+            parts.append(f"{_fmt_credit(reserve)} reserve")
+        return f" ({', '.join(parts)})"
+    parts = [f"est. ceiling ~{_fmt_credit(ceiling)} credit"]
+    if _is_num(reserve) and float(reserve) > 0.0:
+        parts.append(f"{_fmt_credit(reserve)} reserve")
+    return f" ({', '.join(parts)})"
+
+
+def _badge_credit_suffix(name: str, info: dict) -> str:
+    primary = _primary_credit_pool(name, info)
+    if not isinstance(primary, dict):
+        return ""
+    s5_rem = (primary.get("session_5h") or {}).get("remaining_credit_usd")
+    w7_rem = (primary.get("weekly_7d") or {}).get("remaining_credit_usd")
+    if _is_num(s5_rem) and _is_num(w7_rem):
+        return f" (~{_fmt_credit(s5_rem, compact=True)}/{_fmt_credit(w7_rem, compact=True)})"
+    if _is_num(s5_rem):
+        return f" (~{_fmt_credit(s5_rem, compact=True)}/—)"
+    if _is_num(w7_rem):
+        return f" (—/~{_fmt_credit(w7_rem, compact=True)})"
+    avail = primary.get("available_credit_usd")
+    if _is_num(avail):
+        return f" (~{_fmt_credit(avail, compact=True)})"
+    return ""
+
+
 def _agent_quota_badge(name: str, info: dict) -> str:
     if not info.get("enabled", True):
         return f"{name} off"
@@ -294,11 +367,12 @@ def _agent_quota_badge(name: str, info: dict) -> str:
         return f"{name} lim"
     s5 = (info.get("session_5h") or {}).get("used_pct")
     w7 = (info.get("weekly_7d") or {}).get("used_pct")
-    if type(s5) in (int, float) or type(w7) in (int, float):
-        s_txt = f"{s5:.0f}%" if type(s5) in (int, float) else "—"
-        w_txt = f"{w7:.0f}%" if type(w7) in (int, float) else "—"
-        return f"{name} {s_txt}/{w_txt}"
-    return f"{name} ok"
+    credit_suffix = _badge_credit_suffix(name, info)
+    if _is_num(s5) or _is_num(w7):
+        s_txt = f"{s5:.0f}%" if _is_num(s5) else "—"
+        w_txt = f"{w7:.0f}%" if _is_num(w7) else "—"
+        return f"{name} {s_txt}/{w_txt}{credit_suffix}"
+    return f"{name} ok{credit_suffix}"
 
 
 def _usage_modal_body(snapshot: dict) -> str:
@@ -308,6 +382,9 @@ def _usage_modal_body(snapshot: dict) -> str:
         info = agents.get(name) or {}
         s5 = info.get("session_5h") or {}
         w7 = info.get("weekly_7d") or {}
+        primary = _primary_credit_pool(name, info)
+        s5_cal = primary.get("session_5h") if isinstance(primary, dict) else None
+        w7_cal = primary.get("weekly_7d") if isinstance(primary, dict) else None
         lines.append(f"[{name}]")
         lines.append(f"  Enabled: {info.get('enabled', True)}")
         if info.get("monthly_cost_usd") is not None:
@@ -315,7 +392,7 @@ def _usage_modal_body(snapshot: dict) -> str:
             lines.append(
                 f"  Subscription cost: monthly_cost_usd=${info['monthly_cost_usd']:.2f}, "
                 f"weekly_cost_usd=${weekly_cost:.2f}"
-                if type(weekly_cost) in (int, float)
+                if _is_num(weekly_cost)
                 else f"  Subscription cost: monthly_cost_usd=${info['monthly_cost_usd']:.2f}"
             )
         lines.append(
@@ -326,18 +403,47 @@ def _usage_modal_body(snapshot: dict) -> str:
             f"  Eligible as host native: {info.get('eligible_as_host_native', True)}"
             + (f" ({info['host_native_exclusion_reason']})" if info.get("host_native_exclusion_reason") else "")
         )
+        s5_credit = _window_credit_detail(s5_cal, s5.get("used_pct"))
+        w7_credit = _window_credit_detail(w7_cal, w7.get("used_pct"))
         lines.append(
-            f"  5h session used: {s5.get('used_pct') if s5.get('used_pct') is not None else '—'}% "
-            f"(reset: {s5.get('reset_at') or '—'})"
+            f"  5h session used: {s5.get('used_pct') if s5.get('used_pct') is not None else '—'}%"
+            f"{s5_credit} (reset: {s5.get('reset_at') or '—'})"
         )
         lines.append(
-            f"  7d weekly used:  {w7.get('used_pct') if w7.get('used_pct') is not None else '—'}% "
-            f"(reset: {w7.get('reset_at') or '—'})"
+            f"  7d weekly used:  {w7.get('used_pct') if w7.get('used_pct') is not None else '—'}%"
+            f"{w7_credit} (reset: {w7.get('reset_at') or '—'})"
         )
         lines.append(
             f"  Rate-limited: {info.get('rate_limited', False)} "
             f"(cooldown: {info.get('cooldown_until') or '—'})"
         )
+        cal_pools = info.get("credit_calibration") or {}
+        if isinstance(cal_pools, dict) and cal_pools:
+            plan_label = info.get("effective_plan") or next(
+                (p.get("plan") for p in cal_pools.values() if isinstance(p, dict) and p.get("plan")),
+                None,
+            )
+            lines.append(
+                f"  Estimated credit pools (plan: {plan_label}):"
+                if plan_label
+                else "  Estimated credit pools:"
+            )
+            for pool_name, p_meta in cal_pools.items():
+                if not isinstance(p_meta, dict):
+                    continue
+                parts = []
+                avail = p_meta.get("available_credit_usd")
+                if _is_num(avail):
+                    parts.append(f"available=~{_fmt_credit(avail)} credit")
+                for win_key, label in (("session_5h", "5h"), ("weekly_7d", "7d")):
+                    w_meta = p_meta.get(win_key)
+                    if not isinstance(w_meta, dict):
+                        continue
+                    w_pct = w_meta.get("used_pct")
+                    pct_str = f"{w_pct:.1f}%" if _is_num(w_pct) else "—%"
+                    parts.append(f"{label}={pct_str}{_window_credit_detail(w_meta, w_pct)}")
+                if parts:
+                    lines.append(f"    {pool_name}: {' | '.join(parts)}")
         tiers = info.get("tiers") or {}
         if tiers:
             lines.append(f"  Tiers: {json.dumps(tiers, sort_keys=True)}")
@@ -347,14 +453,25 @@ def _usage_modal_body(snapshot: dict) -> str:
             for mid, mq in models.items():
                 ms5 = (mq.get("session_5h") or {}).get("used_pct")
                 mw7 = (mq.get("weekly_7d") or {}).get("used_pct")
-                s_str = f"{ms5:.1f}%" if type(ms5) in (int, float) else "—"
-                w_str = f"{mw7:.1f}%" if type(mw7) in (int, float) else "—"
+                budget = mq.get("credit_budget") or {}
+                m_cal = mq.get("credit_calibration") or {}
+                ms5_rem = budget.get("session_5h_remaining_credit_usd")
+                mw7_rem = budget.get("weekly_7d_remaining_credit_usd")
+                if not _is_num(ms5_rem) and isinstance(m_cal.get("session_5h"), dict):
+                    ms5_rem = m_cal["session_5h"].get("remaining_credit_usd")
+                if not _is_num(mw7_rem) and isinstance(m_cal.get("weekly_7d"), dict):
+                    mw7_rem = m_cal["weekly_7d"].get("remaining_credit_usd")
+                s_str = f"{ms5:.1f}%" if _is_num(ms5) else "—"
+                if _is_num(ms5_rem):
+                    s_str += f" (~{_fmt_credit(ms5_rem)} left)"
+                w_str = f"{mw7:.1f}%" if _is_num(mw7) else "—"
+                if _is_num(mw7_rem):
+                    w_str += f" (~{_fmt_credit(mw7_rem)} left)"
                 elig_str = "eligible" if mq.get("eligible", True) else f"blocked ({mq.get('exclusion_reason')})"
                 cost_per_credit = mq.get("cost_per_credit")
-                budget = mq.get("credit_budget") or {}
                 budget_str = (
                     f" available_credit_usd=${budget['available_credit_usd']:.2f} credit"
-                    if type(budget.get("available_credit_usd")) in (int, float)
+                    if _is_num(budget.get("available_credit_usd"))
                     else ""
                 )
                 lines.append(
@@ -840,6 +957,7 @@ def build_app(
                 Show(
                     "Agent Usage & Eligibility",
                     _usage_modal_body(self._snapshot),
+                    wide=True,
                 )
             )
 
