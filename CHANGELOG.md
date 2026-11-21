@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Support `howhard` 3.4's `interrupted` outcome and `howhard-decision-v8`/`v9` receipts across
+  route correlation (`routes.py`), credit calibration (`calibration.py`), execution planning
+  (`router.py`), CLI filtering (`agr list --state interrupted`), TUI styling/details/help
+  (`tui.py`, including failure/interruption `cause`), and agent skills. Also correlate flushed
+  `howhard` observations from `outcomes.jsonl` alongside `pending.jsonl` (including cross-file
+  `amends` chains). Issue #74 tracks `howhard` 3.4 outcome, receipt, and flushed-log integration.
+
 - Show estimated quota credit alongside percentages in `agr tui`: status-bar agent badges
   display compact 5h/7d remaining credit estimates when calibrated, and the `u` Usage &
   Eligibility modal shows estimated used/ceiling/remaining (and reserve) credit on agent

@@ -93,7 +93,9 @@ The returned `agroute-execution-plan-v1` object includes:
 ## 4. Execute and record outcome in `howhard`
 
 Execute the task using the native tool or CLI command in `invocation`. Then record the actual
-outcome in `howhard`:
+outcome in `howhard` (`clean`, `loud`, `silent`, or `interrupted` with `--cause usage_limit` /
+`provider_error` / `host_error` / `cancelled` / `unrecorded` for operational interruptions rather
+than `loud` model failures):
 
 ```sh
 howhard observe DECISION_ID clean --id EXECUTION_ID --json

@@ -46,9 +46,9 @@ while `howhard` owns model/effort selection, execution accounting, and writable 
      to `/tmp/TASK-decision.json`.
    - Run `agr plan --host HOST --decision /tmp/TASK-decision.json --json` to resolve the
      decision into an `agroute-execution-plan-v1` payload (which also verifies live
-     `needed_credit_usd <= credit_budget.available_credit_usd` when present. In a
-     `howhard-decision-v7` result, compare quota credit with `needed_credit_usd` and read
-     `session_cost_usd` as cost.
+     `needed_credit_usd <= credit_budget.available_credit_usd` when present). In a
+     `howhard-decision-v7`, `v8`, or `v9` result, compare quota credit with `needed_credit_usd`
+     and read `session_cost_usd` as cost.
 4. Inspect `execution_mode`, `needs_review`, `invocation`, and `fallback` in the returned plan:
    - Honor `needs_review` before delegating or accepting silent-risk work.
    - When `execution_mode == "native"` (`target_agent == host_agent`), invoke the host's own
@@ -64,6 +64,8 @@ while `howhard` owns model/effort selection, execution accounting, and writable 
      or `agy -p --output-format stream-json`), capturing its output in a task-owned temporary file.
 5. After actual execution, record feedback in `howhard` following `feedback` in the resolved plan:
    - When `feedback.mode == "matched_receipt"`, record `howhard observe DECISION_ID OUTCOME --id EXECUTION_ID --json`.
+     Record usage-limit, provider/host error, or cancellation aborts as `interrupted --cause usage_limit`
+     (or `provider_error`, `host_error`, `cancelled`, `unrecorded`), never as `loud` model failures.
    - When `feedback.mode == "raw_native"` (for example, when `host_affinity_epsilon` selected a
      native host route over `howhard`'s cross-agent choice) or if a different known route ran,
      record raw native feedback with `howhard observe ... --native` without attaching the

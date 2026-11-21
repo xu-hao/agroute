@@ -306,7 +306,7 @@ def test_howhard_v7_ranks_by_session_cost_and_plan_checks_credit_budget(tmp_path
     from howhard.decisions import load as load_howhard_decision
 
     receipt = load_howhard_decision(engine.config, decision["decision_id"])
-    assert receipt["format"] == "howhard-decision-v7"
+    assert receipt["format"] in {"howhard-decision-v7", "howhard-decision-v8", "howhard-decision-v9"}
     by_model = {cell["model"]: cell for cell in decision["cells"]}
     assert by_model["codex/gpt-6.1-sol"]["needed_credit_usd"] > by_model["claude/claude-opus-5-5"]["needed_credit_usd"]
     assert by_model["codex/gpt-6.1-sol"]["session_cost_usd"] > by_model["claude/claude-opus-5-5"]["session_cost_usd"]
