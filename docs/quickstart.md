@@ -1,6 +1,6 @@
 # Quickstart
 
-You need Python 3.11+, a POSIX shell, Git, `howhard` 2.1.0+ and a current Codex,
+You need Python 3.11+, a POSIX shell, Git, `howhard` 4.0.0+ and a current Codex,
 Claude Code or Antigravity client with native plugin support.
 
 ## Install the backend
@@ -10,12 +10,12 @@ Run these commands from the project where you want to use `agroute`:
 ```sh
 python3 -m venv .venv-agroute
 . .venv-agroute/bin/activate
-python -m pip install "agroute==0.5.2" "howhard>=2.1.0"
+python -m pip install "agroute==0.6.0" "howhard>=4.0.0"
 agr --version
 ```
 
-Expect `agr 0.5.2`. The Python package is available on
-[PyPI](https://pypi.org/project/agroute/0.5.2/).
+Expect `agr 0.6.0`. The Python package is available on
+[PyPI](https://pypi.org/project/agroute/0.6.0/).
 
 Keep this environment active and start your coding agent from the same shell so it
 can find `agr` and `howhard`. If an existing GUI session cannot find it, configure
