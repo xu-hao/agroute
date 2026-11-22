@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Expand the `agr tui` `QUOTAS` `DataTable` (`#quotas`) to 15 columns (`POOL`, `PLAN`, `ROLE`,
+  `STATUS`, `WIN`, `%USED`, `%RSV(nom)`, `%RSV(eff)`, `%LEFT`, `$CAP`, `$USED`, `$RSV(nom)`,
+  `$RSV(eff)`, `$LEFT`, `RESETS`), showing both `target` and `host` `ROLE` rows by default
+  (`role filter: all`, cycled via `H` across `all`, `target`, `host`, `agy`, `claude`, and
+  `codex`), reconciling nominal percentage and dollar reserves (plus active `+$live` in-flight
+  reservations) into effective `%RSV(eff)` / `$RSV(eff)` and `%LEFT` / `$LEFT`, and detailing
+  additive `host` reserve components in `#route-detail`. Issue #99 tracks the `ROLE` rows and
+  nominal-versus-effective reserve columns in `agr tui`.
+
 ## 0.6.2 (2026-11-22)
 
 - Release agroute 0.6.2 with synchronized package and plugin versions. Issue #97 tracks
