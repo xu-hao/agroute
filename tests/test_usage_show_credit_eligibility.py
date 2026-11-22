@@ -246,6 +246,35 @@ native_candidates = [
         tier_reset_at="2026-11-27T02:00:00Z",
         now=now,
     )
+    # First inspect agy/gemini 7d target and host reserves before in-flight reservation:
+    pre_app = build_app(lambda: router.snapshot(all_repos=False, now="2026-11-22T06:00:30Z"), refresh_interval=60.0)
+    async with pre_app.run_test(size=(160, 34)) as pre_pilot:
+        await pre_pilot.pause()
+        await pre_pilot.press("u")
+        await pre_pilot.pause()
+        from textual.widgets import DataTable
+        pre_quotas = pre_app.query_one("#quotas", DataTable)
+        assert [str(col.label) for col in pre_quotas.ordered_columns] == [
+            "POOL", "PLAN", "ROLE", "STATUS", "WIN",
+            "%USED", "%RSV(nom)", "%RSV(eff)", "%LEFT",
+            "$CAP", "$USED", "$RSV(nom)", "$RSV(eff)", "$LEFT", "RESETS",
+        ]
+        # agy/gemini 7d ($1,350) without live rsv:
+        # target: %RSV(nom)=5%, $RSV(nom)=$10, %RSV(eff)=5%, $RSV(eff)=$67.50
+        # host:   %RSV(nom)=10%, $RSV(nom)=$35, %RSV(eff)=10%, $RSV(eff)=$135
+        gem_7d_t = [c.plain for c in pre_quotas.get_row("agy:gemini:7d:target")]
+        gem_7d_h = [c.plain for c in pre_quotas.get_row("agy:gemini:7d:host")]
+        assert gem_7d_t[:14] == [
+            "agy/gemini", "ultra-200", "target", "OK", "7d",
+            "26%", "5%", "5%", "69%",
+            "$1,350", "$351", "$10", "$67.50", "$932",
+        ]
+        assert gem_7d_h[:14] == [
+            "agy/gemini", "ultra-200", "host", "OK", "7d",
+            "26%", "10%", "10%", "64%",
+            "$1,350", "$351", "$35", "$135", "$864",
+        ]
+
     # Add an active $4 in-flight reservation on agy/gemini
     router.plan(
         "agy",
@@ -260,7 +289,7 @@ native_candidates = [
     )
 
     app = build_app(lambda: router.snapshot(all_repos=False, now="2026-11-22T06:02:00Z"), refresh_interval=60.0)
-    async with app.run_test(size=(130, 32)) as pilot:
+    async with app.run_test(size=(160, 36)) as pilot:
         await pilot.pause()
         status = str(app.query_one("#route-status", Static).render())
         assert "codex BLOCKED · claude BLOCKED · agy OK" in status
@@ -268,31 +297,86 @@ native_candidates = [
         await pilot.press("u")
         await pilot.pause()
         subject = str(app.query_one("#route-subject", Static).render())
-        assert "routes (u) · [QUOTAS]" in subject and "host: agy" in subject
+        assert "routes (u) · [QUOTAS]" in subject and "role filter: all (H)" in subject
 
-        from textual.widgets import DataTable
         quotas = app.query_one("#quotas", DataTable)
         assert quotas.display is True
 
-        codex_5h = quotas.get_row("codex:shared:5h")
-        claude_shared_7d = quotas.get_row("claude:shared:7d")
-        claude_fable_7d = quotas.get_row("claude:fable:7d")
-        agy_gem_5h = quotas.get_row("agy:gemini:5h")
-        agy_3p_5h = quotas.get_row("agy:3p:5h")
+        # Exact concrete codex plus-20 examples ($20 5h, $50 7d, min_rem=$10, host_add=$25, max_pct=95%, host_rsv_pct=5%):
+        codex_5h_t = quotas.get_row("codex:shared:5h:target")
+        codex_5h_h = quotas.get_row("codex:shared:5h:host")
+        codex_7d_t = quotas.get_row("codex:shared:7d:target")
+        assert [c.plain for c in codex_5h_t[:14]] == [
+            "codex", "plus-20", "target", "BLOCKED", "5h",
+            "0%", "5%", "50%", "50%",
+            "$20", "$0", "$10", "$10", "$10",
+        ]
+        assert codex_5h_t[3].style == "bold red"
+        assert [c.plain for c in codex_5h_h[:14]] == [
+            "codex", "plus-20", "host", "BLOCKED", "5h",
+            "0%", "10%", "100%", "0%",
+            "$20", "$0", "$35", "$35", "$0",
+        ]
+        assert [c.plain for c in codex_7d_t[:14]] == [
+            "codex", "plus-20", "target", "BLOCKED", "7d",
+            "81%", "5%", "20%", "0%",
+            "$50", "$40.50", "$10", "$10", "$0",
+        ]
 
-        assert codex_5h[0].plain == "codex" and codex_5h[1].plain == "plus-20" and codex_5h[2].plain == "BLOCKED"
-        assert codex_5h[2].style == "bold red"
-        assert claude_shared_7d[0].plain == "claude/shared" and claude_shared_7d[1].plain == "max-20x" and claude_shared_7d[2].plain == "BLOCKED"
-        assert claude_fable_7d[0].plain == "claude/fable" and claude_fable_7d[2].plain == "BLOCKED"
-        # Under host: agy, agy/gemini* has $35+$4 in-flight on 5h and is OK, while agy/3p* ($25 5h < $35 host rsv) is BLOCKED
-        assert agy_gem_5h[0].plain == "agy/gemini*" and agy_gem_5h[2].plain == "OK" and agy_gem_5h[9].plain == "$35+$4"
-        assert agy_gem_5h[2].style == "bold green"
-        assert agy_3p_5h[0].plain == "agy/3p*" and agy_3p_5h[2].plain == "BLOCKED" and agy_3p_5h[9].plain == "$35"
+        claude_shared_7d = quotas.get_row("claude:shared:7d:target")
+        claude_fable_7d = quotas.get_row("claude:fable:7d:target")
+        assert claude_shared_7d[0].plain == "claude/shared" and claude_shared_7d[1].plain == "max-20x" and claude_shared_7d[3].plain == "BLOCKED"
+        assert claude_fable_7d[0].plain == "claude/fable" and claude_fable_7d[3].plain == "BLOCKED"
 
-        # Cycling host with 'H' moves host perspective off agy -> agy/3p flips to OK with $15 left on 5h!
-        await pilot.press("H")
+        # agy/gemini 5h host with $4 active in-flight reservation:
+        agy_gem_5h_h = quotas.get_row("agy:gemini:5h:host")
+        assert [c.plain for c in agy_gem_5h_h[:14]] == [
+            "agy/gemini", "ultra-200", "host", "OK", "5h",
+            "10%", "10%", "12.2%", "77.8%",
+            "$320", "$32", "$35+$4", "$39", "$249",
+        ]
+        assert agy_gem_5h_h[3].style == "bold green"
+
+        # agy/3p shows BOTH target OK ($15 left) and host BLOCKED ($35 rsv > $25 cap) simultaneously in "all":
+        agy_3p_5h_t = quotas.get_row("agy:3p:5h:target")
+        agy_3p_5h_h = quotas.get_row("agy:3p:5h:host")
+        assert [c.plain for c in agy_3p_5h_t[:14]] == [
+            "agy/3p", "ultra-200", "target", "OK", "5h",
+            "0%", "5%", "40%", "60%",
+            "$25", "$0", "$10", "$10", "$15",
+        ]
+        assert agy_3p_5h_t[3].style == "bold green"
+        assert [c.plain for c in agy_3p_5h_h[:14]] == [
+            "agy/3p", "ultra-200", "host", "BLOCKED", "5h",
+            "0%", "10%", "100%", "0%",
+            "$25", "$0", "$35", "$35", "$0",
+        ]
+        assert agy_3p_5h_h[3].style == "bold red"
+
+        # Verify #route-detail on agy:gemini:5h:host spells out the additive host reserve breakdown + live reservation
+        all_keys = [str(r.key.value) for r in quotas.ordered_rows]
+        quotas.move_cursor(row=all_keys.index("agy:gemini:5h:host"))
         await pilot.pause()
-        agy_3p_target = quotas.get_row("agy:3p:5h")
-        assert agy_3p_target[0].plain == "agy/3p" and agy_3p_target[2].plain == "OK" and agy_3p_target[10].plain == "$15"
-        assert agy_3p_target[2].style == "bold green"
+        detail_host = str(app.query_one("#route-detail", Static).render())
+        assert "agy/gemini [gemini · host]" in detail_host
+        assert "nominal 10% (5%+5% host) / $35.00 ($10.00+$25.00 host) +$4.00 live -> effective 12.2% / $39.00" in detail_host
+
+        # Cycling role filter with 'H': all -> target -> host -> agy -> claude -> codex -> all
+        await pilot.press("H")  # target
+        await pilot.pause()
+        assert "role filter: target (H)" in str(app.query_one("#route-subject", Static).render())
+        assert all(str(r.key.value).endswith(":target") for r in quotas.ordered_rows)
+
+        await pilot.press("H")  # host
+        await pilot.pause()
+        assert "role filter: host (H)" in str(app.query_one("#route-subject", Static).render())
+        assert all(str(r.key.value).endswith(":host") for r in quotas.ordered_rows)
+
+        await pilot.press("H")  # agy (host for agy, target for codex/claude)
+        await pilot.pause()
+        assert "role filter: agy (H)" in str(app.query_one("#route-subject", Static).render())
+        agy_view_keys = {str(r.key.value) for r in quotas.ordered_rows}
+        assert "agy:gemini:5h:host" in agy_view_keys and "agy:gemini:5h:target" not in agy_view_keys
+        assert "codex:shared:5h:target" in agy_view_keys and "codex:shared:5h:host" not in agy_view_keys
+        assert "claude:shared:7d:target" in agy_view_keys and "claude:shared:7d:host" not in agy_view_keys
 

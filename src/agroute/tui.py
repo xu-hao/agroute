@@ -495,6 +495,18 @@ _QUOTA_STATUS_STYLES = {
     "EXCLUDED": "dim",
 }
 
+_ROLE_FILTER_CYCLE: tuple[str, ...] = ("all", "target", "host", "agy", "claude", "codex")
+
+
+def _roles_for_agent(agent: str, role_filter: str) -> tuple[str, ...]:
+    if role_filter == "all":
+        return ("target", "host")
+    if role_filter == "target":
+        return ("target",)
+    if role_filter == "host":
+        return ("host",)
+    return ("host",) if agent == role_filter else ("target",)
+
 
 def _agent_status_summary(agents_info: dict) -> str:
     parts = []
@@ -510,39 +522,164 @@ def _agent_status_summary(agents_info: dict) -> str:
     return " · ".join(parts)
 
 
-def _build_quota_rows(snapshot: dict, *, host_view: str | None, now: datetime) -> list[dict]:
+def _compute_window_quota_metrics(
+    pool_name: str,
+    w_key: str,
+    w_state: dict,
+    w_cal: dict | None,
+    limits: dict,
+    *,
+    is_host: bool,
+) -> dict[str, Any]:
+    max_session = float(limits.get("max_session_used_pct", 90.0))
+    max_weekly = float(limits.get("max_weekly_used_pct", 95.0))
+    max_tier = float(limits.get("max_tier_used_pct", 95.0))
+    cfg_host_rsv_pct = float(limits.get("host_reserve_pct", 0.0))
+
+    target_base_lim = max_session if w_key == "session_5h" else max_weekly
+    target_eff_lim = target_base_lim if pool_name == "shared" else min(max_tier, target_base_lim)
+    base_pct_rsv = max(0.0, 100.0 - target_eff_lim)
+
+    if is_host:
+        host_base_lim = max(0.0, target_base_lim - cfg_host_rsv_pct)
+        eff_lim = host_base_lim if pool_name == "shared" else min(max_tier, host_base_lim)
+        pct_rsv_nom = max(0.0, 100.0 - eff_lim)
+        host_pct_add = max(0.0, pct_rsv_nom - base_pct_rsv)
+    else:
+        eff_lim = target_eff_lim
+        pct_rsv_nom = base_pct_rsv
+        host_pct_add = 0.0
+
+    u_pct = (
+        w_cal.get("used_pct")
+        if isinstance(w_cal, dict) and _is_num(w_cal.get("used_pct"))
+        else w_state.get("used_pct")
+    )
+    ceiling = w_cal.get("calibrated_credit_usd") if isinstance(w_cal, dict) else None
+    live_rsv = float(w_cal.get("reserved_credit_usd") or 0.0) if isinstance(w_cal, dict) else 0.0
+
+    has_limits_usd = ("min_remaining_credit_usd" in limits) or ("host_reserve_credit_usd" in limits)
+    if has_limits_usd:
+        min_rem = float(limits.get("min_remaining_credit_usd", 0.0))
+        host_add = float(limits.get("host_reserve_credit_usd", 0.0)) if is_host else 0.0
+        usd_rsv_nom = min_rem + host_add
+        has_nom_usd = _is_num(ceiling) or usd_rsv_nom > 0.0
+    elif isinstance(w_cal, dict) and _is_num(w_cal.get("reserve_credit_usd")):
+        min_rem = float(w_cal["reserve_credit_usd"])
+        host_add = 0.0
+        usd_rsv_nom = min_rem
+        has_nom_usd = True
+    else:
+        min_rem = 0.0
+        host_add = 0.0
+        usd_rsv_nom = 0.0
+        has_nom_usd = False
+
+    if has_nom_usd and (_is_num(ceiling) or usd_rsv_nom > 0.0 or live_rsv > 0.0):
+        c_rsv_nom_str = (
+            f"{_fmt_credit(usd_rsv_nom, compact=True)}+{_fmt_credit(live_rsv, compact=True)}"
+            if live_rsv > 0.0
+            else _fmt_credit(usd_rsv_nom, compact=True)
+        )
+    elif not has_nom_usd and live_rsv > 0.0:
+        c_rsv_nom_str = f"$0+{_fmt_credit(live_rsv, compact=True)}"
+    else:
+        c_rsv_nom_str = "—"
+
+    if _is_num(ceiling) and float(ceiling) > 0.0:
+        ceil_f = float(ceiling)
+        nom_plus_live_usd = (usd_rsv_nom if has_nom_usd else 0.0) + live_rsv
+        usd_rsv_eff: float | None = (
+            max(pct_rsv_nom / 100.0 * ceil_f, usd_rsv_nom if has_nom_usd else 0.0) + live_rsv
+        )
+        pct_rsv_eff = min(100.0, max(pct_rsv_nom, nom_plus_live_usd / ceil_f * 100.0))
+        c_rsv_eff_str = _fmt_credit(usd_rsv_eff, compact=True)
+    else:
+        usd_rsv_eff = None
+        pct_rsv_eff = pct_rsv_nom
+        c_rsv_eff_str = "—"
+
+    p_used_str = _fmt_pct_val(float(u_pct)) if _is_num(u_pct) else "—"
+    p_rsv_nom_str = _fmt_pct_val(pct_rsv_nom)
+    p_rsv_eff_str = _fmt_pct_val(pct_rsv_eff)
+    p_left_str = _fmt_pct_val(max(0.0, 100.0 - float(u_pct) - pct_rsv_eff)) if _is_num(u_pct) else "—"
+
+    c_cap_str = _fmt_credit(float(ceiling), compact=True) if _is_num(ceiling) else "—"
+    if _is_num(ceiling) and _is_num(u_pct) and usd_rsv_eff is not None:
+        used_usd = max(0.0, float(u_pct) / 100.0 * float(ceiling))
+        left_usd = max(0.0, float(ceiling) - used_usd - usd_rsv_eff)
+        c_used_str = _fmt_credit(used_usd, compact=True)
+        c_left_str = _fmt_credit(left_usd, compact=True)
+    elif _is_num(ceiling) and _is_num(u_pct):
+        c_used_str = "$0"
+        c_left_str = "$0"
+    else:
+        c_used_str = "—"
+        c_left_str = "—"
+
+    return {
+        "w_state": w_state,
+        "u_pct": u_pct,
+        "eff_lim": eff_lim,
+        "base_pct_rsv": base_pct_rsv,
+        "host_pct_add": host_pct_add,
+        "pct_rsv_nom_val": pct_rsv_nom,
+        "pct_rsv_eff_val": pct_rsv_eff,
+        "has_limits_usd": has_limits_usd,
+        "has_nom_usd": has_nom_usd,
+        "min_rem_usd": min_rem,
+        "host_add_usd": host_add,
+        "usd_rsv_nom_val": usd_rsv_nom,
+        "live_rsv_val": live_rsv,
+        "usd_rsv_eff_val": usd_rsv_eff,
+        "pct_used": p_used_str,
+        "pct_rsv_nom": p_rsv_nom_str,
+        "pct_rsv_eff": p_rsv_eff_str,
+        "pct_left": p_left_str,
+        "credit_cap": c_cap_str,
+        "credit_used": c_used_str,
+        "credit_rsv_nom": c_rsv_nom_str,
+        "credit_rsv_eff": c_rsv_eff_str,
+        "credit_left": c_left_str,
+    }
+
+
+def _build_quota_rows(snapshot: dict, *, role_filter: str = "all", now: datetime) -> list[dict]:
     rows_out: list[dict] = []
     agents = snapshot.get("agents") or {}
 
     for name in AGENTS:
         info = agents.get(name) or {}
-        is_host = host_view is not None and name == host_view
         limits = info.get("quota_limits") or {}
-        max_session = float(limits.get("max_session_used_pct", 90.0))
-        max_weekly = float(limits.get("max_weekly_used_pct", 95.0))
-        max_tier = float(limits.get("max_tier_used_pct", 95.0))
-        host_rsv_pct = float(limits.get("host_reserve_pct", 0.0)) if is_host else 0.0
         excluded_groups = set(limits.get("exclude_quota_groups") or ())
 
-        cal = _calibration_for_view(info, is_host=is_host)
-        pool_entries = _ordered_pool_entries(name, cal)
+        cal_by_role = {
+            "target": _calibration_for_view(info, is_host=False),
+            "host": _calibration_for_view(info, is_host=True),
+        }
+        pool_entries = _ordered_pool_entries(name, cal_by_role["target"])
         multi_named = len(pool_entries) > 1 or (pool_entries and pool_entries[0][0] != "shared")
+        roles = _roles_for_agent(name, role_filter)
 
-        for pool_name, pool_meta in pool_entries:
-            base_label = f"{name}/{pool_name}" if multi_named else name
-            pool_label = f"{base_label}*" if is_host else base_label
+        models_map = info.get("models") or {}
+        has_native_flags = any(
+            "native_eligible" in m for m in models_map.values() if isinstance(m, dict)
+        )
+
+        for pool_name, base_pool_meta in pool_entries:
+            pool_label = f"{name}/{pool_name}" if multi_named else name
             raw_plan = (
                 info.get("effective_plan")
-                or (pool_meta.get("plan") if isinstance(pool_meta, dict) else None)
+                or (base_pool_meta.get("plan") if isinstance(base_pool_meta, dict) else None)
                 or info.get("detected_plan")
                 or info.get("plan")
             )
             plan_label = str(raw_plan) if raw_plan and str(raw_plan) not in ("auto", "none") else "—"
 
             win_specs: list[tuple[str, str]] = []
-            if isinstance(pool_meta, dict):
+            if isinstance(base_pool_meta, dict):
                 for w_short, w_key in (("5h", "session_5h"), ("7d", "weekly_7d")):
-                    w_cal = pool_meta.get(w_key)
+                    w_cal = base_pool_meta.get(w_key)
                     if not isinstance(w_cal, dict):
                         continue
                     if pool_name != "shared" and w_cal.get("pool_group") == "shared":
@@ -551,98 +688,90 @@ def _build_quota_rows(snapshot: dict, *, host_view: str | None, now: datetime) -
             if not win_specs:
                 win_specs = [("5h", "session_5h"), ("7d", "weekly_7d")]
 
-            # Determine simple per-pool status (OFF / EXCLUDED / BLOCKED / OK).
-            pool_blocked = False
-            if not info.get("enabled", True):
-                status_label = "OFF"
-            elif pool_name in excluded_groups:
-                status_label = "EXCLUDED"
-            else:
-                if info.get("rate_limited") or info.get("cooldown_until"):
-                    pool_blocked = True
-                if isinstance(pool_meta, dict) and _is_num(pool_meta.get("available_credit_usd")):
-                    if float(pool_meta["available_credit_usd"]) <= 0.0:
-                        pool_blocked = True
-                for _ws, wk in win_specs:
-                    w_state = _pool_window_state(name, info, pool_name, wk)
-                    w_cal = pool_meta.get(wk) if isinstance(pool_meta, dict) else None
-                    u_pct = w_cal.get("used_pct") if isinstance(w_cal, dict) and "used_pct" in w_cal else w_state.get("used_pct")
-                    base_lim = max(0.0, (max_session if wk == "session_5h" else max_weekly) - host_rsv_pct)
-                    eff_lim = base_lim if pool_name == "shared" else min(max_tier, base_lim)
-                    if w_state.get("status") == "rejected":
-                        pool_blocked = True
-                    elif _is_num(u_pct) and float(u_pct) >= eff_lim:
-                        pool_blocked = True
-                models_map = info.get("models") or {}
-                pool_models = [m for m in models_map.values() if isinstance(m, dict) and m.get("quota_group") == pool_name]
-                if pool_models:
-                    elig_key = "native_eligible" if is_host else "eligible"
-                    if not any(m.get(elig_key, m.get("eligible", True)) for m in pool_models):
-                        pool_blocked = True
-                elif len(pool_entries) == 1:
-                    agent_elig_key = "eligible_as_host_native" if is_host else "eligible_as_target"
-                    if not info.get(agent_elig_key, True):
-                        pool_blocked = True
-                status_label = "BLOCKED" if pool_blocked else "OK"
+            status_by_role: dict[str, str] = {}
+            metrics_by_role_win: dict[tuple[str, str], dict[str, Any]] = {}
+            pool_meta_by_role: dict[str, dict | None] = {}
+
+            for role in roles:
+                is_host = role == "host"
+                cal_role = cal_by_role[role]
+                pool_meta = cal_role.get(pool_name) if isinstance(cal_role, dict) else None
+                pool_meta_by_role[role] = pool_meta
+
+                for w_short, w_key in win_specs:
+                    w_state = _pool_window_state(name, info, pool_name, w_key)
+                    w_cal = pool_meta.get(w_key) if isinstance(pool_meta, dict) else None
+                    metrics_by_role_win[(role, w_short)] = _compute_window_quota_metrics(
+                        pool_name,
+                        w_key,
+                        w_state,
+                        w_cal,
+                        limits,
+                        is_host=is_host,
+                    )
+
+                if not info.get("enabled", True):
+                    status_by_role[role] = "OFF"
+                elif pool_name in excluded_groups:
+                    status_by_role[role] = "EXCLUDED"
+                else:
+                    pool_blocked = bool(info.get("rate_limited") or info.get("cooldown_until"))
+                    if isinstance(pool_meta, dict) and _is_num(pool_meta.get("available_credit_usd")):
+                        if float(pool_meta["available_credit_usd"]) <= 0.0:
+                            pool_blocked = True
+                    for ws, _wk in win_specs:
+                        m_win = metrics_by_role_win[(role, ws)]
+                        if m_win["w_state"].get("status") == "rejected":
+                            pool_blocked = True
+                        elif _is_num(m_win["u_pct"]) and float(m_win["u_pct"]) >= m_win["eff_lim"]:
+                            pool_blocked = True
+                    pool_models = [
+                        m
+                        for m in models_map.values()
+                        if isinstance(m, dict) and m.get("quota_group") == pool_name
+                    ]
+                    if pool_models:
+                        if is_host and has_native_flags:
+                            if not any(m.get("native_eligible", False) for m in pool_models):
+                                pool_blocked = True
+                        elif not any(m.get("eligible", True) for m in pool_models):
+                            pool_blocked = True
+                    elif len(pool_entries) == 1:
+                        agent_elig_key = "eligible_as_host_native" if is_host else "eligible_as_target"
+                        if not info.get(agent_elig_key, True):
+                            pool_blocked = True
+                    status_by_role[role] = "BLOCKED" if pool_blocked else "OK"
 
             for w_short, w_key in win_specs:
                 w_state = _pool_window_state(name, info, pool_name, w_key)
-                w_cal = pool_meta.get(w_key) if isinstance(pool_meta, dict) else None
-                u_pct = (
-                    w_cal.get("used_pct")
-                    if isinstance(w_cal, dict) and "used_pct" in w_cal
-                    else w_state.get("used_pct")
-                )
-                base_lim = max(0.0, (max_session if w_key == "session_5h" else max_weekly) - host_rsv_pct)
-                eff_lim = base_lim if pool_name == "shared" else min(max_tier, base_lim)
-                pct_rsv = max(0.0, 100.0 - eff_lim)
-
-                p_used_str = _fmt_pct_val(float(u_pct)) if _is_num(u_pct) else "—"
-                p_rsv_str = _fmt_pct_val(pct_rsv)
-                p_left_str = _fmt_pct_val(max(0.0, eff_lim - float(u_pct))) if _is_num(u_pct) else "—"
-
-                ceiling = w_cal.get("calibrated_credit_usd") if isinstance(w_cal, dict) else None
-                hold_rsv = w_cal.get("reserve_credit_usd") if isinstance(w_cal, dict) else None
-                live_rsv = w_cal.get("reserved_credit_usd") if isinstance(w_cal, dict) else None
-                rem_usd = w_cal.get("remaining_credit_usd") if isinstance(w_cal, dict) else None
-
-                c_cap_str = _fmt_credit(float(ceiling), compact=True) if _is_num(ceiling) else "—"
-                c_used_str = (
-                    _fmt_credit(max(0.0, float(u_pct) / 100.0 * float(ceiling)), compact=True)
-                    if (_is_num(ceiling) and _is_num(u_pct))
-                    else "—"
-                )
-                if _is_num(hold_rsv):
-                    if _is_num(live_rsv) and float(live_rsv) > 0.0:
-                        c_rsv_str = f"{_fmt_credit(float(hold_rsv), compact=True)}+{_fmt_credit(float(live_rsv), compact=True)}"
-                    else:
-                        c_rsv_str = _fmt_credit(float(hold_rsv), compact=True)
-                else:
-                    c_rsv_str = "—"
-                c_left_str = _fmt_credit(float(rem_usd), compact=True) if _is_num(rem_usd) else "—"
                 reset_str = _reset_countdown(w_state.get("reset_at"), now)
-
-                rows_out.append(
-                    {
-                        "key": f"{name}:{pool_name}:{w_short}",
-                        "agent": name,
-                        "pool_name": pool_name,
-                        "pool_label": pool_label,
-                        "plan_label": plan_label,
-                        "status_label": status_label,
-                        "win_short": w_short,
-                        "pct_used": p_used_str,
-                        "pct_rsv": p_rsv_str,
-                        "pct_left": p_left_str,
-                        "credit_cap": c_cap_str,
-                        "credit_used": c_used_str,
-                        "credit_rsv": c_rsv_str,
-                        "credit_left": c_left_str,
-                        "resets": reset_str,
-                        "pool_meta": pool_meta,
-                        "info": info,
-                    }
-                )
+                for role in roles:
+                    m_win = metrics_by_role_win[(role, w_short)]
+                    rows_out.append(
+                        {
+                            "key": f"{name}:{pool_name}:{w_short}:{role}",
+                            "agent": name,
+                            "pool_name": pool_name,
+                            "pool_label": pool_label,
+                            "plan_label": plan_label,
+                            "role": role,
+                            "status_label": status_by_role[role],
+                            "win_short": w_short,
+                            "pct_used": m_win["pct_used"],
+                            "pct_rsv_nom": m_win["pct_rsv_nom"],
+                            "pct_rsv_eff": m_win["pct_rsv_eff"],
+                            "pct_left": m_win["pct_left"],
+                            "credit_cap": m_win["credit_cap"],
+                            "credit_used": m_win["credit_used"],
+                            "credit_rsv_nom": m_win["credit_rsv_nom"],
+                            "credit_rsv_eff": m_win["credit_rsv_eff"],
+                            "credit_left": m_win["credit_left"],
+                            "resets": reset_str,
+                            "metrics": m_win,
+                            "pool_meta": pool_meta_by_role[role],
+                            "info": info,
+                        }
+                    )
 
     return rows_out
 
@@ -650,13 +779,18 @@ def _build_quota_rows(snapshot: dict, *, host_view: str | None, now: datetime) -
 def _quota_detail_text(qrow: dict) -> str:
     agent = qrow["agent"]
     pool_name = qrow["pool_name"]
+    role = qrow["role"]
     info = qrow.get("info") or {}
     pool_meta = qrow.get("pool_meta") if isinstance(qrow.get("pool_meta"), dict) else {}
+    m_win = qrow.get("metrics") or {}
 
     monthly = info.get("monthly_cost_usd")
     monthly_str = f"${float(monthly):.2f}/mo" if _is_num(monthly) else "—"
 
     models_map = info.get("models") or {}
+    has_native_flags = any(
+        "native_eligible" in m for m in models_map.values() if isinstance(m, dict)
+    )
     pool_models = [
         (mid, m)
         for mid, m in models_map.items()
@@ -675,11 +809,43 @@ def _quota_detail_text(qrow: dict) -> str:
     h_elig = info.get("eligible_as_host_native", True)
     h_reason = info.get("host_native_exclusion_reason") or "eligible"
 
+    if role == "host":
+        pct_nom_detail = (
+            f"{qrow['pct_rsv_nom']} "
+            f"({_fmt_pct_val(float(m_win.get('base_pct_rsv', 0.0)))}+"
+            f"{_fmt_pct_val(float(m_win.get('host_pct_add', 0.0)))} host)"
+        )
+        if m_win.get("has_nom_usd"):
+            if m_win.get("has_limits_usd"):
+                usd_nom_detail = (
+                    f"{_fmt_credit(float(m_win['usd_rsv_nom_val']))} "
+                    f"({_fmt_credit(float(m_win['min_rem_usd']))}+"
+                    f"{_fmt_credit(float(m_win['host_add_usd']))} host)"
+                )
+            else:
+                usd_nom_detail = _fmt_credit(float(m_win["usd_rsv_nom_val"]))
+        else:
+            usd_nom_detail = "—"
+    else:
+        pct_nom_detail = qrow["pct_rsv_nom"]
+        usd_nom_detail = (
+            _fmt_credit(float(m_win["usd_rsv_nom_val"])) if m_win.get("has_nom_usd") else "—"
+        )
+
+    live_val = float(m_win.get("live_rsv_val") or 0.0)
+    live_detail = f" +{_fmt_credit(live_val)} live" if live_val > 0.0 else ""
+    eff_usd_val = m_win.get("usd_rsv_eff_val")
+    eff_usd_detail = _fmt_credit(float(eff_usd_val)) if _is_num(eff_usd_val) else "—"
+    reserve_line = (
+        f"reserves ({qrow['win_short']} {role}): nominal {pct_nom_detail} / {usd_nom_detail}"
+        f"{live_detail} -> effective {qrow['pct_rsv_eff']} / {eff_usd_detail}"
+    )
+
     s5_state = _pool_window_state(agent, info, pool_name, "session_5h")
     s5_cal = pool_meta.get("session_5h") if isinstance(pool_meta, dict) else None
     s5_pct = (
         s5_cal.get("used_pct")
-        if isinstance(s5_cal, dict) and "used_pct" in s5_cal
+        if isinstance(s5_cal, dict) and _is_num(s5_cal.get("used_pct"))
         else s5_state.get("used_pct")
     )
     s5_pct_str = _fmt_pct_val(float(s5_pct)) if _is_num(s5_pct) else "—"
@@ -689,18 +855,21 @@ def _quota_detail_text(qrow: dict) -> str:
     w7_cal = pool_meta.get("weekly_7d") if isinstance(pool_meta, dict) else None
     w7_pct = (
         w7_cal.get("used_pct")
-        if isinstance(w7_cal, dict) and "used_pct" in w7_cal
+        if isinstance(w7_cal, dict) and _is_num(w7_cal.get("used_pct"))
         else w7_state.get("used_pct")
     )
     w7_pct_str = _fmt_pct_val(float(w7_pct)) if _is_num(w7_pct) else "—"
     w7_cred = _window_credit_detail(w7_cal, w7_pct)
 
-    elig_count = sum(1 for _, m in pool_models if m.get("eligible", True))
+    if role == "host" and has_native_flags:
+        elig_count = sum(1 for _, m in pool_models if m.get("native_eligible", False))
+    else:
+        elig_count = sum(1 for _, m in pool_models if m.get("eligible", True))
     return (
-        f"{qrow['pool_label']} · plan: {qrow['plan_label']} · subscription: {monthly_str} · "
+        f"{qrow['pool_label']} [{pool_name} · {role}] · plan: {qrow['plan_label']} · subscription: {monthly_str} · "
         f"cost_per_credit: {cpc_str} · status: {qrow['status_label']}\n"
-        f"target_eligible: {t_elig} ({t_reason})\n"
-        f"host_native_eligible: {h_elig} ({h_reason})\n"
+        f"target_eligible: {t_elig} ({t_reason}) · host_native_eligible: {h_elig} ({h_reason})\n"
+        f"{reserve_line}\n"
         f"5h session: {s5_pct_str}{s5_cred} · reset: {s5_state.get('reset_at') or '—'}\n"
         f"7d weekly:  {w7_pct_str}{w7_cred} · reset: {w7_state.get('reset_at') or '—'}\n"
         f"models ({pool_name}): {elig_count}/{len(pool_models)} eligible · (Enter for full breakdown)"
@@ -1046,7 +1215,7 @@ def build_app(
         ENABLE_COMMAND_PALETTE = False
         BINDINGS = [
             Binding("u", "toggle_view", "quotas/routes"),
-            Binding("H", "cycle_host", "cycle quota host perspective"),
+            Binding("H", "cycle_role_filter", "cycle quota role filter"),
             Binding("h", "history", "hide/show observed"),
             Binding("p", "repository", "repository filter"),
             Binding("P", "probe", "probe"),
@@ -1073,8 +1242,7 @@ def build_app(
             self._last_probe = float("-inf")
             self._message = "loading …"
             self._snapshot: dict | None = None
-            self._host_override = False
-            self._host_view: str | None = None
+            self._role_filter: str = "all"
             self._show_history = True
             self._repository_filter: str | None = initial_repository_filter
             self._agent_filter: str | None = initial_agent_filter
@@ -1129,14 +1297,17 @@ def build_app(
             quotas.add_columns(
                 "POOL",
                 "PLAN",
+                "ROLE",
                 "STATUS",
                 "WIN",
                 "%USED",
-                "%RSV",
+                "%RSV(nom)",
+                "%RSV(eff)",
                 "%LEFT",
                 "$CAP",
                 "$USED",
-                "$RSV",
+                "$RSV(nom)",
+                "$RSV(eff)",
                 "$LEFT",
                 "RESETS",
             )
@@ -1347,15 +1518,10 @@ def build_app(
             )
 
             # Populate #quotas DataTable incrementally while preserving cursor selection.
-            effective_host = (
-                self._host_view
-                if self._host_override
-                else (snapshot.get("default_host") or "agy")
-            )
             selected_quota = self._selected_quota_id()
             quotas_table = self.query_one("#quotas", DataTable)
             q_viewport = (quotas_table.scroll_x, quotas_table.scroll_y)
-            q_ordered = _build_quota_rows(snapshot, host_view=effective_host, now=now)
+            q_ordered = _build_quota_rows(snapshot, role_filter=self._role_filter, now=now)
             self._quota_rows = {qrow["key"]: qrow for qrow in q_ordered}
             q_rendered = {}
             for qrow in q_ordered:
@@ -1363,14 +1529,17 @@ def build_app(
                 q_rendered[qrow["key"]] = (
                     _compact_cell(qrow["pool_label"], route_id=qrow["key"]),
                     _compact_cell(qrow["plan_label"]),
+                    _compact_cell(qrow["role"]),
                     _compact_cell(st_lbl, style=_QUOTA_STATUS_STYLES.get(st_lbl)),
                     _compact_cell(qrow["win_short"]),
                     _compact_cell(qrow["pct_used"]),
-                    _compact_cell(qrow["pct_rsv"]),
+                    _compact_cell(qrow["pct_rsv_nom"]),
+                    _compact_cell(qrow["pct_rsv_eff"]),
                     _compact_cell(qrow["pct_left"]),
                     _compact_cell(qrow["credit_cap"]),
                     _compact_cell(qrow["credit_used"]),
-                    _compact_cell(qrow["credit_rsv"]),
+                    _compact_cell(qrow["credit_rsv_nom"]),
+                    _compact_cell(qrow["credit_rsv_eff"]),
                     _compact_cell(qrow["credit_left"]),
                     _compact_cell(qrow["resets"]),
                 )
@@ -1402,9 +1571,21 @@ def build_app(
                     key=lambda value: q_positions.get(getattr(value, "route_id", ""), len(q_positions)),
                 )
 
+            fallback_quota = None
+            if selected_quota and selected_quota not in self._quota_rows and ":" in selected_quota:
+                prefix, old_role = selected_quota.rsplit(":", 1)
+                alt = f"{prefix}:{'host' if old_role == 'target' else 'target'}"
+                if alt in self._quota_rows:
+                    fallback_quota = alt
+
             if selected_quota in self._quota_rows:
                 quotas_table.move_cursor(
                     row=q_desired.index(selected_quota),
+                    scroll=False,
+                )
+            elif fallback_quota is not None:
+                quotas_table.move_cursor(
+                    row=q_desired.index(fallback_quota),
                     scroll=False,
                 )
             elif q_ordered:
@@ -1441,17 +1622,11 @@ def build_app(
             agent = self._agent_filter or "all agents"
             model = self._model_filter or "all models"
             state = self._state_filter or "all states"
-            effective_host = (
-                self._host_view
-                if self._host_override
-                else (snapshot.get("default_host") or "agy")
-            )
-            host_label = effective_host or "none"
             if self._view == "quotas":
                 self.query_one("#route-subject", Static).update(
                     f"MACHINE │ AGROUTE │ routes (u) · [QUOTAS] │ "
-                    f"host: {host_label} (* = host reserves) · {len(self._quota_rows)} quota windows · "
-                    f"H cycle host · P probe · Enter full breakdown"
+                    f"role filter: {self._role_filter} (H) · {len(self._quota_rows)} quota rows · "
+                    f"P probe · Enter full breakdown"
                 )
             else:
                 self.query_one("#route-subject", Static).update(
@@ -1509,16 +1684,13 @@ def build_app(
                 self._update_subject_and_status(self._snapshot)
             self._update_detail()
 
-        def action_cycle_host(self) -> None:
-            cycle: tuple[str | None, ...] = ("agy", "claude", "codex", None)
-            current = (
-                self._host_view
-                if self._host_override
-                else ((self._snapshot or {}).get("default_host") or "agy")
+        def action_cycle_role_filter(self) -> None:
+            idx = (
+                _ROLE_FILTER_CYCLE.index(self._role_filter)
+                if self._role_filter in _ROLE_FILTER_CYCLE
+                else 0
             )
-            idx = cycle.index(current) if current in cycle else 0
-            self._host_override = True
-            self._host_view = cycle[(idx + 1) % len(cycle)]
+            self._role_filter = _ROLE_FILTER_CYCLE[(idx + 1) % len(_ROLE_FILTER_CYCLE)]
             if self._snapshot is not None:
                 self._render_snapshot(self._snapshot)
 

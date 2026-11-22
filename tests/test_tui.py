@@ -235,9 +235,32 @@ async def test_tui_renders_routes_modals_and_filters():
         assert table.display is False
         assert quotas.display is True
         assert app.focused is quotas
-        assert "MACHINE │ AGROUTE │ routes (u) · [QUOTAS] │ host: agy" in str(subject.render())
+        assert "MACHINE │ AGROUTE │ routes (u) · [QUOTAS] │ role filter: all (H)" in str(subject.render())
         assert [str(col.label) for col in quotas.ordered_columns] == [
-            "POOL", "PLAN", "STATUS", "WIN", "%USED", "%RSV", "%LEFT", "$CAP", "$USED", "$RSV", "$LEFT", "RESETS"
+            "POOL",
+            "PLAN",
+            "ROLE",
+            "STATUS",
+            "WIN",
+            "%USED",
+            "%RSV(nom)",
+            "%RSV(eff)",
+            "%LEFT",
+            "$CAP",
+            "$USED",
+            "$RSV(nom)",
+            "$RSV(eff)",
+            "$LEFT",
+            "RESETS",
+        ]
+        # Default "all" emits both target and host rows per (pool, win) with no ceiling -> $RSV(eff) = "—"
+        codex_5h_t = [c.plain for c in quotas.get_row("codex:shared:5h:target")]
+        codex_5h_h = [c.plain for c in quotas.get_row("codex:shared:5h:host")]
+        assert codex_5h_t[:14] == [
+            "codex", "—", "target", "OK", "5h", "42%", "10%", "10%", "48%", "—", "—", "—", "—", "—"
+        ]
+        assert codex_5h_h[:14] == [
+            "codex", "—", "host", "OK", "5h", "42%", "10%", "10%", "48%", "—", "—", "—", "—", "—"
         ]
         assert "(Enter for full breakdown)" in str(detail.render())
 
@@ -263,7 +286,7 @@ async def test_tui_renders_routes_modals_and_filters():
         keys_body = app.screen.query_one("#show-body", Static)
         assert "show selected route details" in str(keys_body.render())
         assert "toggle routes / quotas view" in str(keys_body.render())
-        assert "cycle quota host perspective" in str(keys_body.render())
+        assert "cycle quota role filter" in str(keys_body.render())
         await pilot.press("enter")
         await pilot.pause()
 
@@ -691,51 +714,90 @@ async def test_tui_shows_estimated_credit_alongside_percentages():
 
         col_labels = [str(col.label) for col in quotas_table.ordered_columns]
         assert col_labels == [
-            "POOL", "PLAN", "STATUS", "WIN", "%USED", "%RSV", "%LEFT", "$CAP", "$USED", "$RSV", "$LEFT", "RESETS"
+            "POOL",
+            "PLAN",
+            "ROLE",
+            "STATUS",
+            "WIN",
+            "%USED",
+            "%RSV(nom)",
+            "%RSV(eff)",
+            "%LEFT",
+            "$CAP",
+            "$USED",
+            "$RSV(nom)",
+            "$RSV(eff)",
+            "$LEFT",
+            "RESETS",
         ]
-        # Every row is self-contained (repeats POOL, PLAN, STATUS) and uses Rich Text cells.
-        row_5h = quotas_table.get_row("codex:shared:5h")
-        row_7d = quotas_table.get_row("codex:shared:7d")
-        assert [c.plain for c in row_5h[:4]] == ["codex", "plus-20", "OK", "5h"]
-        assert [c.plain for c in row_7d[:4]] == ["codex", "plus-20", "OK", "7d"]
-        assert row_5h[2].style == "bold green"
-        assert row_5h[4].plain == "42%" and row_5h[9].plain == "$10" and row_5h[10].plain == "$1.60"
-        assert row_7d[4].plain == "18%" and row_7d[10].plain == "$31"
+        # Default role filter "all": every (pool, win) emits target then host without '*' on POOL.
+        ordered_keys = [str(r.key.value) for r in quotas_table.ordered_rows]
+        assert ordered_keys[:4] == [
+            "codex:shared:5h:target",
+            "codex:shared:5h:host",
+            "codex:shared:7d:target",
+            "codex:shared:7d:host",
+        ]
+        row_5h = quotas_table.get_row("codex:shared:5h:target")
+        row_7d = quotas_table.get_row("codex:shared:7d:target")
+        assert [c.plain for c in row_5h[:5]] == ["codex", "plus-20", "target", "OK", "5h"]
+        assert [c.plain for c in row_7d[:5]] == ["codex", "plus-20", "target", "OK", "7d"]
+        assert row_5h[3].style == "bold green"
+        # 5h: 42% used, 10% nom rsv, $10/$20 = 50% eff rsv -> 8% left, $8.40 used, $10 nom, $10 eff, $1.60 left
+        assert [c.plain for c in row_5h[5:14]] == [
+            "42%", "10%", "50%", "8%", "$20", "$8.40", "$10", "$10", "$1.60"
+        ]
+        assert [c.plain for c in row_7d[5:14]] == [
+            "18%", "5%", "20%", "62%", "$50", "$9", "$10", "$10", "$31"
+        ]
 
-        claude_shared_7d = quotas_table.get_row("claude:shared:7d")
-        claude_fable_7d = quotas_table.get_row("claude:fable:7d")
-        assert claude_shared_7d[0].plain == "claude/shared" and claude_shared_7d[1].plain == "max-20x" and claude_shared_7d[10].plain == "$620"
-        assert claude_fable_7d[0].plain == "claude/fable" and claude_fable_7d[10].plain == "$200"
+        claude_shared_7d = quotas_table.get_row("claude:shared:7d:target")
+        claude_fable_7d = quotas_table.get_row("claude:fable:7d:target")
+        assert claude_shared_7d[0].plain == "claude/shared" and claude_shared_7d[1].plain == "max-20x" and claude_shared_7d[13].plain == "$585"
+        assert claude_fable_7d[0].plain == "claude/fable" and claude_fable_7d[13].plain == "$195"
 
-        agy_gem_5h = quotas_table.get_row("agy:gemini:5h")
-        agy_3p_5h = quotas_table.get_row("agy:3p:5h")
-        assert agy_gem_5h[0].plain == "agy/gemini*" and agy_gem_5h[1].plain == "ultra-200"
-        assert agy_3p_5h[0].plain == "agy/3p*"
+        agy_gem_5h_t = quotas_table.get_row("agy:gemini:5h:target")
+        agy_gem_5h_h = quotas_table.get_row("agy:gemini:5h:host")
+        agy_3p_5h_h = quotas_table.get_row("agy:3p:5h:host")
+        assert agy_gem_5h_t[0].plain == "agy/gemini" and agy_gem_5h_t[2].plain == "target"
+        assert agy_gem_5h_h[0].plain == "agy/gemini" and agy_gem_5h_h[2].plain == "host"
+        assert agy_3p_5h_h[0].plain == "agy/3p" and agy_3p_5h_h[2].plain == "host"
 
-        # Detail pane shows 6-line summary for highlighted codex pool row
+        # Detail pane shows 6-line summary for highlighted codex pool row with [pool_name · role]
         detail_codex = str(app.query_one("#route-detail", Static).render())
         assert len(detail_codex.splitlines()) == 6
-        assert "codex · plan: plus-20" in detail_codex and "status: OK" in detail_codex
+        assert "codex [shared · target] · plan: plus-20" in detail_codex and "status: OK" in detail_codex
         assert "target_eligible: True" in detail_codex
         assert "host_native_eligible: True" in detail_codex
+        assert "reserves (5h target): nominal 10% / $10.00 -> effective 50% / $10.00" in detail_codex
         assert "5h session: 42%" in detail_codex and "reset:" in detail_codex
         assert "7d weekly:  18%" in detail_codex and "reset:" in detail_codex
         assert "models (shared): 1/1 eligible" in detail_codex and "(Enter for full breakdown)" in detail_codex
 
-        # Moving cursor down updates #route-detail to the highlighted pool
-        quotas_table.move_cursor(row=2)
+        # Moving cursor down to row 4 (claude:shared:5h:target) updates #route-detail to the highlighted pool
+        quotas_table.move_cursor(row=4)
         await pilot.pause()
         detail_claude = str(app.query_one("#route-detail", Static).render())
-        assert "claude/shared · plan: max-20x" in detail_claude
+        assert "claude/shared [shared · target] · plan: max-20x" in detail_claude
 
-        # Pressing 'H' cycles host perspective from agy -> claude -> codex -> none -> agy while preserving cursor row
-        await pilot.press("H")
-        await pilot.pause()
-        assert quotas_table.cursor_row == 2
-        subject_after_h = str(app.query_one("#route-subject", Static).render())
-        assert "host: claude" in subject_after_h
-        assert quotas_table.get_row("claude:shared:7d")[0].plain == "claude/shared*"
-        assert quotas_table.get_row("agy:gemini:5h")[0].plain == "agy/gemini"
+        # Pressing 'H' cycles role filter across all -> target -> host -> agy -> claude -> codex -> all
+        expected_cycles = ["target", "host", "agy", "claude", "codex", "all"]
+        for expected_role_filter in expected_cycles:
+            await pilot.press("H")
+            await pilot.pause()
+            subj = str(app.query_one("#route-subject", Static).render())
+            assert f"role filter: {expected_role_filter} (H)" in subj
+            keys_now = [str(r.key.value) for r in quotas_table.ordered_rows]
+            if expected_role_filter == "target":
+                assert all(k.endswith(":target") for k in keys_now)
+            elif expected_role_filter == "host":
+                assert all(k.endswith(":host") for k in keys_now)
+            elif expected_role_filter in ("agy", "claude", "codex"):
+                for k in keys_now:
+                    ag, _p, _w, r = k.split(":")
+                    assert r == ("host" if ag == expected_role_filter else "target")
+            else:
+                assert "codex:shared:5h:target" in keys_now and "codex:shared:5h:host" in keys_now
 
         # Pressing Enter in #quotas opens the full Agent Usage & Eligibility modal
         await pilot.press("enter")
@@ -797,13 +859,13 @@ effort = "high"
         await pilot.pause()
         quotas_table = app.query_one("#quotas", DataTable)
         assert quotas_table.display is True
-        # plus-20 defaults: 5h=$20 (25% used -> $5 used, $5 rsv, $10 left), 7d=$50 (40% used -> $20 used, $5 rsv, $25 left)
-        row_5h = [c.plain for c in quotas_table.get_row("codex:shared:5h")]
-        row_7d = [c.plain for c in quotas_table.get_row("codex:shared:7d")]
-        assert row_5h[:4] == ["codex", "plus-20", "OK", "5h"]
-        assert row_5h[7:11] == ["$20", "$5", "$5", "$10"]
-        assert row_7d[:4] == ["codex", "plus-20", "OK", "7d"]
-        assert row_7d[7:11] == ["$50", "$20", "$5", "$25"]
+        # plus-20 defaults: 5h=$20 (25% used -> $5 used, $5 nom/$5 eff rsv, $10 left), 7d=$50 (40% used -> $20 used, $5 nom/$5 eff rsv, $25 left)
+        row_5h = [c.plain for c in quotas_table.get_row("codex:shared:5h:target")]
+        row_7d = [c.plain for c in quotas_table.get_row("codex:shared:7d:target")]
+        assert row_5h[:5] == ["codex", "plus-20", "target", "OK", "5h"]
+        assert row_5h[5:14] == ["25%", "10%", "25%", "50%", "$20", "$5", "$5", "$5", "$10"]
+        assert row_7d[:5] == ["codex", "plus-20", "target", "OK", "7d"]
+        assert row_7d[5:14] == ["40%", "5%", "10%", "50%", "$50", "$20", "$5", "$5", "$25"]
 
         await pilot.press("enter")
         await pilot.pause()
