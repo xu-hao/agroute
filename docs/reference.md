@@ -415,6 +415,12 @@ When a budget is active, candidates without a rate card or `usd_per_mtok` are ex
 
 `agr usage show` and `agr models` expose agent-level `monthly_cost_usd` and
 `weekly_cost_usd`, plus per-model `cost_per_credit`, `credit_budget`, and `credit_calibration`.
+`agr usage show` also exposes per-agent `quota_limits` (configured percentage cutoffs,
+`host_reserve_pct`, `min_remaining_credit_usd`, `host_reserve_credit_usd`, and
+`exclude_quota_groups`), `host_credit_calibration` (`is_host=True` pool summaries alongside
+target `credit_calibration`), and tightened `eligible_as_target` / `eligible_as_host_native`
+verdicts that honor post-reserve credit exhaustion, active in-flight reservations, and
+per-surface candidate/pool exhaustion.
 The calibration metadata labels quota amounts as `prior_credit_usd`, `calibrated_credit_usd`,
 `remaining_credit_usd`, and `available_credit_usd`. Each window's metadata also reports
 `reserve_credit_usd`, the amount held back in that window, `max(C_credit * rho / 100, kappa)`.
@@ -663,8 +669,14 @@ that does not create a howhard capability observation. JSON exposes `route_statu
 linked raw observations use `linked_raw`.
 
 - `agr tui [--repo NAME] [--agent AGENT] [--current-repo] [--limit N | --all] [--refresh-interval SEC] [--no-probe]`:
-  interactive Textual terminal dashboard showing live agent quota/eligibility badges (with
-  5h/7d percentages and estimated remaining quota credit when calibrated), active and
+  interactive Textual terminal dashboard with a top-level host-aware quota ledger (`#quota-strip`)
+  displaying `POOL`, `PLAN`, `STATUS`, `WIN`, `PCT QUOTA (USED, RSV, LEFT)`,
+  `CREDIT QUOTA (CAP, USED, RSV, LEFT)`, and `RESETS` across multi-pool quotas (`codex`,
+  `claude/shared`, `claude/fable`, `agy/gemini`, `agy/3p`). By default the ledger applies host
+  reserves (`*`) to `default_host` and worker target reserves to cross-agent targets; `H` cycles
+  the host perspective across `agy`, `claude`, `codex`, and `none` (pure target view), while
+  active in-flight route reservations appear in `RSV` as `$hold+$live`. Below the ledger, the
+  dashboard renders active and
   historical model routes, `Enter` route detail modal, `u` live usage & eligibility modal
   (showing estimated used/ceiling/remaining credit alongside 5h/7d percentages, per-pool
   calibrated credit summaries, and per-model window credit). `h` hides terminal routes and

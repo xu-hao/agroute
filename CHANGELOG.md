@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Tighten `agr usage show` (`Router.usage_show()`) so `eligible_as_target`,
+  `target_exclusion_reason`, `eligible_as_host_native`, and `host_native_exclusion_reason`
+  honor post-reserve credit exhaustion (`min_remaining_credit_usd`, `host_reserve_credit_usd`,
+  `host_reserve_pct`), active in-flight reservations, and per-surface candidate/pool exhaustion,
+  expose per-agent `quota_limits` and `host_credit_calibration`, and replace single-line TUI
+  status-bar quota badges with a host-aware multi-pool quota ledger (`#quota-strip`, cycleable
+  via `H`) showing percentage and credit `USED` / `RSV` / `LEFT` alongside window reset
+  countdowns. Issue #89 tracks post-reserve `usage_show` eligibility and the TUI quota ledger.
+
 ## 0.6.0 (2026-11-21)
 
 - Release agroute 0.6.0 with synchronized package and plugin versions. Issue #76 tracks

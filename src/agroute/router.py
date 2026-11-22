@@ -219,11 +219,32 @@ class Router:
             "user_config_path": str(self.config.user_config_path) if self.config.user_config_path else None,
         }
 
-    def _agent_model_quotas(self, name, cfg, eff, *, calibration_store=None, reserved_credit_by_pool=None):
+    @staticmethod
+    def _exhausted_pool_reason(pool_meta: dict) -> str:
+        s5 = pool_meta.get("session_5h") or {}
+        rem_5h = s5.get("remaining_credit_usd")
+        exhausted_win = "session_5h" if (rem_5h is not None and rem_5h <= 0.0) else "weekly_7d"
+        win_meta = pool_meta.get(exhausted_win) or {}
+        held_back = float(win_meta.get("reserve_credit_usd") or 0.0)
+        reserved_amt = float(win_meta.get("reserved_credit_usd") or 0.0)
+        parts = []
+        if held_back > 0.0:
+            parts.append(f"{held_back:.6g} USD reserve")
+        if reserved_amt > 0.0:
+            parts.append(f"{reserved_amt:.6g} USD reserved")
+        after_detail = f" after {' and '.join(parts)}" if parts else ""
+        return f"{exhausted_win} credit_budget exhausted (0 USD remaining{after_detail})"
+
+    def _resolve_agent_surface_quotas(self, name, cfg, eff, *, calibration_store=None, reserved_credit_by_pool=None):
         nat_cands = deepcopy(cfg["native_candidates"]) if cfg["native_candidates"] else discover_agent_candidates(name, "native")
         cli_cands = deepcopy(cfg["cli_candidates"]) if cfg["cli_candidates"] else discover_agent_candidates(name, "cli")
         models_map = {}
-        for surface, cands, is_host in (("cli", cli_cands, False), ("native", nat_cands, True)):
+        cli_quotas = []
+        nat_quotas = []
+        for surface, cands, is_host, bucket in (
+            ("cli", cli_cands, False, cli_quotas),
+            ("native", nat_cands, True, nat_quotas),
+        ):
             for cand in cands:
                 mid = cand["model"]
                 q = resolve_model_quota(
@@ -236,6 +257,7 @@ class Router:
                     calibration_store=calibration_store,
                     reserved_credit_by_pool=reserved_credit_by_pool,
                 )
+                bucket.append(q)
                 if mid not in models_map:
                     entry = {
                         "surface": surface,
@@ -246,6 +268,9 @@ class Router:
                         "eligible": q["eligible"],
                         "exclusion_reason": q["exclusion_reason"],
                     }
+                    if surface == "native":
+                        entry["native_eligible"] = q["eligible"]
+                        entry["native_exclusion_reason"] = q["exclusion_reason"]
                     if "credit_budget" in q:
                         entry["credit_budget"] = deepcopy(q["credit_budget"])
                     if "credit_calibration" in q:
@@ -257,6 +282,19 @@ class Router:
                 else:
                     if cand["effort"] not in models_map[mid]["efforts"]:
                         models_map[mid]["efforts"].append(cand["effort"])
+                    if surface == "native" and "native_eligible" not in models_map[mid]:
+                        models_map[mid]["native_eligible"] = q["eligible"]
+                        models_map[mid]["native_exclusion_reason"] = q["exclusion_reason"]
+        return models_map, cli_quotas, nat_quotas
+
+    def _agent_model_quotas(self, name, cfg, eff, *, calibration_store=None, reserved_credit_by_pool=None):
+        models_map, _, _ = self._resolve_agent_surface_quotas(
+            name,
+            cfg,
+            eff,
+            calibration_store=calibration_store,
+            reserved_credit_by_pool=reserved_credit_by_pool,
+        )
         return models_map
 
     def usage_show(self, agent=None, *, now=None):
@@ -277,6 +315,58 @@ class Router:
             monthly_cost = resolve_plan_monthly_cost(name, cfg, eff.get("detected_plan"))
             ok_target, reason_target = evaluate_agent_quota(name, cfg, eff, is_host=False)
             ok_host, reason_host = evaluate_agent_quota(name, cfg, eff, is_host=True)
+            cal_target = build_agent_calibration_summary(
+                name,
+                cfg,
+                eff,
+                is_host=False,
+                calibration_store=cal_store,
+                reserved_credit_by_pool=reserved_by_pool,
+            )
+            cal_host = build_agent_calibration_summary(
+                name,
+                cfg,
+                eff,
+                is_host=True,
+                calibration_store=cal_store,
+                reserved_credit_by_pool=reserved_by_pool,
+            )
+            models_map, cli_quotas, nat_quotas = self._resolve_agent_surface_quotas(
+                name,
+                cfg,
+                eff,
+                calibration_store=cal_store,
+                reserved_credit_by_pool=reserved_by_pool,
+            )
+            excluded_groups = set(cfg.get("exclude_quota_groups", ()))
+            if ok_target:
+                if cli_quotas:
+                    if not any(q["eligible"] for q in cli_quotas):
+                        ok_target = False
+                        reason_target = cli_quotas[0]["exclusion_reason"]
+                else:
+                    known_target = [
+                        p
+                        for grp, p in cal_target.items()
+                        if grp not in excluded_groups and p.get("available_credit_usd") is not None
+                    ]
+                    if known_target and all(p["available_credit_usd"] <= 0.0 for p in known_target):
+                        ok_target = False
+                        reason_target = self._exhausted_pool_reason(known_target[0])
+            if ok_host:
+                if nat_quotas:
+                    if not any(q["eligible"] for q in nat_quotas):
+                        ok_host = False
+                        reason_host = nat_quotas[0]["exclusion_reason"]
+                else:
+                    known_host = [
+                        p
+                        for grp, p in cal_host.items()
+                        if grp not in excluded_groups and p.get("available_credit_usd") is not None
+                    ]
+                    if known_host and all(p["available_credit_usd"] <= 0.0 for p in known_host):
+                        ok_host = False
+                        reason_host = self._exhausted_pool_reason(known_host[0])
             agents_out[name] = {
                 **eff,
                 "enabled": cfg["enabled"],
@@ -285,25 +375,22 @@ class Router:
                 "effective_plan": effective_plan,
                 "monthly_cost_usd": monthly_cost,
                 "weekly_cost_usd": monthly_cost * 7.0 / 30.0 if monthly_cost is not None else None,
-                "credit_calibration": build_agent_calibration_summary(
-                    name,
-                    cfg,
-                    eff,
-                    is_host=False,
-                    calibration_store=cal_store,
-                    reserved_credit_by_pool=reserved_by_pool,
-                ),
+                "quota_limits": {
+                    "max_session_used_pct": cfg["max_session_used_pct"],
+                    "max_weekly_used_pct": cfg["max_weekly_used_pct"],
+                    "max_tier_used_pct": cfg["max_tier_used_pct"],
+                    "host_reserve_pct": cfg["host_reserve_pct"],
+                    "min_remaining_credit_usd": cfg["min_remaining_credit_usd"],
+                    "host_reserve_credit_usd": cfg["host_reserve_credit_usd"],
+                    "exclude_quota_groups": list(cfg.get("exclude_quota_groups", ())),
+                },
+                "credit_calibration": cal_target,
+                "host_credit_calibration": cal_host,
                 "eligible_as_target": ok_target,
                 "target_exclusion_reason": reason_target,
                 "eligible_as_host_native": ok_host,
                 "host_native_exclusion_reason": reason_host,
-                "models": self._agent_model_quotas(
-                    name,
-                    cfg,
-                    eff,
-                    calibration_store=cal_store,
-                    reserved_credit_by_pool=reserved_by_pool,
-                ),
+                "models": models_map,
             }
         return {
             "format": "agroute-usage-snapshot-v1",
