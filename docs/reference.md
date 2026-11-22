@@ -680,11 +680,13 @@ linked raw observations use `linked_raw`.
   - **`QUOTAS` view (`u` / `Tab`)**: full-height, cursor-navigable `#quotas` Textual `DataTable`
     with 15 columns (`POOL`, `PLAN`, `ROLE`, `STATUS`, `WIN`, `%USED`, `%RSV(nom)`, `%RSV(eff)`,
     `%LEFT`, `$CAP`, `$USED`, `$RSV(nom)`, `$RSV(eff)`, `$LEFT`, and `RESETS`) across multi-pool
-    quotas (`codex`, `claude/shared`, `claude/fable`, `agy/gemini`, `agy/3p`). By default
-    (`role filter: all`), `#quotas` emits both `target` and `host` `ROLE` rows for every
-    `(pool, window)` without a `*` suffix on `POOL`; `H` cycles the role filter across `all`,
-    `target` (only `target` rows), `host` (only `host` rows), `agy`, `claude`, and `codex`
-    (`host` row for the named host agent and `target` rows for the other two agents). `%RSV(nom)`
+    quotas (`codex`, `claude/shared`, `claude/fable`, `agy/gemini`, `agy/3p`). Rows are ordered
+    left-to-right across `POOL -> ROLE -> WIN`: by default (`role filter: all`), within each
+    pool `#quotas` emits `target` rows (`5h`, then `7d`) followed by `host` rows (`5h`, then
+    `7d`) without a `*` suffix on `POOL`; `H` cycles the role filter across `all`, `target`
+    (only `target` rows), `host` (only `host` rows), `agy`, `claude`, and `codex` (`host` rows
+    for the named host agent and `target` rows for the other two agents, each ordered `5h` then
+    `7d` per pool). `%RSV(nom)`
     and `$RSV(nom)` show the configured percentage cutoff reserve (`100% - eff_max_pct`, adding
     `host_reserve_pct` on `host` rows) and configured dollar reserve (`min_remaining_credit_usd`,
     plus `host_reserve_credit_usd` on `host` rows, formatted as `$nom+$live` when in-flight

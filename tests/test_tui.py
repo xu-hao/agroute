@@ -253,7 +253,21 @@ async def test_tui_renders_routes_modals_and_filters():
             "$LEFT",
             "RESETS",
         ]
-        # Default "all" emits both target and host rows per (pool, win) with no ceiling -> $RSV(eff) = "—"
+        # Default "all" orders rows left-to-right by POOL -> ROLE -> WIN (target 5h/7d then host 5h/7d per pool)
+        assert [str(r.key.value) for r in quotas.ordered_rows] == [
+            "codex:shared:5h:target",
+            "codex:shared:7d:target",
+            "codex:shared:5h:host",
+            "codex:shared:7d:host",
+            "claude:shared:5h:target",
+            "claude:shared:7d:target",
+            "claude:shared:5h:host",
+            "claude:shared:7d:host",
+            "agy:shared:5h:target",
+            "agy:shared:7d:target",
+            "agy:shared:5h:host",
+            "agy:shared:7d:host",
+        ]
         codex_5h_t = [c.plain for c in quotas.get_row("codex:shared:5h:target")]
         codex_5h_h = [c.plain for c in quotas.get_row("codex:shared:5h:host")]
         assert codex_5h_t[:14] == [
@@ -730,13 +744,56 @@ async def test_tui_shows_estimated_credit_alongside_percentages():
             "$LEFT",
             "RESETS",
         ]
-        # Default role filter "all": every (pool, win) emits target then host without '*' on POOL.
+        # Default role filter "all": rows are ordered left-to-right by POOL -> ROLE -> WIN
+        # (within each pool, target 5h/7d rows precede host 5h/7d rows without '*' on POOL).
         ordered_keys = [str(r.key.value) for r in quotas_table.ordered_rows]
-        assert ordered_keys[:4] == [
+        expected_all_keys = [
             "codex:shared:5h:target",
-            "codex:shared:5h:host",
             "codex:shared:7d:target",
+            "codex:shared:5h:host",
             "codex:shared:7d:host",
+            "claude:shared:5h:target",
+            "claude:shared:7d:target",
+            "claude:shared:5h:host",
+            "claude:shared:7d:host",
+            "claude:fable:7d:target",
+            "claude:fable:7d:host",
+            "agy:gemini:5h:target",
+            "agy:gemini:7d:target",
+            "agy:gemini:5h:host",
+            "agy:gemini:7d:host",
+            "agy:3p:5h:target",
+            "agy:3p:7d:target",
+            "agy:3p:5h:host",
+            "agy:3p:7d:host",
+        ]
+        assert ordered_keys == expected_all_keys
+        assert [
+            (
+                quotas_table.get_row(k)[0].plain,
+                quotas_table.get_row(k)[2].plain,
+                quotas_table.get_row(k)[4].plain,
+            )
+            for k in ordered_keys
+        ] == [
+            ("codex", "target", "5h"),
+            ("codex", "target", "7d"),
+            ("codex", "host", "5h"),
+            ("codex", "host", "7d"),
+            ("claude/shared", "target", "5h"),
+            ("claude/shared", "target", "7d"),
+            ("claude/shared", "host", "5h"),
+            ("claude/shared", "host", "7d"),
+            ("claude/fable", "target", "7d"),
+            ("claude/fable", "host", "7d"),
+            ("agy/gemini", "target", "5h"),
+            ("agy/gemini", "target", "7d"),
+            ("agy/gemini", "host", "5h"),
+            ("agy/gemini", "host", "7d"),
+            ("agy/3p", "target", "5h"),
+            ("agy/3p", "target", "7d"),
+            ("agy/3p", "host", "5h"),
+            ("agy/3p", "host", "7d"),
         ]
         row_5h = quotas_table.get_row("codex:shared:5h:target")
         row_7d = quotas_table.get_row("codex:shared:7d:target")
@@ -781,23 +838,86 @@ async def test_tui_shows_estimated_credit_alongside_percentages():
         assert "claude/shared [shared · target] · plan: max-20x" in detail_claude
 
         # Pressing 'H' cycles role filter across all -> target -> host -> agy -> claude -> codex -> all
-        expected_cycles = ["target", "host", "agy", "claude", "codex", "all"]
-        for expected_role_filter in expected_cycles:
+        expected_cycles = [
+            (
+                "target",
+                [
+                    "codex:shared:5h:target",
+                    "codex:shared:7d:target",
+                    "claude:shared:5h:target",
+                    "claude:shared:7d:target",
+                    "claude:fable:7d:target",
+                    "agy:gemini:5h:target",
+                    "agy:gemini:7d:target",
+                    "agy:3p:5h:target",
+                    "agy:3p:7d:target",
+                ],
+            ),
+            (
+                "host",
+                [
+                    "codex:shared:5h:host",
+                    "codex:shared:7d:host",
+                    "claude:shared:5h:host",
+                    "claude:shared:7d:host",
+                    "claude:fable:7d:host",
+                    "agy:gemini:5h:host",
+                    "agy:gemini:7d:host",
+                    "agy:3p:5h:host",
+                    "agy:3p:7d:host",
+                ],
+            ),
+            (
+                "agy",
+                [
+                    "codex:shared:5h:target",
+                    "codex:shared:7d:target",
+                    "claude:shared:5h:target",
+                    "claude:shared:7d:target",
+                    "claude:fable:7d:target",
+                    "agy:gemini:5h:host",
+                    "agy:gemini:7d:host",
+                    "agy:3p:5h:host",
+                    "agy:3p:7d:host",
+                ],
+            ),
+            (
+                "claude",
+                [
+                    "codex:shared:5h:target",
+                    "codex:shared:7d:target",
+                    "claude:shared:5h:host",
+                    "claude:shared:7d:host",
+                    "claude:fable:7d:host",
+                    "agy:gemini:5h:target",
+                    "agy:gemini:7d:target",
+                    "agy:3p:5h:target",
+                    "agy:3p:7d:target",
+                ],
+            ),
+            (
+                "codex",
+                [
+                    "codex:shared:5h:host",
+                    "codex:shared:7d:host",
+                    "claude:shared:5h:target",
+                    "claude:shared:7d:target",
+                    "claude:fable:7d:target",
+                    "agy:gemini:5h:target",
+                    "agy:gemini:7d:target",
+                    "agy:3p:5h:target",
+                    "agy:3p:7d:target",
+                ],
+            ),
+            ("all", expected_all_keys),
+        ]
+        for expected_role_filter, expected_keys in expected_cycles:
             await pilot.press("H")
             await pilot.pause()
             subj = str(app.query_one("#route-subject", Static).render())
             assert f"role filter: {expected_role_filter} (H)" in subj
             keys_now = [str(r.key.value) for r in quotas_table.ordered_rows]
-            if expected_role_filter == "target":
-                assert all(k.endswith(":target") for k in keys_now)
-            elif expected_role_filter == "host":
-                assert all(k.endswith(":host") for k in keys_now)
-            elif expected_role_filter in ("agy", "claude", "codex"):
-                for k in keys_now:
-                    ag, _p, _w, r = k.split(":")
-                    assert r == ("host" if ag == expected_role_filter else "target")
-            else:
-                assert "codex:shared:5h:target" in keys_now and "codex:shared:5h:host" in keys_now
+            assert keys_now == expected_keys
 
         # Pressing Enter in #quotas opens the full Agent Usage & Eligibility modal
         await pilot.press("enter")
