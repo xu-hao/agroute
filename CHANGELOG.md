@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Replace the inline `#quota-strip` header and text-dump `u` usage modal in `agr tui` with a
+  dedicated, cursor-navigable Textual `DataTable` Quotas view (`#quotas`, toggled with `u` or
+  `Tab`) featuring auto-sized columns (`POOL`, `PLAN`, `STATUS`, `WIN`, `%USED`, `%RSV`, `%LEFT`,
+  `$CAP`, `$USED`, `$RSV`, `$LEFT`, `RESETS`), Rich-styled status cells, a 6-line pool/agent
+  detail summary in `#route-detail`, `Enter` for the full per-model `Agent Usage & Eligibility`
+  breakdown modal, `H` host-perspective cycling, and concise per-agent status summaries in
+  `#route-status` while restoring full vertical height to `#routes`. Issue #95 tracks the
+  dedicated `DataTable` Quotas view.
+
 ## 0.6.1 (2026-11-22)
 
 - Release agroute 0.6.1 with synchronized package and plugin versions. Issue #92 tracks

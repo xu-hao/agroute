@@ -186,10 +186,19 @@ async def test_tui_renders_routes_modals_and_filters():
         await pilot.pause()
 
         subject = app.query_one("#route-subject", Static)
-        assert "MACHINE │ AGROUTE │ 2 routed · 1 observed" in str(subject.render())
+        assert "MACHINE │ AGROUTE │ [ROUTES] · quotas (u) │ 2 routed · 1 observed" in str(subject.render())
+        assert len(app.query("#quota-strip")) == 0
+        assert len(app.query("#quota-rule")) == 0
 
         table = app.query_one("#routes", DataTable)
+        quotas = app.query_one("#quotas", DataTable)
+        assert table.display is True
+        assert quotas.display is False
+        assert app.focused is table
         assert table.row_count == 3
+
+        status = str(app.query_one("#route-status", Static).render())
+        assert "codex OK · claude OK · agy OK · showing 3/3 routes" in status
 
         detail = app.query_one("#route-detail", Static)
         assert "route-alpha000001" in str(detail.render())
@@ -220,28 +229,55 @@ async def test_tui_renders_routes_modals_and_filters():
         await pilot.press("escape")
         await pilot.pause()
 
-        # Open live usage modal with 'u' and close
+        # Switch to QUOTAS view with 'u', open full breakdown modal with Enter, close modal, and return to ROUTES with Tab
         await pilot.press("u")
+        await pilot.pause()
+        assert table.display is False
+        assert quotas.display is True
+        assert app.focused is quotas
+        assert "MACHINE │ AGROUTE │ routes (u) · [QUOTAS] │ host: agy" in str(subject.render())
+        assert [str(col.label) for col in quotas.ordered_columns] == [
+            "POOL", "PLAN", "STATUS", "WIN", "%USED", "%RSV", "%LEFT", "$CAP", "$USED", "$RSV", "$LEFT", "RESETS"
+        ]
+        assert "(Enter for full breakdown)" in str(detail.render())
+
+        await pilot.press("enter")
         await pilot.pause()
         usage_body = app.screen.query_one("#show-body", Static)
         assert "[codex]" in str(usage_body.render())
         assert "42.0%" in str(usage_body.render())
         await pilot.press("q")
         await pilot.pause()
+        assert quotas.display is True
+        assert app.focused is quotas
+
+        await pilot.press("tab")
+        await pilot.pause()
+        assert table.display is True
+        assert quotas.display is False
+        assert app.focused is table
 
         # Open keys help modal with '?' and close
         await pilot.press("question_mark")
         await pilot.pause()
         keys_body = app.screen.query_one("#show-body", Static)
         assert "show selected route details" in str(keys_body.render())
+        assert "toggle routes / quotas view" in str(keys_body.render())
+        assert "cycle quota host perspective" in str(keys_body.render())
         await pilot.press("enter")
         await pilot.pause()
 
-        # Filter by target agent ('a') -> type 'agy' -> enter
+        # Filter by target agent ('a') -> verify Tab inside modal moves focus without switching view -> type 'agy' -> enter
         await pilot.press("a")
         await pilot.pause()
         filter_input = app.screen.query_one("#filter-query", Input)
         assert filter_input is not None
+        await pilot.press("tab")
+        await pilot.pause()
+        assert table.display is True
+        assert quotas.display is False
+        filter_input.focus()
+        await pilot.pause()
         await pilot.press("a", "g", "y")
         await pilot.pause()
         await pilot.press("enter")
@@ -638,29 +674,71 @@ async def test_tui_shows_estimated_credit_alongside_percentages():
     async with app.run_test(size=(140, 32)) as pilot:
         await pilot.pause()
 
-        quota = str(app.query_one("#quota-strip", Static).render())
-        assert "PCT QUOTA" in quota and "CREDIT QUOTA" in quota
-        # default_host is "agy", so agy pools carry '*' and codex/claude use target reserves
-        assert "codex" in quota and "plus-20" in quota
-        assert "42%" in quota and "$1.60" in quota and "$31" in quota
-        assert "claude/shared" in quota and "max-20x" in quota and "$620" in quota
-        assert "claude/fable" in quota and "$200" in quota
-        assert "agy/gemini*" in quota and "ultra-200" in quota
-        assert "agy/3p*" in quota
+        routes_table = app.query_one("#routes", DataTable)
+        quotas_table = app.query_one("#quotas", DataTable)
+        assert routes_table.display is True
+        assert quotas_table.display is False
 
         status = str(app.query_one("#route-status", Static).render())
-        assert "showing 3/3 routes" in status
+        assert "codex OK · claude OK · agy OK · showing 3/3 routes" in status
 
-        # Pressing 'H' cycles host perspective from agy -> claude -> codex -> none -> agy
+        # Switch to QUOTAS view via 'u'
+        await pilot.press("u")
+        await pilot.pause()
+        assert routes_table.display is False
+        assert quotas_table.display is True
+        assert app.focused is quotas_table
+
+        col_labels = [str(col.label) for col in quotas_table.ordered_columns]
+        assert col_labels == [
+            "POOL", "PLAN", "STATUS", "WIN", "%USED", "%RSV", "%LEFT", "$CAP", "$USED", "$RSV", "$LEFT", "RESETS"
+        ]
+        # Every row is self-contained (repeats POOL, PLAN, STATUS) and uses Rich Text cells.
+        row_5h = quotas_table.get_row("codex:shared:5h")
+        row_7d = quotas_table.get_row("codex:shared:7d")
+        assert [c.plain for c in row_5h[:4]] == ["codex", "plus-20", "OK", "5h"]
+        assert [c.plain for c in row_7d[:4]] == ["codex", "plus-20", "OK", "7d"]
+        assert row_5h[2].style == "bold green"
+        assert row_5h[4].plain == "42%" and row_5h[9].plain == "$10" and row_5h[10].plain == "$1.60"
+        assert row_7d[4].plain == "18%" and row_7d[10].plain == "$31"
+
+        claude_shared_7d = quotas_table.get_row("claude:shared:7d")
+        claude_fable_7d = quotas_table.get_row("claude:fable:7d")
+        assert claude_shared_7d[0].plain == "claude/shared" and claude_shared_7d[1].plain == "max-20x" and claude_shared_7d[10].plain == "$620"
+        assert claude_fable_7d[0].plain == "claude/fable" and claude_fable_7d[10].plain == "$200"
+
+        agy_gem_5h = quotas_table.get_row("agy:gemini:5h")
+        agy_3p_5h = quotas_table.get_row("agy:3p:5h")
+        assert agy_gem_5h[0].plain == "agy/gemini*" and agy_gem_5h[1].plain == "ultra-200"
+        assert agy_3p_5h[0].plain == "agy/3p*"
+
+        # Detail pane shows 6-line summary for highlighted codex pool row
+        detail_codex = str(app.query_one("#route-detail", Static).render())
+        assert len(detail_codex.splitlines()) == 6
+        assert "codex · plan: plus-20" in detail_codex and "status: OK" in detail_codex
+        assert "target_eligible: True" in detail_codex
+        assert "host_native_eligible: True" in detail_codex
+        assert "5h session: 42%" in detail_codex and "reset:" in detail_codex
+        assert "7d weekly:  18%" in detail_codex and "reset:" in detail_codex
+        assert "models (shared): 1/1 eligible" in detail_codex and "(Enter for full breakdown)" in detail_codex
+
+        # Moving cursor down updates #route-detail to the highlighted pool
+        quotas_table.move_cursor(row=2)
+        await pilot.pause()
+        detail_claude = str(app.query_one("#route-detail", Static).render())
+        assert "claude/shared · plan: max-20x" in detail_claude
+
+        # Pressing 'H' cycles host perspective from agy -> claude -> codex -> none -> agy while preserving cursor row
         await pilot.press("H")
         await pilot.pause()
+        assert quotas_table.cursor_row == 2
         subject_after_h = str(app.query_one("#route-subject", Static).render())
         assert "host: claude" in subject_after_h
-        quota_after_h = str(app.query_one("#quota-strip", Static).render())
-        assert "claude/shared*" in quota_after_h
-        assert "agy/gemini " in quota_after_h
+        assert quotas_table.get_row("claude:shared:7d")[0].plain == "claude/shared*"
+        assert quotas_table.get_row("agy:gemini:5h")[0].plain == "agy/gemini"
 
-        await pilot.press("u")
+        # Pressing Enter in #quotas opens the full Agent Usage & Eligibility modal
+        await pilot.press("enter")
         await pilot.pause()
         usage_body = str(app.screen.query_one("#show-body", Static).render())
         # Agent top-level 5h/7d lines include estimated credit used/ceiling/left/reserve.
@@ -678,6 +756,15 @@ async def test_tui_shows_estimated_credit_alongside_percentages():
         assert "codex/gpt-6.2-sol [shared]: 5h=42.0% (~$1.60 left) 7d=18.0% (~$31.00 left)" in usage_body
         await pilot.press("q")
         await pilot.pause()
+        assert quotas_table.display is True
+        assert app.focused is quotas_table
+
+        # Pressing 'u' again returns to ROUTES view
+        await pilot.press("u")
+        await pilot.pause()
+        assert routes_table.display is True
+        assert quotas_table.display is False
+        assert app.focused is routes_table
 
 
 @pytest.mark.asyncio
@@ -706,13 +793,19 @@ effort = "high"
     app = build_app(lambda: router.snapshot(all_repos=False, now="2026-11-20T12:00:00Z"), refresh_interval=60.0)
     async with app.run_test(size=(130, 30)) as pilot:
         await pilot.pause()
-        quota = str(app.query_one("#quota-strip", Static).render())
-        # plus-20 defaults: 5h=$20 (25% used -> $5 used, $5 rsv, $10 left), 7d=$50 (40% used -> $20 used, $5 rsv, $25 left)
-        assert "codex" in quota and "plus-20" in quota and "OK" in quota
-        assert "$20" in quota and "$5" in quota and "$10" in quota
-        assert "$50" in quota and "$25" in quota
-
         await pilot.press("u")
+        await pilot.pause()
+        quotas_table = app.query_one("#quotas", DataTable)
+        assert quotas_table.display is True
+        # plus-20 defaults: 5h=$20 (25% used -> $5 used, $5 rsv, $10 left), 7d=$50 (40% used -> $20 used, $5 rsv, $25 left)
+        row_5h = [c.plain for c in quotas_table.get_row("codex:shared:5h")]
+        row_7d = [c.plain for c in quotas_table.get_row("codex:shared:7d")]
+        assert row_5h[:4] == ["codex", "plus-20", "OK", "5h"]
+        assert row_5h[7:11] == ["$20", "$5", "$5", "$10"]
+        assert row_7d[:4] == ["codex", "plus-20", "OK", "7d"]
+        assert row_7d[7:11] == ["$50", "$20", "$5", "$25"]
+
+        await pilot.press("enter")
         await pilot.pause()
         usage_body = str(app.screen.query_one("#show-body", Static).render())
         assert "5h session used: 25.0% (~$5.00/$20.00 credit, ~$10.00 left, $5.00 reserve)" in usage_body
