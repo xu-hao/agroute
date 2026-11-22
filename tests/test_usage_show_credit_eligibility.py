@@ -262,22 +262,37 @@ native_candidates = [
     app = build_app(lambda: router.snapshot(all_repos=False, now="2026-11-22T06:02:00Z"), refresh_interval=60.0)
     async with app.run_test(size=(130, 32)) as pilot:
         await pilot.pause()
-        subject = str(app.query_one("#route-subject", Static).render())
-        assert "host: agy" in subject
+        status = str(app.query_one("#route-status", Static).render())
+        assert "codex BLOCKED · claude BLOCKED · agy OK" in status
 
-        ledger = str(app.query_one("#quota-strip", Static).render())
-        lines = {line.split()[0]: line for line in ledger.splitlines() if line.strip() and not line.lstrip().startswith(("──", "POOL", "5h", "7d"))}
-        assert "BLOCKED" in lines["codex"] and "plus-20" in lines["codex"]
-        assert "BLOCKED" in lines["claude/shared"] and "max-20x" in lines["claude/shared"]
-        assert "BLOCKED" in lines["claude/fable"]
+        await pilot.press("u")
+        await pilot.pause()
+        subject = str(app.query_one("#route-subject", Static).render())
+        assert "routes (u) · [QUOTAS]" in subject and "host: agy" in subject
+
+        from textual.widgets import DataTable
+        quotas = app.query_one("#quotas", DataTable)
+        assert quotas.display is True
+
+        codex_5h = quotas.get_row("codex:shared:5h")
+        claude_shared_7d = quotas.get_row("claude:shared:7d")
+        claude_fable_7d = quotas.get_row("claude:fable:7d")
+        agy_gem_5h = quotas.get_row("agy:gemini:5h")
+        agy_3p_5h = quotas.get_row("agy:3p:5h")
+
+        assert codex_5h[0].plain == "codex" and codex_5h[1].plain == "plus-20" and codex_5h[2].plain == "BLOCKED"
+        assert codex_5h[2].style == "bold red"
+        assert claude_shared_7d[0].plain == "claude/shared" and claude_shared_7d[1].plain == "max-20x" and claude_shared_7d[2].plain == "BLOCKED"
+        assert claude_fable_7d[0].plain == "claude/fable" and claude_fable_7d[2].plain == "BLOCKED"
         # Under host: agy, agy/gemini* has $35+$4 in-flight on 5h and is OK, while agy/3p* ($25 5h < $35 host rsv) is BLOCKED
-        assert "OK" in lines["agy/gemini*"] and "$35+$4" in lines["agy/gemini*"]
-        assert "BLOCKED" in lines["agy/3p*"] and "$35" in lines["agy/3p*"]
+        assert agy_gem_5h[0].plain == "agy/gemini*" and agy_gem_5h[2].plain == "OK" and agy_gem_5h[9].plain == "$35+$4"
+        assert agy_gem_5h[2].style == "bold green"
+        assert agy_3p_5h[0].plain == "agy/3p*" and agy_3p_5h[2].plain == "BLOCKED" and agy_3p_5h[9].plain == "$35"
 
         # Cycling host with 'H' moves host perspective off agy -> agy/3p flips to OK with $15 left on 5h!
         await pilot.press("H")
         await pilot.pause()
-        ledger_target = str(app.query_one("#quota-strip", Static).render())
-        target_lines = {line.split()[0]: line for line in ledger_target.splitlines() if line.strip() and not line.lstrip().startswith(("──", "POOL", "5h", "7d"))}
-        assert "OK" in target_lines["agy/3p"] and "$15" in target_lines["agy/3p"]
+        agy_3p_target = quotas.get_row("agy:3p:5h")
+        assert agy_3p_target[0].plain == "agy/3p" and agy_3p_target[2].plain == "OK" and agy_3p_target[10].plain == "$15"
+        assert agy_3p_target[2].style == "bold green"
 

@@ -488,17 +488,30 @@ def _calibration_for_view(info: dict, *, is_host: bool) -> dict | None:
     return adjusted
 
 
-def _quota_ledger_text(snapshot: dict, *, host_view: str | None, now: datetime) -> str:
-    header_groups = (
-        f"{'':14}  {'':9}  {'':8}  {'':3}  "
-        f"{'── PCT QUOTA ──':15}   {'───────── CREDIT QUOTA ──────────':33}"
-    )
-    header_cols = (
-        f"{'POOL':<14}  {'PLAN':<9}  {'STATUS':<8}  {'WIN':<3}  "
-        f"{'USED':>4} {'RSV':>4} {'LEFT':>5}   "
-        f"{'CAP':<7} {'USED':<7} {'RSV':<9} {'LEFT':<7}  RESETS"
-    )
-    rows_out = [header_groups, header_cols]
+_QUOTA_STATUS_STYLES = {
+    "OK": "bold green",
+    "BLOCKED": "bold red",
+    "OFF": "dim",
+    "EXCLUDED": "dim",
+}
+
+
+def _agent_status_summary(agents_info: dict) -> str:
+    parts = []
+    for name in AGENTS:
+        info = agents_info.get(name) or {}
+        if not info.get("enabled", True):
+            st = "OFF"
+        elif info.get("eligible_as_target", True):
+            st = "OK"
+        else:
+            st = "BLOCKED"
+        parts.append(f"{name} {st}")
+    return " · ".join(parts)
+
+
+def _build_quota_rows(snapshot: dict, *, host_view: str | None, now: datetime) -> list[dict]:
+    rows_out: list[dict] = []
     agents = snapshot.get("agents") or {}
 
     for name in AGENTS:
@@ -572,7 +585,7 @@ def _quota_ledger_text(snapshot: dict, *, host_view: str | None, now: datetime) 
                         pool_blocked = True
                 status_label = "BLOCKED" if pool_blocked else "OK"
 
-            for idx, (w_short, w_key) in enumerate(win_specs):
+            for w_short, w_key in win_specs:
                 w_state = _pool_window_state(name, info, pool_name, w_key)
                 w_cal = pool_meta.get(w_key) if isinstance(pool_meta, dict) else None
                 u_pct = (
@@ -609,18 +622,89 @@ def _quota_ledger_text(snapshot: dict, *, host_view: str | None, now: datetime) 
                 c_left_str = _fmt_credit(float(rem_usd), compact=True) if _is_num(rem_usd) else "—"
                 reset_str = _reset_countdown(w_state.get("reset_at"), now)
 
-                left_prefix = (
-                    f"{pool_label:<14}  {plan_label:<9}  {status_label:<8}"
-                    if idx == 0
-                    else f"{'':14}  {'':9}  {'':8}"
-                )
                 rows_out.append(
-                    f"{left_prefix}  {w_short:<3}  "
-                    f"{p_used_str:>4} {p_rsv_str:>4} {p_left_str:>5}   "
-                    f"{c_cap_str:<7} {c_used_str:<7} {c_rsv_str:<9} {c_left_str:<7}  {reset_str}"
+                    {
+                        "key": f"{name}:{pool_name}:{w_short}",
+                        "agent": name,
+                        "pool_name": pool_name,
+                        "pool_label": pool_label,
+                        "plan_label": plan_label,
+                        "status_label": status_label,
+                        "win_short": w_short,
+                        "pct_used": p_used_str,
+                        "pct_rsv": p_rsv_str,
+                        "pct_left": p_left_str,
+                        "credit_cap": c_cap_str,
+                        "credit_used": c_used_str,
+                        "credit_rsv": c_rsv_str,
+                        "credit_left": c_left_str,
+                        "resets": reset_str,
+                        "pool_meta": pool_meta,
+                        "info": info,
+                    }
                 )
 
-    return "\n".join(rows_out)
+    return rows_out
+
+
+def _quota_detail_text(qrow: dict) -> str:
+    agent = qrow["agent"]
+    pool_name = qrow["pool_name"]
+    info = qrow.get("info") or {}
+    pool_meta = qrow.get("pool_meta") if isinstance(qrow.get("pool_meta"), dict) else {}
+
+    monthly = info.get("monthly_cost_usd")
+    monthly_str = f"${float(monthly):.2f}/mo" if _is_num(monthly) else "—"
+
+    models_map = info.get("models") or {}
+    pool_models = [
+        (mid, m)
+        for mid, m in models_map.items()
+        if isinstance(m, dict) and m.get("quota_group", "shared") == pool_name
+    ]
+    if not pool_models and models_map:
+        pool_models = [(mid, m) for mid, m in models_map.items() if isinstance(m, dict)]
+
+    cpc = pool_meta.get("cost_per_credit")
+    if not _is_num(cpc):
+        cpc = next((m.get("cost_per_credit") for _, m in pool_models if _is_num(m.get("cost_per_credit"))), None)
+    cpc_str = f"{float(cpc):.4f}" if _is_num(cpc) else "—"
+
+    t_elig = info.get("eligible_as_target", True)
+    t_reason = info.get("target_exclusion_reason") or "eligible"
+    h_elig = info.get("eligible_as_host_native", True)
+    h_reason = info.get("host_native_exclusion_reason") or "eligible"
+
+    s5_state = _pool_window_state(agent, info, pool_name, "session_5h")
+    s5_cal = pool_meta.get("session_5h") if isinstance(pool_meta, dict) else None
+    s5_pct = (
+        s5_cal.get("used_pct")
+        if isinstance(s5_cal, dict) and "used_pct" in s5_cal
+        else s5_state.get("used_pct")
+    )
+    s5_pct_str = _fmt_pct_val(float(s5_pct)) if _is_num(s5_pct) else "—"
+    s5_cred = _window_credit_detail(s5_cal, s5_pct)
+
+    w7_state = _pool_window_state(agent, info, pool_name, "weekly_7d")
+    w7_cal = pool_meta.get("weekly_7d") if isinstance(pool_meta, dict) else None
+    w7_pct = (
+        w7_cal.get("used_pct")
+        if isinstance(w7_cal, dict) and "used_pct" in w7_cal
+        else w7_state.get("used_pct")
+    )
+    w7_pct_str = _fmt_pct_val(float(w7_pct)) if _is_num(w7_pct) else "—"
+    w7_cred = _window_credit_detail(w7_cal, w7_pct)
+
+    elig_count = sum(1 for _, m in pool_models if m.get("eligible", True))
+    return (
+        f"{qrow['pool_label']} · plan: {qrow['plan_label']} · subscription: {monthly_str} · "
+        f"cost_per_credit: {cpc_str} · status: {qrow['status_label']}\n"
+        f"target_eligible: {t_elig} ({t_reason})\n"
+        f"host_native_eligible: {h_elig} ({h_reason})\n"
+        f"5h session: {s5_pct_str}{s5_cred} · reset: {s5_state.get('reset_at') or '—'}\n"
+        f"7d weekly:  {w7_pct_str}{w7_cred} · reset: {w7_state.get('reset_at') or '—'}\n"
+        f"models ({pool_name}): {elig_count}/{len(pool_models)} eligible · (Enter for full breakdown)"
+    )
 
 
 def _primary_credit_pool(name: str, info: dict) -> dict | None:
@@ -928,6 +1012,7 @@ def build_app(
     class RouteTable(DataTable):
         BINDINGS = [
             Binding("enter", "select_cursor", "details"),
+            Binding("tab", "app.toggle_view", "switch view", show=False),
             *DataTable.BINDINGS[1:],
         ]
         resize_callback: Callable[[], None] | None = None
@@ -936,11 +1021,17 @@ def build_app(
             if self.resize_callback is not None:
                 self.call_after_refresh(self.resize_callback)
 
+    class QuotaTable(DataTable):
+        BINDINGS = [
+            Binding("enter", "select_cursor", "breakdown"),
+            Binding("tab", "app.toggle_view", "switch view", show=False),
+            *DataTable.BINDINGS[1:],
+        ]
+
     class RouterApp(App):
         TITLE = "AGRoute"
         CSS = frame.CSS + """
-        #quota-strip { height: auto; max-height: 12; padding: 0 1; background: #ffffff; color: #111111; }
-        #routes { min-height: 4; height: 1fr; }
+        #routes, #quotas { min-height: 4; height: 1fr; }
         #route-detail { height: 6; }
         #filter-picker { width: 76%; max-width: 96; height: 70%; max-height: 24;
                          padding: 0 1; background: #ffffff; color: #111111;
@@ -954,8 +1045,8 @@ def build_app(
         """
         ENABLE_COMMAND_PALETTE = False
         BINDINGS = [
-            Binding("u", "usage", "usage"),
-            Binding("H", "cycle_host", "host"),
+            Binding("u", "toggle_view", "quotas/routes"),
+            Binding("H", "cycle_host", "cycle quota host perspective"),
             Binding("h", "history", "hide/show observed"),
             Binding("p", "repository", "repository filter"),
             Binding("P", "probe", "probe"),
@@ -971,7 +1062,11 @@ def build_app(
             super().__init__()
             self.theme = "textual-light"
             self._snapshot_factory = snapshot_factory
+            self._view: str = "routes"
             self._rows: dict[str, dict] = {}
+            self._quota_rows: dict[str, dict] = {}
+            self._visible_route_count = 0
+            self._total_route_count = 0
             self._reading = False
             self._probing = False
             self._refresh_pending = False
@@ -994,13 +1089,8 @@ def build_app(
                     classes="subject",
                     id="route-subject",
                 )
-                yield Static(
-                    "loading quota …",
-                    markup=False,
-                    id="quota-strip",
-                )
-                yield Static("", markup=False, classes="detail-rule", id="quota-rule")
                 yield RouteTable(id="routes", cursor_type="row")
+                yield QuotaTable(id="quotas", cursor_type="row")
                 yield Static("", markup=False, classes="detail-rule", id="route-rule")
                 yield Static(
                     "loading AGRoute …",
@@ -1033,6 +1123,24 @@ def build_app(
                 ("AGE", 5),
             ):
                 table.add_column(label, width=width)
+            quotas = self.query_one("#quotas", QuotaTable)
+            quotas.display = False
+            quotas.cell_padding = 1
+            quotas.add_columns(
+                "POOL",
+                "PLAN",
+                "STATUS",
+                "WIN",
+                "%USED",
+                "%RSV",
+                "%LEFT",
+                "$CAP",
+                "$USED",
+                "$RSV",
+                "$LEFT",
+                "RESETS",
+            )
+            table.focus()
             self.action_refresh()
             self._start_probe(False)
             self.set_interval(refresh_interval, self.action_refresh)
@@ -1090,8 +1198,6 @@ def build_app(
             self._reading = False
             self._message = f"unavailable · {exc}"
             self.query_one("#route-subject", Static).update("MACHINE │ AGROUTE │ unavailable")
-            if self._snapshot is None:
-                self.query_one("#quota-strip", Static).update("quota unavailable")
             self.query_one("#route-status", Static).update(self._message)
             if not self._rows:
                 self.query_one("#route-detail", Static).update(
@@ -1108,6 +1214,17 @@ def build_app(
         def _selected(self) -> dict | None:
             selected = self._selected_id()
             return self._rows.get(selected) if selected else None
+
+        def _selected_quota_id(self) -> str | None:
+            table = self.query_one("#quotas", DataTable)
+            if table.row_count == 0 or table.cursor_row is None:
+                return None
+            key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
+            return str(key.value)
+
+        def _selected_quota(self) -> dict | None:
+            selected = self._selected_quota_id()
+            return self._quota_rows.get(selected) if selected else None
 
         def _apply_snapshot(self, snapshot: dict) -> None:
             if not self.is_running:
@@ -1152,6 +1269,8 @@ def build_app(
                         completed += 1
                 ordered = visible
 
+            self._visible_route_count = len(ordered)
+            self._total_route_count = len(all_rows)
             self._rows = {row["route_id"]: row for row in ordered}
             model_width, _ = _flexible_widths(table.size.width)
             table.ordered_columns[5].width = model_width
@@ -1227,6 +1346,84 @@ def build_app(
                 immediate=True,
             )
 
+            # Populate #quotas DataTable incrementally while preserving cursor selection.
+            effective_host = (
+                self._host_view
+                if self._host_override
+                else (snapshot.get("default_host") or "agy")
+            )
+            selected_quota = self._selected_quota_id()
+            quotas_table = self.query_one("#quotas", DataTable)
+            q_viewport = (quotas_table.scroll_x, quotas_table.scroll_y)
+            q_ordered = _build_quota_rows(snapshot, host_view=effective_host, now=now)
+            self._quota_rows = {qrow["key"]: qrow for qrow in q_ordered}
+            q_rendered = {}
+            for qrow in q_ordered:
+                st_lbl = qrow["status_label"]
+                q_rendered[qrow["key"]] = (
+                    _compact_cell(qrow["pool_label"], route_id=qrow["key"]),
+                    _compact_cell(qrow["plan_label"]),
+                    _compact_cell(st_lbl, style=_QUOTA_STATUS_STYLES.get(st_lbl)),
+                    _compact_cell(qrow["win_short"]),
+                    _compact_cell(qrow["pct_used"]),
+                    _compact_cell(qrow["pct_rsv"]),
+                    _compact_cell(qrow["pct_left"]),
+                    _compact_cell(qrow["credit_cap"]),
+                    _compact_cell(qrow["credit_used"]),
+                    _compact_cell(qrow["credit_rsv"]),
+                    _compact_cell(qrow["credit_left"]),
+                    _compact_cell(qrow["resets"]),
+                )
+
+            q_existing = [str(row.key.value) for row in quotas_table.ordered_rows]
+            q_existing_set = set(q_existing)
+            q_desired = [qrow["key"] for qrow in q_ordered]
+            q_desired_set = set(q_desired)
+
+            for qkey in q_desired:
+                if qkey not in q_existing_set:
+                    quotas_table.add_row(*q_rendered[qkey], key=qkey)
+            for qkey in q_existing:
+                if qkey not in q_desired_set:
+                    quotas_table.remove_row(qkey)
+
+            q_columns = quotas_table.ordered_columns
+            for qkey in q_desired:
+                current = quotas_table.get_row(qkey)
+                for column, old, new in zip(q_columns, current, q_rendered[qkey]):
+                    if not _cell_equal(old, new):
+                        quotas_table.update_cell(qkey, column.key, new, update_width=True)
+
+            q_current_order = [str(row.key.value) for row in quotas_table.ordered_rows]
+            if q_current_order != q_desired:
+                q_positions = {qkey: index for index, qkey in enumerate(q_desired)}
+                quotas_table.sort(
+                    q_columns[0].key,
+                    key=lambda value: q_positions.get(getattr(value, "route_id", ""), len(q_positions)),
+                )
+
+            if selected_quota in self._quota_rows:
+                quotas_table.move_cursor(
+                    row=q_desired.index(selected_quota),
+                    scroll=False,
+                )
+            elif q_ordered:
+                quotas_table.move_cursor(row=0, scroll=False)
+
+            quotas_table.call_after_refresh(
+                quotas_table.scroll_to,
+                x=q_viewport[0],
+                y=q_viewport[1],
+                animate=False,
+                force=True,
+                immediate=True,
+            )
+
+            self._update_subject_and_status(snapshot)
+            self._update_detail()
+
+        def _update_subject_and_status(self, snapshot: dict) -> None:
+            all_rows = list(snapshot.get("routes") or [])
             routed_count = snapshot.get("routed_count", 0)
             observed_count = snapshot.get("observed_count", 0)
             history = "shown · h hide" if self._show_history else "hidden · h show"
@@ -1250,25 +1447,40 @@ def build_app(
                 else (snapshot.get("default_host") or "agy")
             )
             host_label = effective_host or "none"
-            self.query_one("#route-subject", Static).update(
-                f"MACHINE │ AGROUTE │ {routed_count} routed · {observed_count} observed · "
-                f"host: {host_label} · {repository} · {agent} · {model} · {state} · observed {history}"
-            )
-            self.query_one("#quota-strip", Static).update(
-                _quota_ledger_text(snapshot, host_view=effective_host, now=now)
-            )
+            if self._view == "quotas":
+                self.query_one("#route-subject", Static).update(
+                    f"MACHINE │ AGROUTE │ routes (u) · [QUOTAS] │ "
+                    f"host: {host_label} (* = host reserves) · {len(self._quota_rows)} quota windows · "
+                    f"H cycle host · P probe · Enter full breakdown"
+                )
+            else:
+                self.query_one("#route-subject", Static).update(
+                    f"MACHINE │ AGROUTE │ [ROUTES] · quotas (u) │ "
+                    f"{routed_count} routed · {observed_count} observed · "
+                    f"{repository} · {agent} · {model} · {state} · observed {history}"
+                )
+            agent_summary = _agent_status_summary(snapshot.get("agents") or {})
             self._message = (
-                f"showing {len(ordered)}/{len(all_rows)} routes · "
+                f"{agent_summary} · showing {self._visible_route_count}/{self._total_route_count} routes · "
                 f"read {snapshot.get('captured_at', '—')}"
             )
             self.query_one("#route-status", Static).update(self._message)
-            self._update_detail()
 
         def _update_detail(self) -> None:
             width = max(1, self.size.width - 2)
             rule = "─" * width
-            self.query_one("#quota-rule", Static).update(rule)
             self.query_one("#route-rule", Static).update(rule)
+            if self._view == "quotas":
+                qrow = self._selected_quota()
+                if qrow is None:
+                    self.query_one("#route-detail", Static).update(
+                        "no quota pools"
+                        if self._snapshot is not None
+                        else "loading AGRoute …"
+                    )
+                    return
+                self.query_one("#route-detail", Static).update(_quota_detail_text(qrow))
+                return
             row = self._selected()
             if row is None:
                 self.query_one("#route-detail", Static).update(
@@ -1278,6 +1490,24 @@ def build_app(
                 )
                 return
             self.query_one("#route-detail", Static).update(_detail_text(row))
+
+        def action_toggle_view(self) -> None:
+            if len(self.screen_stack) > 1:
+                return
+            self._view = "quotas" if self._view == "routes" else "routes"
+            routes_table = self.query_one("#routes", DataTable)
+            quotas_table = self.query_one("#quotas", DataTable)
+            if self._view == "quotas":
+                routes_table.display = False
+                quotas_table.display = True
+                quotas_table.focus()
+            else:
+                quotas_table.display = False
+                routes_table.display = True
+                routes_table.focus()
+            if self._snapshot is not None:
+                self._update_subject_and_status(self._snapshot)
+            self._update_detail()
 
         def action_cycle_host(self) -> None:
             cycle: tuple[str | None, ...] = ("agy", "claude", "codex", None)
@@ -1296,13 +1526,26 @@ def build_app(
             self._update_detail()
 
         def on_data_table_row_highlighted(
-            self, _event: DataTable.RowHighlighted
+            self, event: DataTable.RowHighlighted
         ) -> None:
-            self._update_detail()
+            if event.data_table.id == "quotas" and self._view == "quotas":
+                self._update_detail()
+            elif event.data_table.id == "routes" and self._view == "routes":
+                self._update_detail()
 
         def on_data_table_row_selected(
-            self, _event: DataTable.RowSelected
+            self, event: DataTable.RowSelected
         ) -> None:
+            if event.data_table.id == "quotas":
+                if self._snapshot is not None:
+                    self.push_screen(
+                        Show(
+                            "Agent Usage & Eligibility",
+                            _usage_modal_body(self._snapshot),
+                            wide=True,
+                        )
+                    )
+                return
             row = self._selected()
             if row is not None:
                 self.push_screen(
@@ -1317,17 +1560,6 @@ def build_app(
             self._show_history = not self._show_history
             if self._snapshot is not None:
                 self._render_snapshot(self._snapshot)
-
-        def action_usage(self) -> None:
-            if self._snapshot is None:
-                return
-            self.push_screen(
-                Show(
-                    "Agent Usage & Eligibility",
-                    _usage_modal_body(self._snapshot),
-                    wide=True,
-                )
-            )
 
         def _filter_rows(self) -> list[dict]:
             if self._snapshot is None:
@@ -1463,10 +1695,11 @@ def build_app(
 
         def action_keys(self) -> None:
             lines = [
-                f"{binding.key:14} {binding.description}"
-                for binding in [
-                    Binding("enter", "select_cursor", "show selected route details"),
-                    *self.BINDINGS,
+                f"{key:14} {description}"
+                for key, description in [
+                    ("enter", "show selected route details (or full quota breakdown in quotas view)"),
+                    ("u / tab", "toggle routes / quotas view"),
+                    *((b.key, b.description) for b in self.BINDINGS if b.key != "u"),
                 ]
             ]
             self.push_screen(

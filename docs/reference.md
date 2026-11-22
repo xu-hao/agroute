@@ -669,19 +669,25 @@ that does not create a howhard capability observation. JSON exposes `route_statu
 linked raw observations use `linked_raw`.
 
 - `agr tui [--repo NAME] [--agent AGENT] [--current-repo] [--limit N | --all] [--refresh-interval SEC] [--no-probe]`:
-  interactive Textual terminal dashboard with a top-level host-aware quota ledger (`#quota-strip`)
-  displaying `POOL`, `PLAN`, `STATUS`, `WIN`, `PCT QUOTA (USED, RSV, LEFT)`,
-  `CREDIT QUOTA (CAP, USED, RSV, LEFT)`, and `RESETS` across multi-pool quotas (`codex`,
-  `claude/shared`, `claude/fable`, `agy/gemini`, `agy/3p`). By default the ledger applies host
-  reserves (`*`) to `default_host` and worker target reserves to cross-agent targets; `H` cycles
-  the host perspective across `agy`, `claude`, `codex`, and `none` (pure target view), while
-  active in-flight route reservations appear in `RSV` as `$hold+$live`. Below the ledger, the
-  dashboard renders active and
-  historical model routes, `Enter` route detail modal, `u` live usage & eligibility modal
-  (showing estimated used/ceiling/remaining credit alongside 5h/7d percentages, per-pool
-  calibrated credit summaries, and per-model window credit). `h` hides terminal routes and
-  observed raw rows. Filter pickers select repository (`p`), target agent (`a`), model (`m`),
-  and route lifecycle or outcome (`s`); `?` explains both columns.
+  interactive Textual terminal dashboard with two full-height `DataTable` views toggled with `u`
+  or `Tab`:
+  - **`ROUTES` view (default)**: full-height `#routes` `DataTable` of active and historical model
+    routes with `#route-detail` summary pane, `Enter` route detail modal, and concise per-agent
+    target status (`codex OK|BLOCKED|OFF · claude ... · agy ...`) in `#route-status`. `h` hides
+    terminal routes and observed raw rows. Filter pickers select repository (`p`), target agent
+    (`a`), model (`m`), and route lifecycle or outcome (`s`); `?` explains keybindings and both
+    status columns.
+  - **`QUOTAS` view (`u` / `Tab`)**: full-height, cursor-navigable `#quotas` Textual `DataTable`
+    with columns `POOL`, `PLAN`, `STATUS`, `WIN`, `%USED`, `%RSV`, `%LEFT`, `$CAP`, `$USED`,
+    `$RSV`, `$LEFT`, and `RESETS` across multi-pool quotas (`codex`, `claude/shared`,
+    `claude/fable`, `agy/gemini`, `agy/3p`). By default `#quotas` applies host reserves (`*`) to
+    `default_host` and worker target reserves to cross-agent targets; `H` cycles the host
+    perspective across `agy`, `claude`, `codex`, and `none` (pure target view), while active
+    in-flight route reservations appear in `$RSV` as `$hold+$live`. Highlighting a row updates
+    `#route-detail` with a 6-line pool/agent summary (subscription cost, `cost_per_credit`,
+    target and host-native eligibility and exclusion reasons, 5h/7d calibrated credit and resets,
+    and eligible/total pool models), and pressing `Enter` opens the full `Agent Usage & Eligibility`
+    per-model breakdown modal.
   Enabled providers with missing, stale, failed, or expired usage are probed off the UI loop
   automatically, with a 60-second retry cooldown and one probe in flight. `P` probes all
   enabled providers immediately outside that cooldown; `p` remains the repository filter.
