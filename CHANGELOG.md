@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.6.1 (2026-11-22)
+
+- Release agroute 0.6.1 with synchronized package and plugin versions. Issue #92 tracks
+  the release metadata, distribution validation, and GitHub release.
+
 - Tighten `agr usage show` (`Router.usage_show()`) so `eligible_as_target`,
   `target_exclusion_reason`, `eligible_as_host_native`, and `host_native_exclusion_reason`
   honor post-reserve credit exhaustion (`min_remaining_credit_usd`, `host_reserve_credit_usd`,
