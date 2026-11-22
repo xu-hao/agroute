@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.6.3 (2026-11-22)
+
+- Release agroute 0.6.3 with synchronized package and plugin versions. Issue #101 tracks
+  the release metadata, distribution validation, PyPI publication, and GitHub release.
+
 - Expand the `agr tui` `QUOTAS` `DataTable` (`#quotas`) to 15 columns (`POOL`, `PLAN`, `ROLE`,
   `STATUS`, `WIN`, `%USED`, `%RSV(nom)`, `%RSV(eff)`, `%LEFT`, `$CAP`, `$USED`, `$RSV(nom)`,
   `$RSV(eff)`, `$LEFT`, `RESETS`), showing both `target` and `host` `ROLE` rows by default
