@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Order rows in the `agr tui` `QUOTAS` `DataTable` (`#quotas`) left-to-right across
+  `POOL -> ROLE -> WIN` so that under `role filter: all` each pool groups its `target` rows
+  (`5h`, then `7d`) before its `host` rows (`5h`, then `7d`) while preserving all 15 columns
+  and single-role filter ordering. Issue #103 tracks the `QUOTAS` table row ordering.
+
 ## 0.6.3 (2026-11-22)
 
 - Release agroute 0.6.3 with synchronized package and plugin versions. Issue #101 tracks

@@ -742,10 +742,14 @@ def _build_quota_rows(snapshot: dict, *, role_filter: str = "all", now: datetime
                             pool_blocked = True
                     status_by_role[role] = "BLOCKED" if pool_blocked else "OK"
 
-            for w_short, w_key in win_specs:
-                w_state = _pool_window_state(name, info, pool_name, w_key)
-                reset_str = _reset_countdown(w_state.get("reset_at"), now)
-                for role in roles:
+            reset_by_win = {
+                w_short: _reset_countdown(_pool_window_state(name, info, pool_name, w_key).get("reset_at"), now)
+                for w_short, w_key in win_specs
+            }
+            # Order rows left-to-right across leading columns: POOL -> ROLE -> WIN
+            # (target 5h/7d rows precede host 5h/7d rows within each pool).
+            for role in roles:
+                for w_short, _w_key in win_specs:
                     m_win = metrics_by_role_win[(role, w_short)]
                     rows_out.append(
                         {
@@ -766,7 +770,7 @@ def _build_quota_rows(snapshot: dict, *, role_filter: str = "all", now: datetime
                             "credit_rsv_nom": m_win["credit_rsv_nom"],
                             "credit_rsv_eff": m_win["credit_rsv_eff"],
                             "credit_left": m_win["credit_left"],
-                            "resets": reset_str,
+                            "resets": reset_by_win[w_short],
                             "metrics": m_win,
                             "pool_meta": pool_meta_by_role[role],
                             "info": info,

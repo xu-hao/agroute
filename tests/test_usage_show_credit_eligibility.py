@@ -302,6 +302,56 @@ native_candidates = [
         quotas = app.query_one("#quotas", DataTable)
         assert quotas.display is True
 
+        expected_all_keys = [
+            "codex:shared:5h:target",
+            "codex:shared:7d:target",
+            "codex:shared:5h:host",
+            "codex:shared:7d:host",
+            "claude:shared:5h:target",
+            "claude:shared:7d:target",
+            "claude:shared:5h:host",
+            "claude:shared:7d:host",
+            "claude:fable:7d:target",
+            "claude:fable:7d:host",
+            "agy:gemini:5h:target",
+            "agy:gemini:7d:target",
+            "agy:gemini:5h:host",
+            "agy:gemini:7d:host",
+            "agy:3p:5h:target",
+            "agy:3p:7d:target",
+            "agy:3p:5h:host",
+            "agy:3p:7d:host",
+        ]
+        all_keys = [str(r.key.value) for r in quotas.ordered_rows]
+        assert all_keys == expected_all_keys
+        assert [
+            (
+                quotas.get_row(k)[0].plain,
+                quotas.get_row(k)[2].plain,
+                quotas.get_row(k)[4].plain,
+            )
+            for k in all_keys
+        ] == [
+            ("codex", "target", "5h"),
+            ("codex", "target", "7d"),
+            ("codex", "host", "5h"),
+            ("codex", "host", "7d"),
+            ("claude/shared", "target", "5h"),
+            ("claude/shared", "target", "7d"),
+            ("claude/shared", "host", "5h"),
+            ("claude/shared", "host", "7d"),
+            ("claude/fable", "target", "7d"),
+            ("claude/fable", "host", "7d"),
+            ("agy/gemini", "target", "5h"),
+            ("agy/gemini", "target", "7d"),
+            ("agy/gemini", "host", "5h"),
+            ("agy/gemini", "host", "7d"),
+            ("agy/3p", "target", "5h"),
+            ("agy/3p", "target", "7d"),
+            ("agy/3p", "host", "5h"),
+            ("agy/3p", "host", "7d"),
+        ]
+
         # Exact concrete codex plus-20 examples ($20 5h, $50 7d, min_rem=$10, host_add=$25, max_pct=95%, host_rsv_pct=5%):
         codex_5h_t = quotas.get_row("codex:shared:5h:target")
         codex_5h_h = quotas.get_row("codex:shared:5h:host")
@@ -354,7 +404,6 @@ native_candidates = [
         assert agy_3p_5h_h[3].style == "bold red"
 
         # Verify #route-detail on agy:gemini:5h:host spells out the additive host reserve breakdown + live reservation
-        all_keys = [str(r.key.value) for r in quotas.ordered_rows]
         quotas.move_cursor(row=all_keys.index("agy:gemini:5h:host"))
         await pilot.pause()
         detail_host = str(app.query_one("#route-detail", Static).render())
@@ -365,18 +414,80 @@ native_candidates = [
         await pilot.press("H")  # target
         await pilot.pause()
         assert "role filter: target (H)" in str(app.query_one("#route-subject", Static).render())
-        assert all(str(r.key.value).endswith(":target") for r in quotas.ordered_rows)
+        assert [str(r.key.value) for r in quotas.ordered_rows] == [
+            "codex:shared:5h:target",
+            "codex:shared:7d:target",
+            "claude:shared:5h:target",
+            "claude:shared:7d:target",
+            "claude:fable:7d:target",
+            "agy:gemini:5h:target",
+            "agy:gemini:7d:target",
+            "agy:3p:5h:target",
+            "agy:3p:7d:target",
+        ]
 
         await pilot.press("H")  # host
         await pilot.pause()
         assert "role filter: host (H)" in str(app.query_one("#route-subject", Static).render())
-        assert all(str(r.key.value).endswith(":host") for r in quotas.ordered_rows)
+        assert [str(r.key.value) for r in quotas.ordered_rows] == [
+            "codex:shared:5h:host",
+            "codex:shared:7d:host",
+            "claude:shared:5h:host",
+            "claude:shared:7d:host",
+            "claude:fable:7d:host",
+            "agy:gemini:5h:host",
+            "agy:gemini:7d:host",
+            "agy:3p:5h:host",
+            "agy:3p:7d:host",
+        ]
 
         await pilot.press("H")  # agy (host for agy, target for codex/claude)
         await pilot.pause()
         assert "role filter: agy (H)" in str(app.query_one("#route-subject", Static).render())
-        agy_view_keys = {str(r.key.value) for r in quotas.ordered_rows}
-        assert "agy:gemini:5h:host" in agy_view_keys and "agy:gemini:5h:target" not in agy_view_keys
-        assert "codex:shared:5h:target" in agy_view_keys and "codex:shared:5h:host" not in agy_view_keys
-        assert "claude:shared:7d:target" in agy_view_keys and "claude:shared:7d:host" not in agy_view_keys
+        assert [str(r.key.value) for r in quotas.ordered_rows] == [
+            "codex:shared:5h:target",
+            "codex:shared:7d:target",
+            "claude:shared:5h:target",
+            "claude:shared:7d:target",
+            "claude:fable:7d:target",
+            "agy:gemini:5h:host",
+            "agy:gemini:7d:host",
+            "agy:3p:5h:host",
+            "agy:3p:7d:host",
+        ]
+
+        await pilot.press("H")  # claude (host for claude, target for codex/agy)
+        await pilot.pause()
+        assert "role filter: claude (H)" in str(app.query_one("#route-subject", Static).render())
+        assert [str(r.key.value) for r in quotas.ordered_rows] == [
+            "codex:shared:5h:target",
+            "codex:shared:7d:target",
+            "claude:shared:5h:host",
+            "claude:shared:7d:host",
+            "claude:fable:7d:host",
+            "agy:gemini:5h:target",
+            "agy:gemini:7d:target",
+            "agy:3p:5h:target",
+            "agy:3p:7d:target",
+        ]
+
+        await pilot.press("H")  # codex (host for codex, target for claude/agy)
+        await pilot.pause()
+        assert "role filter: codex (H)" in str(app.query_one("#route-subject", Static).render())
+        assert [str(r.key.value) for r in quotas.ordered_rows] == [
+            "codex:shared:5h:host",
+            "codex:shared:7d:host",
+            "claude:shared:5h:target",
+            "claude:shared:7d:target",
+            "claude:fable:7d:target",
+            "agy:gemini:5h:target",
+            "agy:gemini:7d:target",
+            "agy:3p:5h:target",
+            "agy:3p:7d:target",
+        ]
+
+        await pilot.press("H")  # back to all
+        await pilot.pause()
+        assert "role filter: all (H)" in str(app.query_one("#route-subject", Static).render())
+        assert [str(r.key.value) for r in quotas.ordered_rows] == expected_all_keys
 
