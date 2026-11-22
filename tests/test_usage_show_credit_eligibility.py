@@ -51,7 +51,10 @@ enabled = false
     assert codex["eligible_as_target"] is False
     assert "weekly_7d credit_budget exhausted" in (codex["target_exclusion_reason"] or "")
     assert codex["eligible_as_host_native"] is False
-    assert "weekly_7d credit_budget exhausted" in (codex["host_native_exclusion_reason"] or "")
+    # Host reserve is $10 + $25 = $35, which exhausts both the $20 5h cap and $9.50 raw left on 7d.
+    assert "credit_budget exhausted (0 USD remaining after 35 USD reserve)" in (
+        codex["host_native_exclusion_reason"] or ""
+    )
     assert _agent_quota_badge("codex", codex) == "codex lim"
 
 
@@ -67,16 +70,16 @@ default_host = "codex"
 [agents.codex]
 plan = "plus-20"
 min_remaining_credit_usd = 5.0
-host_reserve_credit_usd = 20.0
+host_reserve_credit_usd = 12.0
 native_candidates = [{ model = "gpt-5.4", effort = "high" }]
 cli_candidates = [{ model = "gpt-5.4", effort = "high" }]
 """,
         encoding="utf-8",
     )
     router = Router(cfg, project=repo, state_directory=repo / ".agroute", include_user_config=False)
-    # At 70% weekly used on $50 ($15 raw left):
-    # - As cross-agent target ($5 reserve -> $10 left): eligible_as_target is True!
-    # - As host root ($20 reserve -> $0 left): eligible_as_host_native is False!
+    # plus-20: 5h=$20, 7d=$50. At 0% 5h ($20 raw left) and 70% weekly used ($15 raw left):
+    # - As cross-agent target ($5 reserve -> $15 5h left, $10 7d left): eligible_as_target is True!
+    # - As host root ($5 + $12 = $17 reserve -> $3 5h left, $0 7d left): eligible_as_host_native is False!
     router.usage_set(
         "codex",
         session_used_pct=0.0,
@@ -89,7 +92,9 @@ cli_candidates = [{ model = "gpt-5.4", effort = "high" }]
     assert codex["eligible_as_target"] is True
     assert codex["target_exclusion_reason"] is None
     assert codex["eligible_as_host_native"] is False
-    assert "weekly_7d credit_budget exhausted" in (codex["host_native_exclusion_reason"] or "")
+    assert "weekly_7d credit_budget exhausted (0 USD remaining after 17 USD reserve)" in (
+        codex["host_native_exclusion_reason"] or ""
+    )
 
 
 def test_usage_show_marks_ineligible_when_inflight_reservation_exhausts_remaining_credit(tmp_path: Path):
