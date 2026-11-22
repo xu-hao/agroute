@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.6.2 (2026-11-22)
+
+- Release agroute 0.6.2 with synchronized package and plugin versions. Issue #97 tracks
+  the release metadata, distribution validation, PyPI publication, and GitHub release.
+
 - Replace the inline `#quota-strip` header and text-dump `u` usage modal in `agr tui` with a
   dedicated, cursor-navigable Textual `DataTable` Quotas view (`#quotas`, toggled with `u` or
   `Tab`) featuring auto-sized columns (`POOL`, `PLAN`, `STATUS`, `WIN`, `%USED`, `%RSV`, `%LEFT`,
