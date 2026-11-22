@@ -377,13 +377,250 @@ def _fmt_credit(amount: float, *, compact: bool = False) -> str:
     value = float(amount)
     if not compact:
         return f"${value:.2f}"
+    if abs(value) < 0.005:
+        return "$0"
+    if value >= 1000.0:
+        return f"${value:,.0f}"
     if value >= 100.0:
         return f"${value:.0f}"
-    if value >= 10.0 and abs(value - round(value)) < 0.05:
-        return f"${value:.0f}"
-    if value >= 10.0:
-        return f"${value:.1f}"
+    if abs(value - round(value)) < 0.005:
+        return f"${round(value):.0f}"
     return f"${value:.2f}"
+
+
+def _fmt_pct_val(value: float) -> str:
+    if abs(value - round(value)) < 0.05:
+        return f"{round(value):.0f}%"
+    return f"{value:.1f}%"
+
+
+def _reset_countdown(reset_at: str | None, now: datetime) -> str:
+    reset_dt = _moment(reset_at)
+    if reset_dt is None:
+        return "—"
+    seconds = int((reset_dt - now).total_seconds())
+    if seconds <= 0:
+        return "now"
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    if seconds < 86400:
+        return f"{seconds // 3600}h {(seconds % 3600) // 60:02d}m"
+    return f"{seconds // 86400}d {(seconds % 86400) // 3600:02d}h"
+
+
+def _pool_window_state(name: str, info: dict, pool_name: str, win_key: str) -> dict:
+    if pool_name == "shared":
+        return info.get(win_key) or {}
+    tiers = info.get("tiers") or {}
+    if win_key == "session_5h":
+        win = tiers.get(f"{pool_name}-5h")
+        if isinstance(win, dict):
+            return win
+        if name == "agy" and pool_name == "gemini":
+            return info.get("session_5h") or {}
+        return {}
+    for candidate in (f"{pool_name}-weekly", pool_name):
+        win = tiers.get(candidate)
+        if isinstance(win, dict):
+            return win
+    if name == "agy" and pool_name == "gemini":
+        return info.get("weekly_7d") or {}
+    return {}
+
+
+def _ordered_pool_entries(name: str, cal: dict | None) -> list[tuple[str, dict | None]]:
+    if not isinstance(cal, dict) or not cal:
+        return [("shared", None)]
+    preferred = ["shared", "gemini", "3p"] if name == "agy" else ["shared"]
+    ordered_keys: list[str] = []
+    for key in preferred:
+        if key in cal and isinstance(cal[key], dict):
+            ordered_keys.append(key)
+    for key, val in cal.items():
+        if key not in ordered_keys and isinstance(val, dict):
+            ordered_keys.append(key)
+    if not ordered_keys:
+        return [("shared", None)]
+    return [(key, cal[key]) for key in ordered_keys]
+
+
+def _calibration_for_view(info: dict, *, is_host: bool) -> dict | None:
+    if is_host and isinstance(info.get("host_credit_calibration"), dict) and info["host_credit_calibration"]:
+        return info["host_credit_calibration"]
+    cal = info.get("credit_calibration")
+    if not isinstance(cal, dict) or not cal:
+        return None
+    if not is_host:
+        return cal
+    limits = info.get("quota_limits") or {}
+    host_rsv_pct = float(limits.get("host_reserve_pct", 0.0))
+    host_rsv_usd = float(limits.get("host_reserve_credit_usd", 0.0))
+    if host_rsv_pct <= 0.0 and host_rsv_usd <= 0.0:
+        return cal
+    min_rem_usd = float(limits.get("min_remaining_credit_usd", 0.0))
+    adjusted: dict[str, dict] = {}
+    for pool_name, pool_meta in cal.items():
+        if not isinstance(pool_meta, dict):
+            continue
+        p_copy = dict(pool_meta)
+        rem_vals: list[float] = []
+        for win_key in ("session_5h", "weekly_7d"):
+            w_meta = pool_meta.get(win_key)
+            if not isinstance(w_meta, dict):
+                continue
+            w_copy = dict(w_meta)
+            ceiling = w_meta.get("calibrated_credit_usd")
+            used_pct = w_meta.get("used_pct")
+            reserved_usd = float(w_meta.get("reserved_credit_usd") or 0.0)
+            if _is_num(ceiling):
+                held_back = max(float(ceiling) * host_rsv_pct / 100.0, min_rem_usd + host_rsv_usd)
+                w_copy["reserve_credit_usd"] = round(held_back, 6)
+                if _is_num(used_pct):
+                    rem = max(0.0, (100.0 - float(used_pct)) / 100.0 * float(ceiling) - held_back - reserved_usd)
+                    w_copy["remaining_credit_usd"] = round(rem, 6)
+                    rem_vals.append(w_copy["remaining_credit_usd"])
+            p_copy[win_key] = w_copy
+        if rem_vals:
+            p_copy["available_credit_usd"] = min(rem_vals)
+        adjusted[pool_name] = p_copy
+    return adjusted
+
+
+def _quota_ledger_text(snapshot: dict, *, host_view: str | None, now: datetime) -> str:
+    header_groups = (
+        f"{'':14}  {'':9}  {'':8}  {'':3}  "
+        f"{'── PCT QUOTA ──':15}   {'───────── CREDIT QUOTA ──────────':33}"
+    )
+    header_cols = (
+        f"{'POOL':<14}  {'PLAN':<9}  {'STATUS':<8}  {'WIN':<3}  "
+        f"{'USED':>4} {'RSV':>4} {'LEFT':>5}   "
+        f"{'CAP':<7} {'USED':<7} {'RSV':<9} {'LEFT':<7}  RESETS"
+    )
+    rows_out = [header_groups, header_cols]
+    agents = snapshot.get("agents") or {}
+
+    for name in AGENTS:
+        info = agents.get(name) or {}
+        is_host = host_view is not None and name == host_view
+        limits = info.get("quota_limits") or {}
+        max_session = float(limits.get("max_session_used_pct", 90.0))
+        max_weekly = float(limits.get("max_weekly_used_pct", 95.0))
+        max_tier = float(limits.get("max_tier_used_pct", 95.0))
+        host_rsv_pct = float(limits.get("host_reserve_pct", 0.0)) if is_host else 0.0
+        excluded_groups = set(limits.get("exclude_quota_groups") or ())
+
+        cal = _calibration_for_view(info, is_host=is_host)
+        pool_entries = _ordered_pool_entries(name, cal)
+        multi_named = len(pool_entries) > 1 or (pool_entries and pool_entries[0][0] != "shared")
+
+        for pool_name, pool_meta in pool_entries:
+            base_label = f"{name}/{pool_name}" if multi_named else name
+            pool_label = f"{base_label}*" if is_host else base_label
+            raw_plan = (
+                info.get("effective_plan")
+                or (pool_meta.get("plan") if isinstance(pool_meta, dict) else None)
+                or info.get("detected_plan")
+                or info.get("plan")
+            )
+            plan_label = str(raw_plan) if raw_plan and str(raw_plan) not in ("auto", "none") else "—"
+
+            win_specs: list[tuple[str, str]] = []
+            if isinstance(pool_meta, dict):
+                for w_short, w_key in (("5h", "session_5h"), ("7d", "weekly_7d")):
+                    w_cal = pool_meta.get(w_key)
+                    if not isinstance(w_cal, dict):
+                        continue
+                    if pool_name != "shared" and w_cal.get("pool_group") == "shared":
+                        continue
+                    win_specs.append((w_short, w_key))
+            if not win_specs:
+                win_specs = [("5h", "session_5h"), ("7d", "weekly_7d")]
+
+            # Determine simple per-pool status (OFF / EXCLUDED / BLOCKED / OK).
+            pool_blocked = False
+            if not info.get("enabled", True):
+                status_label = "OFF"
+            elif pool_name in excluded_groups:
+                status_label = "EXCLUDED"
+            else:
+                if info.get("rate_limited") or info.get("cooldown_until"):
+                    pool_blocked = True
+                if isinstance(pool_meta, dict) and _is_num(pool_meta.get("available_credit_usd")):
+                    if float(pool_meta["available_credit_usd"]) <= 0.0:
+                        pool_blocked = True
+                for _ws, wk in win_specs:
+                    w_state = _pool_window_state(name, info, pool_name, wk)
+                    w_cal = pool_meta.get(wk) if isinstance(pool_meta, dict) else None
+                    u_pct = w_cal.get("used_pct") if isinstance(w_cal, dict) and "used_pct" in w_cal else w_state.get("used_pct")
+                    base_lim = max(0.0, (max_session if wk == "session_5h" else max_weekly) - host_rsv_pct)
+                    eff_lim = base_lim if pool_name == "shared" else min(max_tier, base_lim)
+                    if w_state.get("status") == "rejected":
+                        pool_blocked = True
+                    elif _is_num(u_pct) and float(u_pct) >= eff_lim:
+                        pool_blocked = True
+                models_map = info.get("models") or {}
+                pool_models = [m for m in models_map.values() if isinstance(m, dict) and m.get("quota_group") == pool_name]
+                if pool_models:
+                    elig_key = "native_eligible" if is_host else "eligible"
+                    if not any(m.get(elig_key, m.get("eligible", True)) for m in pool_models):
+                        pool_blocked = True
+                elif len(pool_entries) == 1:
+                    agent_elig_key = "eligible_as_host_native" if is_host else "eligible_as_target"
+                    if not info.get(agent_elig_key, True):
+                        pool_blocked = True
+                status_label = "BLOCKED" if pool_blocked else "OK"
+
+            for idx, (w_short, w_key) in enumerate(win_specs):
+                w_state = _pool_window_state(name, info, pool_name, w_key)
+                w_cal = pool_meta.get(w_key) if isinstance(pool_meta, dict) else None
+                u_pct = (
+                    w_cal.get("used_pct")
+                    if isinstance(w_cal, dict) and "used_pct" in w_cal
+                    else w_state.get("used_pct")
+                )
+                base_lim = max(0.0, (max_session if w_key == "session_5h" else max_weekly) - host_rsv_pct)
+                eff_lim = base_lim if pool_name == "shared" else min(max_tier, base_lim)
+                pct_rsv = max(0.0, 100.0 - eff_lim)
+
+                p_used_str = _fmt_pct_val(float(u_pct)) if _is_num(u_pct) else "—"
+                p_rsv_str = _fmt_pct_val(pct_rsv)
+                p_left_str = _fmt_pct_val(max(0.0, eff_lim - float(u_pct))) if _is_num(u_pct) else "—"
+
+                ceiling = w_cal.get("calibrated_credit_usd") if isinstance(w_cal, dict) else None
+                hold_rsv = w_cal.get("reserve_credit_usd") if isinstance(w_cal, dict) else None
+                live_rsv = w_cal.get("reserved_credit_usd") if isinstance(w_cal, dict) else None
+                rem_usd = w_cal.get("remaining_credit_usd") if isinstance(w_cal, dict) else None
+
+                c_cap_str = _fmt_credit(float(ceiling), compact=True) if _is_num(ceiling) else "—"
+                c_used_str = (
+                    _fmt_credit(max(0.0, float(u_pct) / 100.0 * float(ceiling)), compact=True)
+                    if (_is_num(ceiling) and _is_num(u_pct))
+                    else "—"
+                )
+                if _is_num(hold_rsv):
+                    if _is_num(live_rsv) and float(live_rsv) > 0.0:
+                        c_rsv_str = f"{_fmt_credit(float(hold_rsv), compact=True)}+{_fmt_credit(float(live_rsv), compact=True)}"
+                    else:
+                        c_rsv_str = _fmt_credit(float(hold_rsv), compact=True)
+                else:
+                    c_rsv_str = "—"
+                c_left_str = _fmt_credit(float(rem_usd), compact=True) if _is_num(rem_usd) else "—"
+                reset_str = _reset_countdown(w_state.get("reset_at"), now)
+
+                left_prefix = (
+                    f"{pool_label:<14}  {plan_label:<9}  {status_label:<8}"
+                    if idx == 0
+                    else f"{'':14}  {'':9}  {'':8}"
+                )
+                rows_out.append(
+                    f"{left_prefix}  {w_short:<3}  "
+                    f"{p_used_str:>4} {p_rsv_str:>4} {p_left_str:>5}   "
+                    f"{c_cap_str:<7} {c_used_str:<7} {c_rsv_str:<9} {c_left_str:<7}  {reset_str}"
+                )
+
+    return "\n".join(rows_out)
 
 
 def _primary_credit_pool(name: str, info: dict) -> dict | None:
@@ -702,7 +939,8 @@ def build_app(
     class RouterApp(App):
         TITLE = "AGRoute"
         CSS = frame.CSS + """
-        #routes { height: 1fr; }
+        #quota-strip { height: auto; max-height: 12; padding: 0 1; background: #ffffff; color: #111111; }
+        #routes { min-height: 4; height: 1fr; }
         #route-detail { height: 6; }
         #filter-picker { width: 76%; max-width: 96; height: 70%; max-height: 24;
                          padding: 0 1; background: #ffffff; color: #111111;
@@ -717,6 +955,7 @@ def build_app(
         ENABLE_COMMAND_PALETTE = False
         BINDINGS = [
             Binding("u", "usage", "usage"),
+            Binding("H", "cycle_host", "host"),
             Binding("h", "history", "hide/show observed"),
             Binding("p", "repository", "repository filter"),
             Binding("P", "probe", "probe"),
@@ -739,6 +978,8 @@ def build_app(
             self._last_probe = float("-inf")
             self._message = "loading …"
             self._snapshot: dict | None = None
+            self._host_override = False
+            self._host_view: str | None = None
             self._show_history = True
             self._repository_filter: str | None = initial_repository_filter
             self._agent_filter: str | None = initial_agent_filter
@@ -753,6 +994,12 @@ def build_app(
                     classes="subject",
                     id="route-subject",
                 )
+                yield Static(
+                    "loading quota …",
+                    markup=False,
+                    id="quota-strip",
+                )
+                yield Static("", markup=False, classes="detail-rule", id="quota-rule")
                 yield RouteTable(id="routes", cursor_type="row")
                 yield Static("", markup=False, classes="detail-rule", id="route-rule")
                 yield Static(
@@ -843,6 +1090,8 @@ def build_app(
             self._reading = False
             self._message = f"unavailable · {exc}"
             self.query_one("#route-subject", Static).update("MACHINE │ AGROUTE │ unavailable")
+            if self._snapshot is None:
+                self.query_one("#quota-strip", Static).update("quota unavailable")
             self.query_one("#route-status", Static).update(self._message)
             if not self._rows:
                 self.query_one("#route-detail", Static).update(
@@ -995,17 +1244,21 @@ def build_app(
             agent = self._agent_filter or "all agents"
             model = self._model_filter or "all models"
             state = self._state_filter or "all states"
+            effective_host = (
+                self._host_view
+                if self._host_override
+                else (snapshot.get("default_host") or "agy")
+            )
+            host_label = effective_host or "none"
             self.query_one("#route-subject", Static).update(
                 f"MACHINE │ AGROUTE │ {routed_count} routed · {observed_count} observed · "
-                f"{repository} · {agent} · {model} · {state} · observed {history}"
+                f"host: {host_label} · {repository} · {agent} · {model} · {state} · observed {history}"
             )
-            agents_info = snapshot.get("agents") or {}
-            badges = " · ".join(
-                _agent_quota_badge(name, agents_info.get(name) or {})
-                for name in AGENTS
+            self.query_one("#quota-strip", Static).update(
+                _quota_ledger_text(snapshot, host_view=effective_host, now=now)
             )
             self._message = (
-                f"{badges} · showing {len(ordered)}/{len(all_rows)} routes · "
+                f"showing {len(ordered)}/{len(all_rows)} routes · "
                 f"read {snapshot.get('captured_at', '—')}"
             )
             self.query_one("#route-status", Static).update(self._message)
@@ -1013,7 +1266,9 @@ def build_app(
 
         def _update_detail(self) -> None:
             width = max(1, self.size.width - 2)
-            self.query_one("#route-rule", Static).update("─" * width)
+            rule = "─" * width
+            self.query_one("#quota-rule", Static).update(rule)
+            self.query_one("#route-rule", Static).update(rule)
             row = self._selected()
             if row is None:
                 self.query_one("#route-detail", Static).update(
@@ -1023,6 +1278,19 @@ def build_app(
                 )
                 return
             self.query_one("#route-detail", Static).update(_detail_text(row))
+
+        def action_cycle_host(self) -> None:
+            cycle: tuple[str | None, ...] = ("agy", "claude", "codex", None)
+            current = (
+                self._host_view
+                if self._host_override
+                else ((self._snapshot or {}).get("default_host") or "agy")
+            )
+            idx = cycle.index(current) if current in cycle else 0
+            self._host_override = True
+            self._host_view = cycle[(idx + 1) % len(cycle)]
+            if self._snapshot is not None:
+                self._render_snapshot(self._snapshot)
 
         def on_resize(self, _event: Resize) -> None:
             self._update_detail()

@@ -638,10 +638,27 @@ async def test_tui_shows_estimated_credit_alongside_percentages():
     async with app.run_test(size=(140, 32)) as pilot:
         await pilot.pause()
 
+        quota = str(app.query_one("#quota-strip", Static).render())
+        assert "PCT QUOTA" in quota and "CREDIT QUOTA" in quota
+        # default_host is "agy", so agy pools carry '*' and codex/claude use target reserves
+        assert "codex" in quota and "plus-20" in quota
+        assert "42%" in quota and "$1.60" in quota and "$31" in quota
+        assert "claude/shared" in quota and "max-20x" in quota and "$620" in quota
+        assert "claude/fable" in quota and "$200" in quota
+        assert "agy/gemini*" in quota and "ultra-200" in quota
+        assert "agy/3p*" in quota
+
         status = str(app.query_one("#route-status", Static).render())
-        assert "codex 42%/18% (~$1.60/$31)" in status
-        assert "claude —/30% (—/~$620)" in status
-        assert "agy 5%/17% (~$293/$1114)" in status
+        assert "showing 3/3 routes" in status
+
+        # Pressing 'H' cycles host perspective from agy -> claude -> codex -> none -> agy
+        await pilot.press("H")
+        await pilot.pause()
+        subject_after_h = str(app.query_one("#route-subject", Static).render())
+        assert "host: claude" in subject_after_h
+        quota_after_h = str(app.query_one("#quota-strip", Static).render())
+        assert "claude/shared*" in quota_after_h
+        assert "agy/gemini " in quota_after_h
 
         await pilot.press("u")
         await pilot.pause()
@@ -689,9 +706,11 @@ effort = "high"
     app = build_app(lambda: router.snapshot(all_repos=False, now="2026-11-20T12:00:00Z"), refresh_interval=60.0)
     async with app.run_test(size=(130, 30)) as pilot:
         await pilot.pause()
-        status = str(app.query_one("#route-status", Static).render())
-        # plus-20 defaults: 5h=$20 (25% used -> $15 - $5 reserve = $10), 7d=$50 (40% used -> $30 - $5 reserve = $25)
-        assert "codex 25%/40% (~$10/$25)" in status
+        quota = str(app.query_one("#quota-strip", Static).render())
+        # plus-20 defaults: 5h=$20 (25% used -> $5 used, $5 rsv, $10 left), 7d=$50 (40% used -> $20 used, $5 rsv, $25 left)
+        assert "codex" in quota and "plus-20" in quota and "OK" in quota
+        assert "$20" in quota and "$5" in quota and "$10" in quota
+        assert "$50" in quota and "$25" in quota
 
         await pilot.press("u")
         await pilot.pause()
