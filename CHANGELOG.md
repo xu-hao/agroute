@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Detect expired and logged-out Claude CLI authentication (`AgRouteAuthError`) via
+  `claude auth status`, stream-json/text `usage ingest`, unauthenticated `/usage` output, and
+  passive `$CLAUDE_CONFIG_DIR/projects/*.jsonl` transcript discovery without reading credential
+  files; stop routing refresh for auth errors after 1 attempt with an actionable
+  `claude auth login` exclusion reason, mark `claude` and all its models ineligible in
+  `Router.usage_show()` and `BLOCKED` in `agr tui`, supersede old transcript auth events after
+  valid turns or successful probes, and recover immediately on the next routing call or TUI
+  probe once logged back in without waiting out the 30-minute staleness window. Issue #107
+  tracks expired and logged-out Claude authentication handling.
+
 ## 0.6.4 (2026-11-22)
 
 - Release agroute 0.6.4 with synchronized package, plugin, and quickstart installation

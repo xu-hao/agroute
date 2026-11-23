@@ -74,3 +74,20 @@ custom `agents.<name>.usage_probe_cmd` commands:
 ```sh
 agr usage probe --json
 ```
+
+For `claude`, `agroute` checks `claude auth status` (without reading credential files) before
+invoking `claude -p /usage`, and also recognizes `authentication_failed` / `401` / logged-out
+signals in `agr usage ingest` and recent `$CLAUDE_CONFIG_DIR/projects/*.jsonl` transcripts. When
+Claude login has expired or is logged out:
+
+- `agr usage probe --agent claude` raises `AgRouteAuthError` naming `claude auth login` without
+  spawning `claude -p /usage`.
+- Routing (`candidates`, `inventory`, `plan`) stops after 1 probe attempt (no 2-attempt retry),
+  excludes `claude` with an actionable `claude auth login` reason, and still admits other healthy
+  providers (failing closed only if no eligible providers remain).
+- `agr usage show` marks `claude` and all its models ineligible (`eligible_as_target = false`,
+  `eligible_as_host_native = false`), and `agr tui` displays `claude BLOCKED` in `#route-status`
+  and `#quotas`.
+- As soon as you run `claude auth login`, the very next routing call or TUI probe (`P`)
+  re-probes immediately without waiting out the 30-minute staleness window, clears the `auth`
+  block and `probe.failed_at`, and restores `detected_plan` and eligibility.

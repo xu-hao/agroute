@@ -17,7 +17,9 @@ while `howhard` owns model/effort selection, execution accounting, and writable 
 2. Inspect native quota state using [native usage tracking](references/usage.md)
    (`agr usage show --json`, `agr usage ingest`, `agr usage set`, or
    `agr usage probe`). Routing automatically refreshes missing, stale, or expired
-   known evidence and excludes a provider when bounded refresh fails.
+   known evidence, excludes a provider in one bounded attempt when authentication expires or is
+   logged out (for example, prompting `claude auth login`) and recovers immediately once logged
+   back in, and excludes other infrastructure probe failures after two bounded attempts.
 3. Follow [the routing and decision workflow](references/workflow.md):
    - Run `agr candidates --host HOST --output /tmp/TASK-candidates.json --json` to emit
      the full eligible inventory (`<agent>/<model>`, `<effort>`). (Without `--json`,

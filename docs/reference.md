@@ -551,6 +551,47 @@ cooldowns remain access rejections, cleared by explicit unscoped accepted/allowe
 or expiry, rather than by an unrelated partial quota counter.
 Unknown windows remain null; admission follows the refresh contract above for all providers.
 
+### Claude authentication and expired-login handling
+
+`agroute` remains credential-free and never reads `~/.claude/.credentials.json`; instead, it
+delegates authentication detection to `claude` CLI output and session transcripts:
+
+- **Pre-usage auth status check (`ClaudeAdapter.probe_usage`)**: before running
+  `claude -p /usage`, the adapter runs `claude auth status` (and `claude auth status --text`
+  when `loggedIn` is `false` or `authMethod == "none"` without explicit expiry metadata). If
+  `loggedIn` is `false`, `authMethod == "none"`, `loginEnded` is true, or `loginExpiresAt` has
+  passed, `probe_usage` raises `AgRouteAuthError` (a subclass of `AgRouteError` exported from
+  `agroute`, with `auth_status` in `{"expired", "logged_out"}` and `auth_reason`) naming
+  `claude auth login` without spawning `claude -p /usage`. When `authMethod == "api_key"` or
+  `apiKeySource != "none"` returns only local cost text without `usage_report`, `probe_usage`
+  raises an ordinary `AgRouteError` instead of falsely reporting an expired login.
+- **Stream/text ingestion and fallback (`parse_native_usage`, `agr usage ingest`)**:
+  `authentication_failed` / `authentication_error` / `unauthorized` assistant messages, HTTP
+  `401` / auth-error `result` payloads, `loggedIn: false` JSON, expired/logged-out CLI text
+  (such as `"Login: Expired — log in again"` or `"Not logged in. Run claude auth login..."`),
+  and unauthenticated `/usage` streams (`apiKeySource: "none"` with `local_command: "usage"` and
+  `"Estimated cost:"` without `usage_report`) record an `auth` block (`status`, `observed_at`,
+  `error`, optional `event_id` and `superseded_events`) in `usage.json` and the shared live
+  usage cache without setting `rate_limited`, rejecting `availability`, or advancing quota
+  `updated_at`.
+- **Single-attempt routing exclusion and immediate recovery**: `ensure_fresh_usage` treats
+  `AgRouteAuthError` as an immediate authentication failure after **1 attempt** (no 2-attempt
+  retry), excluding `claude` with `claude authentication unavailable: ... claude auth login ...`
+  and surfacing the reason in `warnings`. Active `auth` failures bypass global-block caching in
+  routing freshness checks so the very next `candidates`, `inventory`, `plan`, or TUI probe after
+  `claude auth login` re-probes immediately (without waiting out the 1,800-second stale window),
+  clears `auth` and `probe.failed_at`, resolves `detected_plan`, and restores eligibility.
+- **Eligibility in `usage show`, `agr tui`, and passive transcript discovery**: active `auth`
+  failures mark `claude` (`eligible_as_target = false`, `eligible_as_host_native = false`) and
+  all its models (`eligible = false`, `native_eligible = false`) ineligible even when stale
+  counters were cleared to `null` or fresh counters exist. In `agr tui`, `#route-status` displays
+  `claude BLOCKED`, `#quotas` rows show `STATUS = BLOCKED`, `#route-detail` prints the
+  `claude auth login` reason, and pressing `P` after re-login restores `OK`. Passive transcript
+  discovery scans recent `.jsonl` files under `$CLAUDE_CONFIG_DIR/projects/` for
+  `authentication_failed` / `Failed to authenticate` entries; newer valid assistant turns,
+  `allowed` rate-limit events, or successful probes supersede those transcript entries (by
+  timestamp and `superseded_events`) so touching old transcripts never replays a login block.
+
 
 (execution-plan-resolution)=
 ## Execution plan resolution and host affinity

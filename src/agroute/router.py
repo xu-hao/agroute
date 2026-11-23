@@ -454,7 +454,7 @@ class Router:
 
     def usage_ingest(self, agent, raw_text, *, tier=None, now=None):
         agent_id(agent, "agent")
-        patch = parse_native_usage(agent, raw_text, tier=tier)
+        patch = parse_native_usage(agent, raw_text, tier=tier, now=format_timestamp(_now_utc(now)))
         updated = apply_usage_patch(self.config, agent, patch, source="ingest", now=now)
         return {"agent": agent, "usage": updated}
 
