@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.6.4 (2026-11-22)
+
+- Release agroute 0.6.4 with synchronized package, plugin, and quickstart installation
+  versions. Issue #105 tracks the release metadata, distribution validation, PyPI publication,
+  and GitHub release.
+
 - Order rows in the `agr tui` `QUOTAS` `DataTable` (`#quotas`) left-to-right across
   `POOL -> ROLE -> WIN` so that under `role filter: all` each pool groups its `target` rows
   (`5h`, then `7d`) before its `host` rows (`5h`, then `7d`) while preserving all 15 columns
