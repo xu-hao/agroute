@@ -241,6 +241,30 @@ def test_probe_logged_out_raises_auth_error_without_spawning_usage(tmp_path, mon
     assert not any("/usage" in call for call in _read_calls(log_path))
 
 
+def test_probe_login_expires_at_evaluates_against_explicit_now(tmp_path, monkeypatch):
+    # Even though wall clock is later, explicit now before loginExpiresAt must be treated as logged in.
+    log_path, _ = _install_fake_claude(
+        tmp_path,
+        monkeypatch,
+        auth_status_code=0,
+        auth_status_stdout=json.dumps(
+            {
+                "loggedIn": True,
+                "authMethod": "oauth",
+                "loginExpiresAt": "2026-11-10T00:00:00Z",
+                "planTier": "max_20x",
+            }
+        ),
+        usage_stdout=json.dumps(_valid_usage_report(10.0, 20.0)) + "\n",
+    )
+    router = Router(project=tmp_path)
+    probed = router.usage_probe("claude", now="2026-11-09T12:00:00Z")["probed"]["claude"]
+    assert not probed.get("auth", {}).get("status")
+    assert probed["session_5h"]["used_pct"] == 10.0
+    assert probed["detected_plan"] == "max-20x"
+    assert any("/usage" in call for call in _read_calls(log_path))
+
+
 def test_probe_stream_json_unauthenticated_fallback_vs_api_key(tmp_path, monkeypatch):
     # 1. Custom usage_probe_cmd returning stream-json with apiKeySource: "none" and local cost text only.
     unauth_stream = "\n".join(

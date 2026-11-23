@@ -704,10 +704,13 @@ class ClaudeAdapter(AgentAdapter):
             }
         return None
 
-    def probe_usage(self, cwd: Path) -> dict | None:
+    def probe_usage(self, cwd: Path, *, now=None) -> dict | None:
         if not shutil.which("claude"):
             raise AgRouteError("usage probe: Claude CLI is not installed")
-        auth_info = self._probe_auth_status(cwd)
+        from .usage import _now_utc, parse_native_usage
+
+        now_dt = _now_utc(now) if now is not None else None
+        auth_info = self._probe_auth_status(cwd, now_dt=now_dt)
         if auth_info is not None and auth_info.get("logged_in") is False:
             raise AgRouteAuthError(
                 f"usage probe: {auth_info['error']}",
@@ -721,13 +724,12 @@ class ClaudeAdapter(AgentAdapter):
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise AgRouteError(f"usage probe: Claude command failed: {exc}") from exc
-        from .usage import parse_native_usage
         combined = "\n".join(part for part in (proc.stdout, proc.stderr) if part).strip()
         is_api_key = auth_info is not None and auth_info.get("auth_method") == "api_key"
         # Cached transcripts are useful evidence, but cannot turn a failed
         # current probe into a fresh successful availability report.
         try:
-            patch = parse_native_usage("claude", combined)
+            patch = parse_native_usage("claude", combined, now=now)
         except AgRouteError:
             if (
                 is_api_key

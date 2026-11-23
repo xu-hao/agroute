@@ -5,6 +5,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 import fcntl
 import hashlib
+import inspect
 import json
 import os
 from pathlib import Path
@@ -2572,10 +2573,13 @@ def _probe_codex_app_server(cwd: Path) -> dict | None:
     return None
 
 
-def _builtin_probe_patch(name: str, cwd: Path) -> dict | None:
+def _builtin_probe_patch(name: str, cwd: Path, *, now=None) -> dict | None:
     from .adapters import get_adapter
 
-    return get_adapter(name).probe_usage(cwd)
+    fn = get_adapter(name).probe_usage
+    if "now" in inspect.signature(fn).parameters:
+        return fn(cwd, now=now)
+    return fn(cwd)
 
 
 def _record_probe_failure(config, name, exc, now):
@@ -2616,7 +2620,7 @@ def probe_usage(config, agent=None, *, now=None):
             observed = _discover_claude_live_patch() if name == "claude" else {}
             cmd = config.agents[name]["usage_probe_cmd"]
             if not cmd:
-                patch = _builtin_probe_patch(name, config.capture_root)
+                patch = _builtin_probe_patch(name, config.capture_root, now=now)
                 if not patch:
                     raise AgRouteError(f"usage probe: agents.{name}.usage_probe_cmd is not configured and no live telemetry found")
             else:
