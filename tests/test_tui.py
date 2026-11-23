@@ -950,6 +950,59 @@ async def test_tui_shows_estimated_credit_alongside_percentages():
 
 
 @pytest.mark.asyncio
+async def test_tui_manual_probe_updates_codex_plus_to_pro_100(tmp_path):
+    config = tmp_path / "agroute.toml"
+    config.write_text(
+        '[agents.codex]\nusage_probe_cmd = ["cat", "codex-usage.json"]\n'
+        '[agents.claude]\nenabled = false\n'
+        '[agents.agy]\nenabled = false\n',
+        encoding="utf-8",
+    )
+    report = tmp_path / "codex-usage.json"
+
+    def write_report(plan_type):
+        limits = {
+            "planType": plan_type,
+            "primary": {"usedPercent": 25, "windowDurationMins": 300},
+            "secondary": {"usedPercent": 40, "windowDurationMins": 10080},
+        }
+        response = {
+            "id": 2,
+            "result": {"rateLimits": limits, "rateLimitsByLimitId": {"codex": limits}},
+        }
+        report.write_text(json.dumps(response), encoding="utf-8")
+
+    router = Router(config, state_directory=tmp_path / "state", include_user_config=False)
+    write_report("plus")
+    router.usage_probe("codex", now="2026-11-23T17:00:00Z")
+
+    now = "2026-11-23T17:01:00Z"
+    app = build_app(
+        lambda: router.snapshot(all_repos=False, now=now),
+        probe_factory=lambda manual: router.tui_probe(manual, now=now),
+        refresh_interval=60.0,
+    )
+    async with app.run_test(size=(130, 30)) as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.press("u")
+        quotas = app.query_one("#quotas", DataTable)
+        assert quotas.get_row("codex:shared:5h:target")[1].plain == "plus-20"
+
+        write_report("prolite")
+        await pilot.press("P")
+        await app.workers.wait_for_complete()
+        await app.workers.wait_for_complete()
+        codex = router.usage_show("codex", now=now)["agents"]["codex"]
+        assert codex["probe"]["succeeded_at"] == now
+        assert quotas.get_row("codex:shared:5h:target")[1].plain == "pro-100"
+        assert quotas.get_row("codex:shared:7d:target")[1].plain == "pro-100"
+        assert codex["detected_plan"] == codex["effective_plan"] == "pro-100"
+        assert codex["monthly_cost_usd"] == 100.0
+        assert quotas.get_row("codex:shared:5h:target")[9].plain == "$100"
+        assert quotas.get_row("codex:shared:7d:target")[9].plain == "$250"
+
+
+@pytest.mark.asyncio
 async def test_tui_end_to_end_router_snapshot_renders_calibrated_credit(tmp_path):
     cfg = tmp_path / "agroute.toml"
     cfg.write_text(

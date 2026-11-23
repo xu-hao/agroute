@@ -128,6 +128,7 @@ Packaged plans keep cash cost separate from quota credit:
 | `claude` | `max-5x` | `max_5x`, `claude-max-5x` | $100 | shared: $90 / $225; `fable` weekly: $75 |
 | `claude` | `max-20x` | `max_20x`, `claude-max-20x` | $200 | shared: $360 / $900; `fable` weekly: $300 |
 | `codex` | `plus-20` | `plus`, `chatgpt-plus` | $20 | shared: $20 / $50 |
+| `codex` | `pro-100` | `prolite` | $100 | shared: $100 / $250 |
 | `codex` | `pro-200` | `pro`, `chatgpt-pro` | $200 | shared: $200 / $500 |
 | `codex` | `pro-500` | `promax` | $500 | shared: $500 / $1,250 |
 

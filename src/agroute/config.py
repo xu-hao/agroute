@@ -91,6 +91,10 @@ PLAN_PRESETS = {
             "monthly_cost_usd": 20.0,
             "credit": {"session_5h_credit_usd": 20.0, "weekly_7d_credit_usd": 50.0, "tiers": {}},
         },
+        "pro-100": {
+            "monthly_cost_usd": 100.0,
+            "credit": {"session_5h_credit_usd": 100.0, "weekly_7d_credit_usd": 250.0, "tiers": {}},
+        },
         "pro-200": {
             "monthly_cost_usd": 200.0,
             "credit": {"session_5h_credit_usd": 200.0, "weekly_7d_credit_usd": 500.0, "tiers": {}},
@@ -128,6 +132,7 @@ PLAN_ALIASES = {
     "codex": {
         "plus": "plus-20",
         "chatgpt-plus": "plus-20",
+        "prolite": "pro-100",
         "pro": "pro-200",
         "promax": "pro-500",
         "chatgpt-pro": "pro-200",
