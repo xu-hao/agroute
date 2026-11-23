@@ -715,7 +715,12 @@ def _build_quota_rows(snapshot: dict, *, role_filter: str = "all", now: datetime
                 elif pool_name in excluded_groups:
                     status_by_role[role] = "EXCLUDED"
                 else:
-                    pool_blocked = bool(info.get("rate_limited") or info.get("cooldown_until"))
+                    auth_status = (info.get("auth") or {}).get("status")
+                    pool_blocked = bool(
+                        auth_status in ("expired", "logged_out")
+                        or info.get("rate_limited")
+                        or info.get("cooldown_until")
+                    )
                     if isinstance(pool_meta, dict) and _is_num(pool_meta.get("available_credit_usd")):
                         if float(pool_meta["available_credit_usd"]) <= 0.0:
                             pool_blocked = True
@@ -979,6 +984,9 @@ def _usage_modal_body(snapshot: dict) -> str:
             f"  Eligible as host native: {info.get('eligible_as_host_native', True)}"
             + (f" ({info['host_native_exclusion_reason']})" if info.get("host_native_exclusion_reason") else "")
         )
+        auth_info = info.get("auth") or {}
+        if auth_info.get("status"):
+            lines.append(f"  Auth: {auth_info['status']} ({auth_info.get('error') or '—'})")
         s5_credit = _window_credit_detail(s5_cal, s5.get("used_pct"))
         w7_credit = _window_credit_detail(w7_cal, w7.get("used_pct"))
         lines.append(

@@ -5,6 +5,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 import fcntl
 import hashlib
+import inspect
 import json
 import os
 from pathlib import Path
@@ -19,13 +20,14 @@ from .files import atomic_write
 from .state import check, claim, identity_locked
 from .validation import (
     AGENTS,
+    AgRouteAuthError,
     AgRouteError,
     agent_id,
     boolean,
     format_timestamp,
     keys,
     number,
-     percentage,
+    percentage,
     parse_timestamp,
     table,
     text,
@@ -57,6 +59,7 @@ def _empty_agent_state():
         "availability": _empty_window(),
         "scope_availability": {},
         "probe": {},
+        "auth": {},
     }
 
 
@@ -70,6 +73,10 @@ def _empty_store():
 def _now_utc(now=None):
     if now is None:
         return datetime.now(timezone.utc)
+    if isinstance(now, datetime):
+        if now.utcoffset() is None:
+            raise AgRouteError("now: expected timezone-aware ISO-8601 timestamp")
+        return now.astimezone(timezone.utc)
     return parse_timestamp(now, "now")
 
 
@@ -116,6 +123,28 @@ def _validate_probe(raw, where):
     return result
 
 
+def _validate_auth(raw, where):
+    table(raw, where)
+    keys(raw, [], ["status", "observed_at", "error", "event_id", "superseded_events"], where=where)
+    result = {}
+    if raw.get("status") is not None:
+        if raw["status"] not in ("expired", "logged_out"):
+            raise AgRouteError(f"{where}.status: unsupported auth status")
+        result["status"] = raw["status"]
+    if raw.get("observed_at") is not None:
+        result["observed_at"] = format_timestamp(parse_timestamp(raw["observed_at"], f"{where}.observed_at"))
+    if raw.get("error") is not None:
+        result["error"] = text(raw["error"], f"{where}.error", max_length=4096)
+    if raw.get("event_id") is not None:
+        result["event_id"] = text(raw["event_id"], f"{where}.event_id", max_length=64)
+    if "superseded_events" in raw:
+        ids = raw["superseded_events"]
+        if not isinstance(ids, list) or any(not isinstance(value, str) or len(value) > 64 for value in ids):
+            raise AgRouteError(f"{where}.superseded_events: expected event identities")
+        result["superseded_events"] = list(dict.fromkeys(ids))
+    return result
+
+
 def _validate_store_payload(payload):
     table(payload, "usage store")
     keys(payload, ["format", "agents"], where="usage store")
@@ -130,7 +159,7 @@ def _validate_store_payload(payload):
         keys(
             raw,
             ["session_5h", "weekly_7d", "rate_limited", "cooldown_until", "tiers", "updated_at", "source"],
-            ["availability", "scope_availability", "probe", "detected_plan"],
+            ["availability", "scope_availability", "probe", "detected_plan", "auth"],
             where=where,
         )
         s5 = _validate_window(raw["session_5h"], f"{where}.session_5h")
@@ -171,6 +200,7 @@ def _validate_store_payload(payload):
             "availability": _validate_window(raw.get("availability", _empty_window()), f"{where}.availability"),
             "scope_availability": scoped,
             "probe": _validate_probe(raw.get("probe", {}), f"{where}.probe"),
+            "auth": _validate_auth(raw.get("auth", {}), f"{where}.auth"),
         }
         if name == "claude" and "availability" not in raw and "probe" not in raw:
             _migrate_legacy_claude_state(normalized["agents"][name])
@@ -273,6 +303,19 @@ def _discover_codex_live_patch() -> dict:
     return {}
 
 
+def _is_valid_claude_assistant_turn(obj: dict) -> bool:
+    if obj.get("type") != "assistant":
+        return False
+    if obj.get("error") or obj.get("isApiErrorMessage") or obj.get("is_error"):
+        return False
+    msg = obj.get("message")
+    if not isinstance(msg, dict):
+        return False
+    if msg.get("model") == "<synthetic>" or msg.get("error"):
+        return False
+    return True
+
+
 def _discover_claude_live_patch() -> dict:
     """Reconcile bounded recent transcript evidence by quota and event time."""
     projects_dir = _claude_home() / "projects"
@@ -283,6 +326,8 @@ def _discover_claude_live_patch() -> dict:
     except OSError:
         return {}
     patch = {}
+    latest_explicit_valid_ts: str | None = None
+    auth_explicit_ts = False
     for path in reversed(files):
         try:
             with path.open("rb") as handle:
@@ -298,18 +343,104 @@ def _discover_claude_live_patch() -> dict:
         for raw_line in tail.splitlines(keepends=True):
             line, line_offset = raw_line.strip(), offset
             offset += len(raw_line.encode("utf-8"))
-            if not any(token in line for token in ('"rate_limit_event"', '"rate_limit_info"', '"rateLimitInfo"')):
+            if not any(
+                token in line
+                for token in (
+                    '"rate_limit_event"',
+                    '"rate_limit_info"',
+                    '"rateLimitInfo"',
+                    '"authentication_failed"',
+                    '"authentication_error"',
+                    "Failed to authenticate",
+                    '"api_error_status"',
+                    '"loggedIn"',
+                    '"usage_report"',
+                    '"assistant"',
+                )
+            ):
                 continue
+            obj = None
+            brace = line.find("{")
+            if brace >= 0:
+                try:
+                    parsed = json.loads(line[brace:].strip())
+                    if isinstance(parsed, dict):
+                        obj = parsed
+                except ValueError:
+                    pass
             event_patch = {}
             if _parse_json_events(line, event_patch):
-                for key, win in _patch_windows(event_patch):
-                    win.setdefault("observed_at", fallback_time)
-                    if win.get("used_pct") is not None:
-                        win.setdefault("measured_at", win["observed_at"])
-                    win["event_id"] = hashlib.sha256(f"{path}:{line_offset}:{line}".encode()).hexdigest()
-                    previous = _get_window(patch, key)
-                    _put_window(patch, key, _merge_window(previous, win))
-                patch.setdefault("warnings", []).extend(event_patch.get("warnings", []))
+                ev_id = hashlib.sha256(f"{path}:{line_offset}:{line}".encode()).hexdigest()
+                if isinstance(event_patch.get("auth"), dict):
+                    auth_entry = deepcopy(event_patch["auth"])
+                    explicit_ts = obj.get("timestamp") if isinstance(obj, dict) else None
+                    auth_obs = auth_entry.setdefault("observed_at", fallback_time)
+                    auth_entry["event_id"] = ev_id
+                    if (
+                        latest_explicit_valid_ts is not None
+                        and explicit_ts is not None
+                        and parse_timestamp(auth_obs) < parse_timestamp(latest_explicit_valid_ts)
+                    ):
+                        continue
+                    prev_auth = patch.get("auth")
+                    if (
+                        not isinstance(prev_auth, dict)
+                        or not prev_auth.get("observed_at")
+                        or parse_timestamp(auth_obs) >= parse_timestamp(prev_auth["observed_at"])
+                    ):
+                        superseded = list(prev_auth.get("superseded_events", [])) if isinstance(prev_auth, dict) else []
+                        if isinstance(prev_auth, dict) and prev_auth.get("event_id") and prev_auth["event_id"] != ev_id:
+                            superseded.append(prev_auth["event_id"])
+                        if superseded:
+                            auth_entry["superseded_events"] = list(dict.fromkeys(superseded))[-256:]
+                        patch["auth"] = auth_entry
+                        auth_explicit_ts = explicit_ts is not None
+                else:
+                    for key, win in _patch_windows(event_patch):
+                        win.setdefault("observed_at", fallback_time)
+                        if win.get("used_pct") is not None:
+                            win.setdefault("measured_at", win["observed_at"])
+                        win["event_id"] = ev_id
+                        previous = _get_window(patch, key)
+                        _put_window(patch, key, _merge_window(previous, win))
+                    patch.setdefault("warnings", []).extend(event_patch.get("warnings", []))
+                    has_allowed = any(win.get("status") == "allowed" for _, win in _patch_windows(event_patch))
+                    has_rejected = any(win.get("status") == "rejected" for _, win in _patch_windows(event_patch))
+                    is_valid_usage_rep = isinstance(obj, dict) and isinstance(obj.get("usage_report"), dict)
+                    if (has_allowed and not has_rejected) or is_valid_usage_rep:
+                        valid_obs = (obj.get("timestamp") if isinstance(obj, dict) else None) or fallback_time
+                        if isinstance(obj, dict) and obj.get("timestamp") is not None:
+                            try:
+                                ts_norm = format_timestamp(parse_timestamp(obj["timestamp"], "claude event timestamp"))
+                                if latest_explicit_valid_ts is None or parse_timestamp(ts_norm) >= parse_timestamp(latest_explicit_valid_ts):
+                                    latest_explicit_valid_ts = ts_norm
+                            except AgRouteError:
+                                pass
+                        if isinstance(patch.get("auth"), dict):
+                            auth_obs = patch["auth"].get("observed_at")
+                            try:
+                                if not auth_explicit_ts or not auth_obs or parse_timestamp(valid_obs) >= parse_timestamp(auth_obs):
+                                    patch.pop("auth", None)
+                                    auth_explicit_ts = False
+                            except AgRouteError:
+                                pass
+            elif isinstance(obj, dict) and _is_valid_claude_assistant_turn(obj):
+                valid_obs = obj.get("timestamp") or fallback_time
+                if obj.get("timestamp") is not None:
+                    try:
+                        ts_norm = format_timestamp(parse_timestamp(obj["timestamp"], "claude event timestamp"))
+                        if latest_explicit_valid_ts is None or parse_timestamp(ts_norm) >= parse_timestamp(latest_explicit_valid_ts):
+                            latest_explicit_valid_ts = ts_norm
+                    except AgRouteError:
+                        pass
+                if isinstance(patch.get("auth"), dict):
+                    auth_obs = patch["auth"].get("observed_at")
+                    try:
+                        if not auth_explicit_ts or not auth_obs or parse_timestamp(valid_obs) >= parse_timestamp(auth_obs):
+                            patch.pop("auth", None)
+                            auth_explicit_ts = False
+                    except AgRouteError:
+                        pass
     return patch
 
 
@@ -415,21 +546,61 @@ def read_store(config):
             if ag["updated_at"] is None and not patch:
                 cached = _read_shared_probe_cache(name)
                 if cached:
-                    for key, win in _patch_windows(cached):
-                        _put_window(ag, key, _validate_window(win, f"cached.claude.{key}"))
-                    for key in ("updated_at", "source", "rate_limited", "cooldown_until", "probe", "detected_plan"):
-                        if key in cached:
-                            ag[key] = deepcopy(cached[key])
-                    if "availability" not in cached and "probe" not in cached:
-                        _migrate_legacy_claude_state(ag)
+                    cached_auth = _validate_auth(cached.get("auth", {}), "cached.claude.auth")
+                    local_auth = ag.get("auth") or {}
+                    local_fail = ag.get("probe", {}).get("failed_at")
+                    cached_success = (cached.get("probe") or {}).get("succeeded_at") or cached.get("updated_at")
+                    local_block_time = local_auth.get("observed_at") or local_fail
+                    if not local_block_time or (
+                        cached_success
+                        and not cached_auth.get("status")
+                        and parse_timestamp(cached_success) > parse_timestamp(local_block_time)
+                    ):
+                        for key, win in _patch_windows(cached):
+                            _put_window(ag, key, _validate_window(win, f"cached.claude.{key}"))
+                        for key in ("updated_at", "source", "rate_limited", "cooldown_until", "probe", "detected_plan", "auth"):
+                            if key in cached:
+                                ag[key] = deepcopy(cached[key])
+                        if "auth" in ag:
+                            ag["auth"] = _validate_auth(ag["auth"], "cached.claude.auth")
+                        if "availability" not in cached and "probe" not in cached:
+                            _migrate_legacy_claude_state(ag)
+                    elif cached_auth.get("status") and (
+                        not local_block_time
+                        or (
+                            cached_auth.get("observed_at")
+                            and parse_timestamp(cached_auth["observed_at"]) >= parse_timestamp(local_block_time)
+                        )
+                    ):
+                        ag["auth"] = cached_auth
             for key, win in _patch_windows(patch):
                 _put_window(ag, key, _merge_window(_get_window(ag, key), win))
+            if isinstance(patch.get("auth"), dict) and patch["auth"].get("status"):
+                t_auth = _validate_auth(patch["auth"], "discovered.claude.auth")
+                stored_auth = ag.get("auth") or {}
+                superseded = set(stored_auth.get("superseded_events", []))
+                probe_succeeded = ag.get("probe", {}).get("succeeded_at")
+                valid_clocks = [t for t in (probe_succeeded, ag.get("updated_at")) if t]
+                newest_valid = max(valid_clocks, key=parse_timestamp) if valid_clocks else None
+                t_obs = t_auth.get("observed_at")
+                already_superseded = (
+                    (t_auth.get("event_id") is not None and t_auth["event_id"] in superseded)
+                    or (newest_valid is not None and t_obs is not None and parse_timestamp(newest_valid) >= parse_timestamp(t_obs))
+                    or (stored_auth.get("observed_at") is not None and t_obs is not None and parse_timestamp(t_obs) < parse_timestamp(stored_auth["observed_at"]))
+                )
+                if not already_superseded:
+                    merged_auth = deepcopy(t_auth)
+                    if superseded:
+                        merged_auth["superseded_events"] = list(
+                            dict.fromkeys(list(superseded) + merged_auth.get("superseded_events", []))
+                        )[-256:]
+                    ag["auth"] = merged_auth
             if patch.get("detected_plan") is not None:
                 ag["detected_plan"] = patch["detected_plan"]
             times = [win["observed_at"] for _, win in _patch_windows(ag) if win.get("observed_at")]
             if times:
                 ag["updated_at"] = max(times + ([ag["updated_at"]] if ag["updated_at"] else []), key=parse_timestamp)
-            if patch:
+            if patch and list(_patch_windows(patch)):
                 ag["source"] = "discovered" if ag["updated_at"] is None else ag["source"]
             continue
         # Passive evidence has its own window clocks and never represents a
@@ -566,6 +737,17 @@ def _scoped_access_rejection(agent, state, candidate):
     return None
 
 
+def _auth_failure_reason(agent, state):
+    auth = state.get("auth")
+    if isinstance(auth, dict) and auth.get("status") in ("expired", "logged_out"):
+        return auth.get("error") or (
+            f"{agent} login expired; run '{agent} auth login' to sign in again"
+            if auth.get("status") == "expired"
+            else f"{agent} is not logged in; run '{agent} auth login' to authenticate"
+        )
+    return None
+
+
 def usage_warnings(agent, state, cfg, now_dt):
     probe = state.get("probe", {})
     success = probe.get("succeeded_at")
@@ -575,6 +757,9 @@ def usage_warnings(agent, state, cfg, now_dt):
     stale = reference is None or (now_dt - parse_timestamp(reference)).total_seconds() > cfg["usage_stale_after_seconds"]
     failed = probe.get("failed_at") and (not success or parse_timestamp(probe["failed_at"]) >= parse_timestamp(success))
     warnings = list(probe.get("warnings", []))
+    auth_reason = _auth_failure_reason(agent, state)
+    if auth_reason and not (failed and auth_reason in str(probe.get("error", ""))):
+        warnings.append(auth_reason)
     if stale or failed:
         message = f"{agent} usage snapshot stale since {reference or 'unknown'}" if stale else f"{agent} usage snapshot uncertain"
         if failed:
@@ -642,6 +827,9 @@ def effective_stale_after_seconds(key, win, cfg, *, is_host=False):
 
 def _freshness_reason(state, cfg, now_dt, *, is_host=False):
     """Check each known scope; a recent sibling never renews its clock."""
+    auth_reason = _auth_failure_reason("agent", state)
+    if auth_reason:
+        return auth_reason
     probe = state.get("probe", {})
     failed, succeeded = probe.get("failed_at"), probe.get("succeeded_at")
     if failed and (not succeeded or parse_timestamp(failed) >= parse_timestamp(succeeded)):
@@ -678,6 +866,8 @@ def _freshness_reason(state, cfg, now_dt, *, is_host=False):
 
 def _fresh_global_block(state, cfg, now_dt):
     """Current whole-provider denial needs no claim about remaining scopes."""
+    if _auth_failure_reason("agent", state):
+        return False
     for key in ("session_5h", "weekly_7d", "availability"):
         win = state.get(key, {})
         if win.get("reset_at") and now_dt >= parse_timestamp(win["reset_at"]):
@@ -736,6 +926,10 @@ def ensure_fresh_usage(config, targets, *, host=None, now=None):
                 reason = None if _fresh_global_block(state, cfg, now_dt) else _freshness_reason(state, cfg, now_dt, is_host=(name == host))
                 if reason is not None:
                     raise AgRouteError(f"usage probe: {reason} after partial report")
+            except AgRouteAuthError as exc:
+                _record_probe_failure(config, name, exc, now)
+                attempts[name] = REFRESH_ATTEMPTS
+                failures[name] = f"{name} authentication unavailable: {exc.auth_reason}"
             except AgRouteError as exc:
                 _record_probe_failure(config, name, exc, now)
                 failures[name] = (f"{name} quota refresh infrastructure incident after {REFRESH_ATTEMPTS} attempts: "
@@ -785,6 +979,9 @@ def evaluate_agent_quota(agent_name, agent_cfg, effective_state, *, is_host=Fals
     """Return (eligible: bool, reason: str | None) for the agent as a whole."""
     if not agent_cfg["enabled"]:
         return False, "agent is disabled in configuration"
+    auth_reason = _auth_failure_reason(agent_name, effective_state)
+    if auth_reason:
+        return False, auth_reason
     rejection = _rejection_reason(agent_name, effective_state)
     if rejection:
         return False, rejection
@@ -1258,6 +1455,10 @@ def resolve_model_quota(
     if not agent_cfg["enabled"]:
         return _result(False, "agent is disabled in configuration")
 
+    auth_reason = _auth_failure_reason(agent_name, effective_state)
+    if auth_reason:
+        return _result(False, auth_reason)
+
     excluded_groups = agent_cfg.get("exclude_quota_groups", ())
     for grp, _, _ in quota_pools:
         if grp in excluded_groups:
@@ -1660,7 +1861,107 @@ def _extract_claude_detected_plan(obj: dict) -> str | None:
     return None
 
 
-def _parse_json_events(raw_text, patch):
+_AUTH_ERROR_PHRASES = (
+    "failed to authenticate",
+    "authentication_failed",
+    "authentication_error",
+    "login reached its time limit",
+    "oauth token has expired",
+    "not logged in",
+    "claude auth login",
+    "please run /login",
+    "invalid bearer token",
+    "invalid api key",
+)
+
+_TEXT_EXPIRED_PHRASES = (
+    "login: expired",
+    "login:expired",
+    "expired — log in again",
+    "expired - log in again",
+    "login reached its time limit",
+    "oauth token has expired",
+)
+
+_TEXT_AUTH_PHRASES = (
+    "not logged in",
+    "notloggedin",
+    "failed to authenticate",
+    "authentication_failed",
+    "authentication_error",
+    "claude auth login",
+    "please run /login",
+)
+
+
+def _extract_claude_error_text(obj: dict) -> str:
+    parts: list[str] = []
+    for key in ("result", "error", "reason", "status_message", "detail"):
+        val = obj.get(key)
+        if isinstance(val, str) and val:
+            parts.append(val)
+    msg = obj.get("message")
+    if isinstance(msg, str) and msg:
+        parts.append(msg)
+    elif isinstance(msg, dict):
+        if isinstance(msg.get("error"), str) and msg["error"]:
+            parts.append(msg["error"])
+        content = msg.get("content")
+        if isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict) and isinstance(item.get("text"), str):
+                    parts.append(item["text"])
+    return "\n".join(parts)
+
+
+def _make_claude_auth_patch(raw_text: str) -> dict:
+    lower = raw_text.lower()
+    if any(tok in lower for tok in ("expired", "time limit", "again")):
+        return {
+            "status": "expired",
+            "error": "Claude login expired; run 'claude auth login' to sign in again",
+        }
+    return {
+        "status": "logged_out",
+        "error": "Claude is not logged in; run 'claude auth login' to authenticate",
+    }
+
+
+def _claude_auth_status_from_obj(obj: dict, *, raw_text: str = "", now_dt=None) -> dict | None:
+    if obj.get("loggedIn") is False or obj.get("authMethod") == "none":
+        expired = bool(obj.get("loginEnded"))
+        if not expired and obj.get("loginExpiresAt") is not None:
+            if now_dt is not None:
+                try:
+                    expired = now_dt >= parse_timestamp(obj["loginExpiresAt"], "loginExpiresAt")
+                except AgRouteError:
+                    expired = True
+            else:
+                expired = True
+        if not expired and "expired" in (raw_text or json.dumps(obj)).lower():
+            expired = True
+        if expired:
+            return {
+                "status": "expired",
+                "error": "Claude login expired; run 'claude auth login' to sign in again",
+            }
+        return {
+            "status": "logged_out",
+            "error": "Claude is not logged in; run 'claude auth login' to authenticate",
+        }
+    if obj.get("loggedIn") is True and obj.get("loginExpiresAt") is not None and now_dt is not None:
+        try:
+            if now_dt >= parse_timestamp(obj["loginExpiresAt"], "loginExpiresAt"):
+                return {
+                    "status": "expired",
+                    "error": "Claude login expired; run 'claude auth login' to sign in again",
+                }
+        except AgRouteError:
+            pass
+    return None
+
+
+def _parse_json_events(raw_text, patch, *, now_dt=None):
     lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
     if not lines:
         return False
@@ -1687,21 +1988,74 @@ def _parse_json_events(raw_text, patch):
         return False
 
     changed = False
+    saw_api_key_none = False
+    served_by_anthropic_false = False
+    saw_usage_local_command = False
+    saw_estimated_cost = False
+    saw_usage_report = False
+    last_observed = None
+
     for obj in parsed_objects:
+        if isinstance(obj.get("usage_report"), dict):
+            saw_usage_report = True
+        if obj.get("apiKeySource") == "none":
+            saw_api_key_none = True
+        if obj.get("served_by_anthropic") is False:
+            served_by_anthropic_false = True
+        lcr = obj.get("local_command_run")
+        if (
+            obj.get("local_command") == "usage"
+            or (isinstance(lcr, dict) and lcr.get("command") == "usage")
+            or (obj.get("subtype") == "local_command_run" and obj.get("command") == "usage")
+        ):
+            saw_usage_local_command = True
+        if isinstance(obj.get("result"), str) and "estimated cost:" in obj["result"].lower():
+            saw_estimated_cost = True
+
         event_patch = {}
-        recognized = _parse_json_object(obj, event_patch)
+        recognized = _parse_json_object(obj, event_patch, now_dt=now_dt)
         if event_patch.get("detected_plan"):
             patch["detected_plan"] = event_patch["detected_plan"]
+        if event_patch.get("logged_in") is True and "auth" not in event_patch:
+            patch["logged_in"] = True
         changed = recognized or changed
         observed = obj.get("timestamp", obj.get("updated_at"))
-        if recognized and observed is not None:
+        if observed is not None:
             observed = format_timestamp(parse_timestamp(observed, "usage event timestamp"))
-            for _, win in _patch_windows(event_patch):
-                win.setdefault("observed_at", observed)
-                if win.get("used_pct") is not None:
-                    win.setdefault("measured_at", win["observed_at"])
+            last_observed = observed
+            if recognized:
+                for _, win in _patch_windows(event_patch):
+                    win.setdefault("observed_at", observed)
+                    if win.get("used_pct") is not None:
+                        win.setdefault("measured_at", win["observed_at"])
         for key, win in _patch_windows(event_patch):
             _put_window(patch, key, _merge_window(_get_window(patch, key), win))
+        if "auth" in event_patch:
+            auth_entry = deepcopy(event_patch["auth"])
+            if observed is not None:
+                auth_entry.setdefault("observed_at", observed)
+            prev_auth = patch.get("auth")
+            if (
+                not isinstance(prev_auth, dict)
+                or not prev_auth.get("observed_at")
+                or (
+                    auth_entry.get("observed_at")
+                    and parse_timestamp(auth_entry["observed_at"]) >= parse_timestamp(prev_auth["observed_at"])
+                )
+            ):
+                patch["auth"] = auth_entry
+            patch.pop("logged_in", None)
+        elif recognized and isinstance(patch.get("auth"), dict):
+            has_valid_evidence = event_patch.get("rate_limited") is False or any(
+                win.get("used_pct") is not None or win.get("status") == "allowed"
+                for _, win in _patch_windows(event_patch)
+            )
+            if has_valid_evidence and (
+                observed is None
+                or not patch["auth"].get("observed_at")
+                or parse_timestamp(observed) >= parse_timestamp(patch["auth"]["observed_at"])
+            ):
+                patch.pop("auth", None)
         if "rate_limited" in event_patch or "cooldown_until" in event_patch:
             # Only the object supplying global availability owns its clock.
             # A later unrelated result cannot renew the earlier observation.
@@ -1716,12 +2070,42 @@ def _parse_json_events(raw_text, patch):
             patch.setdefault("warnings", []).extend(event_patch["warnings"])
         if event_patch.get(COMPLETE_REPORT):
             patch[COMPLETE_REPORT] = True
+
+    if (
+        not changed
+        and not saw_usage_report
+        and not served_by_anthropic_false
+        and saw_api_key_none
+        and saw_usage_local_command
+        and saw_estimated_cost
+    ):
+        auth_entry = {
+            "status": "logged_out",
+            "error": "Claude is not logged in (or login expired); run 'claude auth login' to authenticate",
+        }
+        if last_observed is not None:
+            auth_entry["observed_at"] = last_observed
+        patch["auth"] = auth_entry
+        changed = True
     return changed
 
 
-def _parse_json_object(obj, patch):
+def _parse_json_object(obj, patch, *, now_dt=None):
     """Normalize one external event before combining independent observations."""
     changed = False
+    effective_now = now_dt
+    if effective_now is None and obj.get("timestamp") is not None:
+        try:
+            effective_now = parse_timestamp(obj["timestamp"], "usage event timestamp")
+        except AgRouteError:
+            effective_now = None
+    auth_obj_patch = _claude_auth_status_from_obj(obj, now_dt=effective_now)
+    if auth_obj_patch is not None:
+        patch["auth"] = auth_obj_patch
+        changed = True
+    elif obj.get("loggedIn") is True:
+        patch["logged_in"] = True
+
     if _apply_rate_limits_dict(obj, patch, "usage object"):
         changed = True
     if "rate_limits" in obj and isinstance(obj["rate_limits"], dict):
@@ -1780,10 +2164,24 @@ def _parse_json_object(obj, patch):
     if obj.get("type") == "rate_limit_event" or "rate_limit_info" in obj or "rateLimitInfo" in obj:
         if _apply_claude_event(obj, patch):
             changed = True
+    if obj.get("type") == "assistant" and obj.get("error") in (
+        "authentication_failed",
+        "authentication_error",
+        "unauthorized",
+    ):
+        patch["auth"] = _make_claude_auth_patch(_extract_claude_error_text(obj))
+        changed = True
     if obj.get("type") == "result" and obj.get("is_error") is True:
-        err_text = str(obj.get("result") or "").lower()
+        err_text = _extract_claude_error_text(obj).lower()
         if (
-            obj.get("api_error_status") in (401, 403, 429)
+            obj.get("api_error_status") == 401
+            or obj.get("error") in ("authentication_failed", "authentication_error", "unauthorized")
+            or any(phrase in err_text for phrase in _AUTH_ERROR_PHRASES)
+        ):
+            patch["auth"] = _make_claude_auth_patch(err_text)
+            changed = True
+        elif (
+            obj.get("api_error_status") in (403, 429)
             or obj.get("terminal_reason") in ("api_error", "rate_limit")
             or any(k in err_text for k in ("rate limit", "quota", "subscription", "usage limit", "hit your weekly limit"))
         ):
@@ -1825,6 +2223,29 @@ def _parse_text_usage(raw_text, patch):
         if not line:
             continue
         lower = line.lower()
+        if any(phrase in lower for phrase in _TEXT_EXPIRED_PHRASES):
+            patch["auth"] = {
+                "status": "expired",
+                "error": "Claude login expired; run 'claude auth login' to sign in again",
+            }
+            changed = True
+            continue
+        if any(phrase in lower for phrase in _TEXT_AUTH_PHRASES):
+            if any(tok in lower for tok in ("expired", "time limit", "again")):
+                patch["auth"] = {
+                    "status": "expired",
+                    "error": "Claude login expired; run 'claude auth login' to sign in again",
+                }
+            else:
+                patch.setdefault(
+                    "auth",
+                    {
+                        "status": "logged_out",
+                        "error": "Claude is not logged in; run 'claude auth login' to authenticate",
+                    },
+                )
+            changed = True
+            continue
         reset_match = _RESET_RE.search(line)
         reset_iso = (
             format_timestamp(parse_timestamp(reset_match.group(1), "text reset_at"))
@@ -1892,19 +2313,20 @@ def _parse_text_usage(raw_text, patch):
     return changed
 
 
-def parse_native_usage(agent, raw_text, *, tier=None):
+def parse_native_usage(agent, raw_text, *, tier=None, now=None):
     agent_id(agent, "agent")
     if tier is not None:
         tier = text(tier, "tier", label=True, max_length=64)
     if not isinstance(raw_text, str) or not raw_text.strip():
         raise AgRouteError("usage ingest: input text is empty")
+    now_dt = _now_utc(now) if now is not None else None
     patch = {}
-    recognized = _parse_json_events(raw_text, patch)
+    recognized = _parse_json_events(raw_text, patch, now_dt=now_dt)
     if not recognized:
         recognized = _parse_text_usage(raw_text, patch)
     if not recognized:
         raise AgRouteError(f"usage ingest: no recognizable native usage or rate-limit data found for '{agent}'")
-    if tier is not None:
+    if tier is not None and not patch.get("auth"):
         rejected_reset = patch.get("cooldown_until")
         scoped_rejected = patch.get("rate_limited") is True
         if not scoped_rejected:
@@ -1986,17 +2408,66 @@ def apply_usage_patch(config, agent, patch, *, source="ingest", now=None):
             canonical_plan = normalize_plan_slug(agent, patch["detected_plan"])
             if canonical_plan is not None:
                 current["detected_plan"] = canonical_plan
+        if isinstance(patch.get("auth"), dict) and patch["auth"].get("status"):
+            prev_auth = current.get("auth") or {}
+            superseded = list(prev_auth.get("superseded_events", []))
+            if prev_auth.get("event_id") and prev_auth["event_id"] not in superseded:
+                superseded.append(prev_auth["event_id"])
+            incoming_auth = dict(patch["auth"])
+            incoming_auth.setdefault("observed_at", format_timestamp(now_dt))
+            if superseded:
+                incoming_auth["superseded_events"] = list(
+                    dict.fromkeys(superseded + incoming_auth.get("superseded_events", []))
+                )[-256:]
+            current["auth"] = _validate_auth(incoming_auth, "auth")
+        else:
+            has_valid_counters_or_allowed = any(
+                win.get("used_pct") is not None or win.get("status") == "allowed"
+                for _, win in _patch_windows(patch)
+            )
+            should_clear_auth = (
+                source == "probe"
+                or (
+                    source in ("ingest", "set")
+                    and (
+                        has_valid_counters_or_allowed
+                        or patch.get("rate_limited") is False
+                        or _current_probe_evidence(patch, config.agents[agent], now_dt)
+                    )
+                )
+            )
+            if should_clear_auth and source == "ingest" and (current.get("auth") or {}).get("observed_at"):
+                patch_times = [
+                    win["observed_at"] for _, win in _patch_windows(patch) if win.get("observed_at")
+                ]
+                if patch.get("updated_at"):
+                    patch_times.append(patch["updated_at"])
+                if patch_times:
+                    newest_patch_ts = max(patch_times, key=parse_timestamp)
+                    if parse_timestamp(newest_patch_ts) < parse_timestamp(current["auth"]["observed_at"]):
+                        should_clear_auth = False
+            if should_clear_auth:
+                prev_auth = current.get("auth") or {}
+                superseded = list(prev_auth.get("superseded_events", []))
+                if prev_auth.get("event_id"):
+                    superseded.append(prev_auth["event_id"])
+                superseded.extend(patch.get("_superseded_auth_events", []))
+                superseded = list(dict.fromkeys(superseded))[-256:]
+                current["auth"] = {"superseded_events": superseded} if superseded else {}
+        has_quota_update = bool(list(_patch_windows(patch))) or "rate_limited" in patch or "cooldown_until" in patch
         # Snapshot time describes quota evidence; failures never refresh it.
         if source in ("ingest", "probe", "set"):
-            times = [win["observed_at"] for _, win in _patch_windows(current) if win.get("observed_at")]
-            if current["updated_at"]:
-                times.append(current["updated_at"])
-            if "rate_limited" in patch or "cooldown_until" in patch:
-                times.append(patch.get("updated_at") or format_timestamp(now_dt))
-            current["updated_at"] = max(times, key=parse_timestamp) if times else format_timestamp(now_dt)
+            if has_quota_update or "auth" not in patch:
+                times = [win["observed_at"] for _, win in _patch_windows(current) if win.get("observed_at")]
+                if current["updated_at"]:
+                    times.append(current["updated_at"])
+                if "rate_limited" in patch or "cooldown_until" in patch:
+                    times.append(patch.get("updated_at") or format_timestamp(now_dt))
+                current["updated_at"] = max(times, key=parse_timestamp) if times else format_timestamp(now_dt)
         else:
             current["updated_at"] = format_timestamp(now_dt)
-        current["source"] = source
+        if has_quota_update or "auth" not in patch or current["source"] is None:
+            current["source"] = source
         if source == "probe":
             current["probe"].update(attempted_at=format_timestamp(now_dt), succeeded_at=format_timestamp(now_dt),
                                     warnings=patch.get("warnings", []))
@@ -2102,19 +2573,38 @@ def _probe_codex_app_server(cwd: Path) -> dict | None:
     return None
 
 
-def _builtin_probe_patch(name: str, cwd: Path) -> dict | None:
+def _builtin_probe_patch(name: str, cwd: Path, *, now=None) -> dict | None:
     from .adapters import get_adapter
 
-    return get_adapter(name).probe_usage(cwd)
+    fn = get_adapter(name).probe_usage
+    if "now" in inspect.signature(fn).parameters:
+        return fn(cwd, now=now)
+    return fn(cwd)
 
 
 def _record_probe_failure(config, name, exc, now):
+    now_iso = format_timestamp(_now_utc(now))
     with _usage_locked(config):
         store = read_store(config)
-        probe = store["agents"][name].setdefault("probe", {})
-        probe.update(attempted_at=format_timestamp(_now_utc(now)), failed_at=format_timestamp(_now_utc(now)),
-                     error=str(exc)[:4096])
+        ag = store["agents"][name]
+        probe = ag.setdefault("probe", {})
+        probe.update(attempted_at=now_iso, failed_at=now_iso, error=str(exc)[:4096])
+        if isinstance(exc, AgRouteAuthError):
+            prev_auth = ag.get("auth") or {}
+            superseded = list(prev_auth.get("superseded_events", []))
+            if prev_auth.get("event_id") and prev_auth["event_id"] not in superseded:
+                superseded.append(prev_auth["event_id"])
+            auth_entry = {
+                "status": exc.auth_status,
+                "observed_at": now_iso,
+                "error": exc.auth_reason,
+            }
+            if superseded:
+                auth_entry["superseded_events"] = superseded[-256:]
+            ag["auth"] = auth_entry
         write_store(config, store)
+        if isinstance(exc, AgRouteAuthError):
+            _write_shared_probe_cache(name, ag)
 
 
 def probe_usage(config, agent=None, *, now=None):
@@ -2130,7 +2620,7 @@ def probe_usage(config, agent=None, *, now=None):
             observed = _discover_claude_live_patch() if name == "claude" else {}
             cmd = config.agents[name]["usage_probe_cmd"]
             if not cmd:
-                patch = _builtin_probe_patch(name, config.capture_root)
+                patch = _builtin_probe_patch(name, config.capture_root, now=now)
                 if not patch:
                     raise AgRouteError(f"usage probe: agents.{name}.usage_probe_cmd is not configured and no live telemetry found")
             else:
@@ -2141,7 +2631,14 @@ def probe_usage(config, agent=None, *, now=None):
                 combined = "\n".join(part for part in (proc.stdout, proc.stderr) if part).strip()
                 if proc.returncode != 0 and not combined:
                     raise AgRouteError(f"usage probe: command for '{name}' exited with status {proc.returncode} and no output")
-                patch = parse_native_usage(name, combined)
+                patch = parse_native_usage(name, combined, now=now)
+            if patch and isinstance(patch.get("auth"), dict) and patch["auth"].get("status"):
+                auth = patch["auth"]
+                raise AgRouteAuthError(
+                    f"usage probe: {auth['error']}",
+                    auth_status=auth["status"],
+                    auth_reason=auth["error"],
+                )
             if not _current_probe_evidence(patch, config.agents[name], _now_utc(now)):
                 raise AgRouteError(f"usage probe: no current recognized quota or availability evidence for '{name}'")
             if name == "claude":
@@ -2149,6 +2646,13 @@ def probe_usage(config, agent=None, *, now=None):
                     old = _get_window(observed, key)
                     if old.get("event_id") and win.get("event_id") != old["event_id"]:
                         win.setdefault("superseded_events", []).extend(old.get("superseded_events", []) + [old["event_id"]])
+                if isinstance(observed.get("auth"), dict):
+                    obs_auth = observed["auth"]
+                    superseded_auth = list(obs_auth.get("superseded_events", []))
+                    if obs_auth.get("event_id"):
+                        superseded_auth.append(obs_auth["event_id"])
+                    if superseded_auth:
+                        patch["_superseded_auth_events"] = list(dict.fromkeys(superseded_auth))
             results[name] = apply_usage_patch(config, name, patch, source="probe", now=now)
         except (AgRouteError, OSError, subprocess.TimeoutExpired) as exc:
             if not isinstance(exc, AgRouteError):

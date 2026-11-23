@@ -5,9 +5,10 @@ __version__ = "0.6.4"
 from .adapters import AgentAdapter, get_adapter, list_adapters, register_adapter
 from .config import load_config
 from .router import Router
-from .validation import AgRouteError
+from .validation import AgRouteAuthError, AgRouteError
 
 __all__ = [
+    "AgRouteAuthError",
     "AgRouteError",
     "AgentAdapter",
     "Router",

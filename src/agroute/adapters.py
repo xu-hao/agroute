@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import abc
 from copy import deepcopy
+from datetime import datetime, timezone
 from pathlib import Path
 import re
 import shutil
 import subprocess
 from typing import Any
 
-from .validation import AgRouteError
+from .validation import AgRouteAuthError, AgRouteError
 
 
 class AgentAdapter(abc.ABC):
@@ -629,9 +630,93 @@ class ClaudeAdapter(AgentAdapter):
                     return detected
         return None
 
-    def probe_usage(self, cwd: Path) -> dict | None:
+    def _probe_auth_status(self, cwd: Path, *, now_dt=None) -> dict | None:
+        if not shutil.which("claude"):
+            return None
+        try:
+            proc = subprocess.run(
+                ["claude", "auth", "status"],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        combined = "\n".join(part for part in (proc.stdout, proc.stderr) if part).strip()
+        if not combined:
+            return None
+        import json
+        from .usage import _claude_auth_status_from_obj, _extract_claude_detected_plan
+
+        obj = None
+        for candidate in [combined, *combined.splitlines()]:
+            brace = candidate.find("{")
+            if brace < 0:
+                continue
+            try:
+                parsed = json.loads(candidate[brace:].strip())
+            except ValueError:
+                continue
+            if isinstance(parsed, dict):
+                obj = parsed
+                break
+        if obj is None:
+            return None
+        if "loggedIn" not in obj and obj.get("authMethod") != "none":
+            return None
+
+        check_now = now_dt if now_dt is not None else datetime.now(timezone.utc)
+        auth_patch = _claude_auth_status_from_obj(obj, raw_text=combined, now_dt=check_now)
+        if auth_patch is not None:
+            status = auth_patch["status"]
+            error = auth_patch["error"]
+            if status == "logged_out":
+                try:
+                    text_proc = subprocess.run(
+                        ["claude", "auth", "status", "--text"],
+                        cwd=cwd,
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                        check=False,
+                    )
+                    text_out = "\n".join(
+                        part for part in (text_proc.stdout, text_proc.stderr) if part
+                    ).lower()
+                    if "expired" in text_out:
+                        status = "expired"
+                        error = "Claude login expired; run 'claude auth login' to sign in again"
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+            return {
+                "logged_in": False,
+                "status": status,
+                "error": error,
+            }
+
+        if obj.get("loggedIn") is True:
+            return {
+                "logged_in": True,
+                "auth_method": obj.get("authMethod"),
+                "detected_plan": _extract_claude_detected_plan(obj),
+            }
+        return None
+
+    def probe_usage(self, cwd: Path, *, now=None) -> dict | None:
         if not shutil.which("claude"):
             raise AgRouteError("usage probe: Claude CLI is not installed")
+        from .usage import _now_utc, parse_native_usage
+
+        now_dt = _now_utc(now) if now is not None else None
+        auth_info = self._probe_auth_status(cwd, now_dt=now_dt)
+        if auth_info is not None and auth_info.get("logged_in") is False:
+            raise AgRouteAuthError(
+                f"usage probe: {auth_info['error']}",
+                auth_status=auth_info["status"],
+                auth_reason=auth_info["error"],
+            )
         try:
             proc = subprocess.run(
                 ["claude", "-p", "/usage", "--output-format", "stream-json", "--verbose", "--no-session-persistence"],
@@ -639,13 +724,46 @@ class ClaudeAdapter(AgentAdapter):
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise AgRouteError(f"usage probe: Claude command failed: {exc}") from exc
-        from .usage import parse_native_usage
         combined = "\n".join(part for part in (proc.stdout, proc.stderr) if part).strip()
+        is_api_key = auth_info is not None and auth_info.get("auth_method") == "api_key"
         # Cached transcripts are useful evidence, but cannot turn a failed
         # current probe into a fresh successful availability report.
-        patch = parse_native_usage("claude", combined)
+        try:
+            patch = parse_native_usage("claude", combined, now=now)
+        except AgRouteError:
+            if (
+                is_api_key
+                and "usage_report" not in combined
+                and ("estimated cost:" in combined.lower() or "local_command" in combined)
+            ):
+                raise AgRouteError(
+                    "usage probe: Claude CLI is authenticated with an API key and returned no subscription quota windows"
+                )
+            raise
+        if (
+            is_api_key
+            and "usage_report" not in combined
+            and ("estimated cost:" in combined.lower() or "local_command" in combined)
+            and (
+                not patch
+                or patch.get("auth")
+                or not any(k in patch for k in ("session_5h", "weekly_7d", "tiers", "availability"))
+            )
+        ):
+            raise AgRouteError(
+                "usage probe: Claude CLI is authenticated with an API key and returned no subscription quota windows"
+            )
+        if patch and isinstance(patch.get("auth"), dict) and patch["auth"].get("status"):
+            auth = patch["auth"]
+            raise AgRouteAuthError(
+                f"usage probe: {auth['error']}",
+                auth_status=auth["status"],
+                auth_reason=auth["error"],
+            )
         if patch and patch.get("detected_plan") is None:
             detected = self.probe_plan_tier(cwd)
+            if detected is None and auth_info is not None:
+                detected = auth_info.get("detected_plan")
             if detected is not None:
                 patch["detected_plan"] = detected
         return patch

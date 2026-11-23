@@ -11,6 +11,23 @@ class AgRouteError(ValueError):
     """Invalid input or an unsuccessful routing operation, suitable for a CLI diagnostic."""
 
 
+class AgRouteAuthError(AgRouteError):
+    """Authentication expired or missing for an agent CLI."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        auth_status: str = "expired",
+        auth_reason: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        if auth_status not in ("expired", "logged_out"):
+            raise ValueError(f"unsupported auth_status {auth_status!r}")
+        self.auth_status = auth_status
+        self.auth_reason = auth_reason or message
+
+
 def table(value, where):
     if not isinstance(value, dict):
         raise AgRouteError(f"{where}: expected a table/object")
