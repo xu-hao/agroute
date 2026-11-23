@@ -86,8 +86,9 @@ Claude login has expired or is logged out:
   excludes `claude` with an actionable `claude auth login` reason, and still admits other healthy
   providers (failing closed only if no eligible providers remain).
 - `agr usage show` marks `claude` and all its models ineligible (`eligible_as_target = false`,
-  `eligible_as_host_native = false`), and `agr tui` displays `claude BLOCKED` in `#route-status`
-  and `#quotas`.
+  `eligible_as_host_native = false`), and `agr tui` displays `claude LOGIN` in `#route-status`
+  and `STATUS = LOGIN` in `#quotas` (reserving `BLOCKED` strictly for quota, rate-limit, and
+  credit-reserve exhaustion).
 - As soon as you run `claude auth login`, the very next routing call or TUI probe (`P`)
   re-probes immediately without waiting out the 30-minute staleness window, clears the `auth`
   block and `probe.failed_at`, and restores `detected_plan` and eligibility.

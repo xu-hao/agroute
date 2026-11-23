@@ -493,10 +493,10 @@ def test_usage_show_marks_claude_ineligible_after_stale_and_fresh_auth_failure(t
 
 
 @pytest.mark.asyncio
-async def test_tui_shows_claude_blocked_on_expired_login_and_recovers_on_probe(tmp_path, monkeypatch):
+async def test_tui_shows_claude_login_not_blocked_on_expired_login_and_recovers_on_probe(tmp_path, monkeypatch):
     pytest.importorskip("textual")
     from textual.widgets import DataTable, Static
-    from agroute.tui import build_app
+    from agroute.tui import _agent_quota_badge, build_app
 
     cfg = _write_multi_agent_config(tmp_path)
     _, state_path = _install_fake_claude(
@@ -507,13 +507,18 @@ async def test_tui_shows_claude_blocked_on_expired_login_and_recovers_on_probe(t
         auth_text_stdout="Login: Expired — log in again\n",
     )
     router = Router(cfg, project=tmp_path, state_directory=tmp_path / "tui-state", include_user_config=False)
-    router.usage_set("codex", session_used_pct=10.0, weekly_used_pct=10.0, now=T0)
+    # Set codex to 100% weekly so codex shows quota BLOCKED side-by-side with claude LOGIN and agy OK.
+    router.usage_set("codex", session_used_pct=10.0, weekly_used_pct=100.0, weekly_reset_at=RESET_7D, now=T0)
     router.usage_set("agy", session_used_pct=10.0, weekly_used_pct=10.0, now=T0)
     with pytest.raises(AgRouteError):
         router.usage_probe("claude", now=T0)
 
-    # Keep codex/agy healthy during P probe without invoking real codex/agy CLIs.
-    monkeypatch.setattr(get_adapter("codex"), "probe_usage", lambda cwd: {"session_5h": {"used_pct": 10.0, "reset_at": RESET_5H}})
+    snap_initial = router.usage_show(now=T0_PLUS_10S)["agents"]
+    assert _agent_quota_badge("codex", snap_initial["codex"]) == "codex lim"
+    assert _agent_quota_badge("claude", snap_initial["claude"]) == "claude login"
+
+    # Keep codex quota-blocked and agy healthy during P probe without invoking real codex/agy CLIs.
+    monkeypatch.setattr(get_adapter("codex"), "probe_usage", lambda cwd: {"weekly_7d": {"used_pct": 100.0, "reset_at": RESET_7D}})
     monkeypatch.setattr(get_adapter("agy"), "probe_usage", lambda cwd: {"session_5h": {"used_pct": 10.0, "reset_at": RESET_5H}})
 
     now_holder = [T0_PLUS_10S]
@@ -527,13 +532,26 @@ async def test_tui_shows_claude_blocked_on_expired_login_and_recovers_on_probe(t
         await pilot.pause()
 
         status_txt = str(app.query_one("#route-status", Static).render())
-        assert "claude BLOCKED" in status_txt
+        assert "codex BLOCKED" in status_txt
+        assert "claude LOGIN" in status_txt
+        assert "claude BLOCKED" not in status_txt
         assert "claude OK" not in status_txt
+        assert "agy OK" in status_txt
 
-        # Switch to QUOTAS view (`u`) and check #quotas rows and #route-detail for claude.
+        # Switch to QUOTAS view (`u`) and verify #quotas reserves BLOCKED for quota (codex) and shows LOGIN for claude.
         await pilot.press("u")
         await pilot.pause()
         quotas = app.query_one("#quotas", DataTable)
+        codex_rows = [
+            (str(r.key.value), quotas.get_row(r.key.value))
+            for r in quotas.ordered_rows
+            if str(r.key.value).startswith("codex:")
+        ]
+        assert codex_rows
+        for _key, cells in codex_rows:
+            assert cells[3].plain == "BLOCKED"
+            assert cells[3].style == "bold red"
+
         claude_rows = [
             (str(r.key.value), quotas.get_row(r.key.value))
             for r in quotas.ordered_rows
@@ -541,7 +559,8 @@ async def test_tui_shows_claude_blocked_on_expired_login_and_recovers_on_probe(t
         ]
         assert claude_rows
         for _key, cells in claude_rows:
-            assert cells[3].plain == "BLOCKED"
+            assert cells[3].plain == "LOGIN"
+            assert cells[3].style == "bold dark_orange"
 
         # Highlight the first claude row in #quotas and check #route-detail.
         first_claude_idx = next(
@@ -550,6 +569,7 @@ async def test_tui_shows_claude_blocked_on_expired_login_and_recovers_on_probe(t
         quotas.move_cursor(row=first_claude_idx)
         await pilot.pause()
         detail_txt = str(app.query_one("#route-detail", Static).render())
+        assert "status: LOGIN" in detail_txt
         assert "claude auth login" in detail_txt.lower()
 
         # Simulate re-login and press 'P' (manual probe).
@@ -576,6 +596,7 @@ async def test_tui_shows_claude_blocked_on_expired_login_and_recovers_on_probe(t
 
         status_after = str(app.query_one("#route-status", Static).render())
         assert "claude OK" in status_after
+        assert "claude LOGIN" not in status_after
         assert "claude BLOCKED" not in status_after
         for _key, cells in [
             (str(r.key.value), quotas.get_row(r.key.value))
@@ -585,6 +606,27 @@ async def test_tui_shows_claude_blocked_on_expired_login_and_recovers_on_probe(t
             assert cells[3].plain == "OK"
         detail_after = str(app.query_one("#route-detail", Static).render())
         assert "target_eligible: True (eligible)" in detail_after
+
+    # Verify precedence: disabled agent stays OFF and excluded quota group stays EXCLUDED even if auth expired.
+    from agroute.tui import _agent_status_summary, _build_quota_rows, _moment
+
+    disabled_claude = dict(snap_initial["claude"], enabled=False)
+    assert _agent_quota_badge("claude", disabled_claude) == "claude off"
+    assert "claude OFF" in _agent_status_summary({"codex": snap_initial["codex"], "claude": disabled_claude, "agy": snap_initial["agy"]})
+    snap_after = router.usage_show(now=T1)["agents"]["claude"]
+    excluded_claude = dict(
+        snap_after,
+        auth=snap_initial["claude"]["auth"],
+        quota_limits=dict(snap_after.get("quota_limits") or {}, exclude_quota_groups=["fable"]),
+    )
+    rows_excluded = _build_quota_rows(
+        {"agents": {"codex": snap_initial["codex"], "claude": excluded_claude, "agy": snap_initial["agy"]}},
+        now=_moment(T1),
+    )
+    fable_statuses = {r["status_label"] for r in rows_excluded if r["agent"] == "claude" and r["pool_name"] == "fable"}
+    shared_statuses = {r["status_label"] for r in rows_excluded if r["agent"] == "claude" and r["pool_name"] == "shared"}
+    assert fable_statuses == {"EXCLUDED"}
+    assert shared_statuses == {"LOGIN"}
 
 
 # ---------------------------------------------------------------------------

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Reserve `BLOCKED` (`bold red`) and the `lim` badge in `agr tui` strictly for quota,
+  rate-limit, and credit-reserve exhaustion, displaying `LOGIN` (`bold dark_orange`) in
+  `#route-status`, `#quotas` `STATUS`, and `#route-detail` (and `<agent> login` in quota
+  badges) when CLI authentication is expired or logged out. Issue #113 tracks separating TUI
+  login status from quota blocks.
+
 ## 0.6.5 (2026-11-23)
 
 - Release agroute 0.6.5 with synchronized package and plugin versions. Issue #111 tracks

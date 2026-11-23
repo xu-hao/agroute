@@ -491,11 +491,16 @@ def _calibration_for_view(info: dict, *, is_host: bool) -> dict | None:
 _QUOTA_STATUS_STYLES = {
     "OK": "bold green",
     "BLOCKED": "bold red",
+    "LOGIN": "bold dark_orange",
     "OFF": "dim",
     "EXCLUDED": "dim",
 }
 
 _ROLE_FILTER_CYCLE: tuple[str, ...] = ("all", "target", "host", "agy", "claude", "codex")
+
+
+def _auth_login_required(info: dict) -> bool:
+    return (info.get("auth") or {}).get("status") in ("expired", "logged_out")
 
 
 def _roles_for_agent(agent: str, role_filter: str) -> tuple[str, ...]:
@@ -514,6 +519,8 @@ def _agent_status_summary(agents_info: dict) -> str:
         info = agents_info.get(name) or {}
         if not info.get("enabled", True):
             st = "OFF"
+        elif _auth_login_required(info):
+            st = "LOGIN"
         elif info.get("eligible_as_target", True):
             st = "OK"
         else:
@@ -714,11 +721,11 @@ def _build_quota_rows(snapshot: dict, *, role_filter: str = "all", now: datetime
                     status_by_role[role] = "OFF"
                 elif pool_name in excluded_groups:
                     status_by_role[role] = "EXCLUDED"
+                elif _auth_login_required(info):
+                    status_by_role[role] = "LOGIN"
                 else:
-                    auth_status = (info.get("auth") or {}).get("status")
                     pool_blocked = bool(
-                        auth_status in ("expired", "logged_out")
-                        or info.get("rate_limited")
+                        info.get("rate_limited")
                         or info.get("cooldown_until")
                     )
                     if isinstance(pool_meta, dict) and _is_num(pool_meta.get("available_credit_usd")):
@@ -944,6 +951,8 @@ def _badge_credit_suffix(name: str, info: dict) -> str:
 def _agent_quota_badge(name: str, info: dict) -> str:
     if not info.get("enabled", True):
         return f"{name} off"
+    if _auth_login_required(info):
+        return f"{name} login"
     if not info.get("eligible_as_target", True):
         return f"{name} lim"
     s5 = (info.get("session_5h") or {}).get("used_pct")
@@ -1051,7 +1060,12 @@ def _usage_modal_body(snapshot: dict) -> str:
                 w_str = f"{mw7:.1f}%" if _is_num(mw7) else "—"
                 if _is_num(mw7_rem):
                     w_str += f" (~{_fmt_credit(mw7_rem)} left)"
-                elig_str = "eligible" if mq.get("eligible", True) else f"blocked ({mq.get('exclusion_reason')})"
+                if mq.get("eligible", True):
+                    elig_str = "eligible"
+                elif _auth_login_required(info):
+                    elig_str = f"login required ({mq.get('exclusion_reason')})"
+                else:
+                    elig_str = f"blocked ({mq.get('exclusion_reason')})"
                 cost_per_credit = mq.get("cost_per_credit")
                 budget_str = (
                     f" available_credit_usd=${budget['available_credit_usd']:.2f} credit"
@@ -1901,7 +1915,13 @@ def build_app(
                     + "\n  loud        observed execution required caught rework/retry"
                     + "\n  silent      observed execution had an escaped defect"
                     + "\n  interrupted observed execution stopped operationally (e.g. usage_limit)"
-                    + "\n  unscored    route closed as done in agroute without scoring howhard",
+                    + "\n  unscored    route closed as done in agroute without scoring howhard"
+                    + "\n\nQUOTA STATUS (#route-status / #quotas):"
+                    + "\n  OK          within configured quota and credit reserves"
+                    + "\n  BLOCKED     quota, rate-limit, or credit reserve exhausted"
+                    + "\n  LOGIN       CLI authentication expired or logged out"
+                    + "\n  EXCLUDED    quota pool excluded by configuration"
+                    + "\n  OFF         agent disabled in configuration",
                 )
             )
 
