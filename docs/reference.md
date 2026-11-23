@@ -585,7 +585,8 @@ delegates authentication detection to `claude` CLI output and session transcript
   failures mark `claude` (`eligible_as_target = false`, `eligible_as_host_native = false`) and
   all its models (`eligible = false`, `native_eligible = false`) ineligible even when stale
   counters were cleared to `null` or fresh counters exist. In `agr tui`, `#route-status` displays
-  `claude BLOCKED`, `#quotas` rows show `STATUS = BLOCKED`, `#route-detail` prints the
+  `claude LOGIN`, `#quotas` rows show `STATUS = LOGIN` (reserving `BLOCKED` strictly for quota,
+  rate-limit, and credit-reserve exhaustion), `#route-detail` prints `status: LOGIN` alongside the
   `claude auth login` reason, and pressing `P` after re-login restores `OK`. Passive transcript
   discovery scans recent `.jsonl` files under `$CLAUDE_CONFIG_DIR/projects/` for
   `authentication_failed` / `Failed to authenticate` entries; newer valid assistant turns,
@@ -714,14 +715,16 @@ linked raw observations use `linked_raw`.
   or `Tab`:
   - **`ROUTES` view (default)**: full-height `#routes` `DataTable` of active and historical model
     routes with `#route-detail` summary pane, `Enter` route detail modal, and concise per-agent
-    target status (`codex OK|BLOCKED|OFF · claude ... · agy ...`) in `#route-status`. `h` hides
+    target status (`codex OK|BLOCKED|LOGIN|OFF · claude ... · agy ...`) in `#route-status`. `h` hides
     terminal routes and observed raw rows. Filter pickers select repository (`p`), target agent
     (`a`), model (`m`), and route lifecycle or outcome (`s`); `?` explains keybindings and both
     status columns.
   - **`QUOTAS` view (`u` / `Tab`)**: full-height, cursor-navigable `#quotas` Textual `DataTable`
     with 15 columns (`POOL`, `PLAN`, `ROLE`, `STATUS`, `WIN`, `%USED`, `%RSV(nom)`, `%RSV(eff)`,
     `%LEFT`, `$CAP`, `$USED`, `$RSV(nom)`, `$RSV(eff)`, `$LEFT`, and `RESETS`) across multi-pool
-    quotas (`codex`, `claude/shared`, `claude/fable`, `agy/gemini`, `agy/3p`). Rows are ordered
+    quotas (`codex`, `claude/shared`, `claude/fable`, `agy/gemini`, `agy/3p`), where `STATUS`
+    distinguishes `OK`, `BLOCKED` (quota, rate-limit, or credit reserve exhausted), `LOGIN` (CLI
+    authentication expired or logged out), `EXCLUDED`, and `OFF`. Rows are ordered
     left-to-right across `POOL -> ROLE -> WIN`: by default (`role filter: all`), within each
     pool `#quotas` emits `target` rows (`5h`, then `7d`) followed by `host` rows (`5h`, then
     `7d`) without a `*` suffix on `POOL`; `H` cycles the role filter across `all`, `target`
