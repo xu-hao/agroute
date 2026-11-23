@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.6.7 (2026-11-23)
+
+- Detect ChatGPT Pro 100 from Codex `prolite` quota reports and show `pro-100` in the
+  quota dashboard. Issue #118 tracks Pro 100 detection and its subscription preset.
+
 ## 0.6.6 (2026-11-23)
 
 - Release agroute 0.6.6 with synchronized package, plugin, and quickstart installation
