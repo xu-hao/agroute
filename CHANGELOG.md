@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.6.6 (2026-11-23)
+
+- Release agroute 0.6.6 with synchronized package, plugin, and quickstart installation
+  versions. Issue #116 tracks the release metadata, distribution validation, PyPI publication,
+  and GitHub release.
+
 - Reserve `BLOCKED` (`bold red`) and the `lim` badge in `agr tui` strictly for quota,
   rate-limit, and credit-reserve exhaustion, displaying `LOGIN` (`bold dark_orange`) in
   `#route-status`, `#quotas` `STATUS`, and `#route-detail` (and `<agent> login` in quota
