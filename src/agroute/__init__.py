@@ -1,6 +1,6 @@
 """Configurable local agent router with native usage-limit filtering and howhard integration."""
 
-__version__ = "0.6.4"
+__version__ = "0.6.5"
 
 from .adapters import AgentAdapter, get_adapter, list_adapters, register_adapter
 from .config import load_config

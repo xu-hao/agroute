@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.6.5 (2026-11-23)
+
+- Release agroute 0.6.5 with synchronized package and plugin versions. Issue #111 tracks
+  the release metadata, distribution validation, and GitHub release.
+
 - Detect expired and logged-out Claude CLI authentication (`AgRouteAuthError`) via
   `claude auth status`, stream-json/text `usage ingest`, unauthenticated `/usage` output, and
   passive `$CLAUDE_CONFIG_DIR/projects/*.jsonl` transcript discovery without reading credential
