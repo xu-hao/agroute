@@ -53,16 +53,26 @@ agr inventory --host agy --name router
 
 ## 2. Select a route with `howhard`
 
-Use the calling-agent workflow (independent baseline forecast in a fresh stateless context,
-then memory retrieval and decision):
+Use the calling-agent workflow (`--llm off` is no longer needed on `context`, `retrieve`, or
+`decide` in `howhard` 5.0.0+). Pass `--auto-decide --seed 42` to `howhard context` so warm
+memory-free prototype routes complete in one step and return `decision_id` directly; otherwise
+follow `context`, `retrieve`, and `decide`, evaluating each `baseline_request` in a fresh
+stateless context only when non-null (when `baseline_request` is `null`, matched prototypes
+already cover that stage's cells, so omit `filter` or `forecasts` and reason only over active
+memories):
 
 ```sh
-howhard context task --text-file /tmp/task.txt --candidates /tmp/task-candidates.json --llm off --json > /tmp/task-context.json
-howhard retrieve REQUEST_ID --file /tmp/retrieval-queries.json --llm off --json
-howhard decide REQUEST_ID --file /tmp/forecasts.json --llm off --seed 42 --json > /tmp/task-decision.json
+howhard context task --text-file /tmp/task.txt --candidates /tmp/task-candidates.json --auto-decide --seed 42 --json > /tmp/task-context.json
+# If /tmp/task-context.json already contains "decision_id", use it directly as /tmp/task-decision.json.
+# Otherwise complete retrieval, Stage 1 filter, and Stage 2 forecast (evaluating baseline_request independently only when non-null):
+howhard retrieve REQUEST_ID --file /tmp/retrieval-queries.json --json
+howhard decide FILTER_REQUEST_ID --file /tmp/filter.json --json
+howhard decide FORECAST_REQUEST_ID --file /tmp/forecasts.json --seed 42 --json > /tmp/task-decision.json
 ```
 
-Or use `howhard pick` when a provider adapter is configured:
+Or use `howhard pick` (which completes warm memory-free prototype routes directly or uses a
+configured provider adapter otherwise), producing a `howhard-decision-v10` receipt (alongside
+`howhard-decision-v7`, `v8`, and `v9`):
 
 ```sh
 howhard pick task --text-file /tmp/task.txt --candidates /tmp/task-candidates.json --seed 42 --json > /tmp/task-decision.json

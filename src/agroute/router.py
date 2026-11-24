@@ -127,7 +127,9 @@ def _extract_session_cost(entry, *, allow_legacy_cost=False):
     return None
 
 
-_CREDIT_COST_SPLIT_FORMATS = frozenset({"howhard-decision-v7", "howhard-decision-v8", "howhard-decision-v9"})
+_CREDIT_COST_SPLIT_FORMATS = frozenset(
+    {"howhard-decision-v7", "howhard-decision-v8", "howhard-decision-v9", "howhard-decision-v10"}
+)
 
 
 def _decision_panels(decision, *, order=("cells", "candidates", "ranking")):

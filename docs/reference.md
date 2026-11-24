@@ -653,10 +653,11 @@ When that condition holds, `agr plan` selects the native host cell, sets
 `host_affinity_applied = true`, and sets `feedback.mode = "raw_native"` so the caller records
 `howhard observe ... --native` instead of attaching the unexecuted cross-agent receipt.
 
-For a `howhard-decision-v7`, `howhard-decision-v8`, or `howhard-decision-v9` panel (whether
-top-level `cells` from live `howhard decide` output, loaded by 64-hex `decision_id` from
-`howhard` 4.0 `<howhard_root>/payloads.sqlite3`, or nested under `selection.cells` in a
-saved receipt), `agr plan` reads `session_cost_usd` as
+For a `howhard-decision-v7`, `howhard-decision-v8`, `howhard-decision-v9`, or
+`howhard-decision-v10` panel (whether top-level `cells` from live `howhard context --auto-decide`,
+`howhard decide`, or `howhard pick` output, loaded by 64-hex `decision_id` from `howhard`
+4.0+ `<howhard_root>/payloads.sqlite3`, or nested under `selection.cells` in a saved
+receipt), `agr plan` reads `session_cost_usd` as
 cost, `needed_credit_usd` as quota credit, and `cap_met`/`needs_review` from top-level or
 `selection`. It validates `needed_credit_usd` against
 `credit_budget["available_credit_usd"]`, refusing an over-budget target with the separate

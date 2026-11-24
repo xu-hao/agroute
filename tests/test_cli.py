@@ -41,6 +41,31 @@ def test_python_module_version_remains_available(tmp_path):
     assert result.stdout.strip() == f"agr {__version__}"
 
 
+def test_cli_runs_without_textual_or_rich(tmp_path):
+    source_root = Path(__file__).parents[1]
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(source_root / "src")
+    ver = subprocess.run(
+        [sys.executable, "-S", "-m", "agroute", "--version"],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+    assert ver.returncode == 0, ver.stderr
+    assert ver.stdout.strip() == f"agr {__version__}"
+
+    tui_res = subprocess.run(
+        [sys.executable, "-S", "-m", "agroute", "tui", "--no-user-config", "--state-dir", str(tmp_path / "state")],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+    assert tui_res.returncode == 2, tui_res.stderr
+    assert "the route TUI needs Textual" in tui_res.stdout
+
+
 def test_cli_end_to_end_workflow(tmp_path, capsys):
     state_dir = tmp_path / "state"
     cands_out = tmp_path / "candidates.json"

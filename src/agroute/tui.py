@@ -10,13 +10,12 @@ import threading
 import time
 from typing import Any, Callable
 
-from rich.text import Text
-
 from . import frame
 from .routes import OBSERVED_STATUSES
 from .validation import AGENTS, AgRouteError
 
 try:
+    from rich.text import Text
     from textual.app import App, ComposeResult
     from textual.binding import Binding
     from textual.containers import Vertical, VerticalScroll
@@ -26,6 +25,7 @@ try:
     from textual.widgets.option_list import Option
 except ImportError:  # pragma: no cover - the package declares Textual; CLI guard is tested
     App = None
+    Text = None  # type: ignore[assignment,misc]
 
 
 _MISSING = (
@@ -198,8 +198,13 @@ def _row_matches_state(row: dict, needle: str) -> bool:
     )
 
 
-class _KeyedText(Text):
-    route_id: str = ""
+if Text is not None:
+
+    class _KeyedText(Text):
+        route_id: str = ""
+
+else:  # pragma: no cover - used only when Textual/Rich are absent
+    _KeyedText = None  # type: ignore[assignment,misc]
 
 
 def _compact_cell(value: object, style: str | None = None, *, route_id: str = "") -> Text:
@@ -211,7 +216,7 @@ def _compact_cell(value: object, style: str | None = None, *, route_id: str = ""
 
 def _cell_equal(a: object, b: object) -> bool:
     """Compare table cells by both content and formatting."""
-    if isinstance(a, Text) and isinstance(b, Text):
+    if Text is not None and isinstance(a, Text) and isinstance(b, Text):
         return (
             a.plain == b.plain
             and a.style == b.style
