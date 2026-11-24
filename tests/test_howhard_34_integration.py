@@ -246,7 +246,10 @@ effort = "high"
     assert s5_cal["matched_intervals"] == 1
 
 
-@pytest.mark.parametrize("fmt", ["howhard-decision-v7", "howhard-decision-v8", "howhard-decision-v9"])
+@pytest.mark.parametrize(
+    "fmt",
+    ["howhard-decision-v7", "howhard-decision-v8", "howhard-decision-v9", "howhard-decision-v10"],
+)
 def test_plan_recognizes_v7_v8_v9_credit_cost_split_formats(tmp_path, fmt):
     assert _decision_has_credit_cost_split({"format": fmt}) is True
     assert _decision_has_credit_cost_split({"format": "howhard-decision-v6"}) is False

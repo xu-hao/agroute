@@ -45,14 +45,16 @@ while `howhard` owns model/effort selection, execution accounting, and writable 
      observed quota deltas; current measurements use `needed_credit_usd` or `credit_usd`, while
      older `cost_usd` observations remain readable. Active budgets require priced candidates,
      and `exclude_quota_groups` (such as `["3p"]`) is honored.
-   - Pass `--candidates /tmp/TASK-candidates.json` to `howhard context` (followed by independent
-     baseline forecast, `retrieve`, and `decide`) or `howhard pick`, saving the decision JSON
-     to `/tmp/TASK-decision.json`.
+   - Pass `--candidates /tmp/TASK-candidates.json` to `howhard context ... --auto-decide --seed SEED`
+     (which completes warm memory-free prototype routes in one step when `decision_id` is returned;
+     otherwise follow `context`, `retrieve`, and `decide`, evaluating each `baseline_request` in an
+     independent stateless context only when non-null, without needing `--llm off`) or `howhard pick`,
+     saving the decision JSON to `/tmp/TASK-decision.json`.
    - Run `agr plan --host HOST --decision /tmp/TASK-decision.json --json` to resolve the
      decision into an `agroute-execution-plan-v1` payload (which also verifies live
      `needed_credit_usd <= credit_budget.available_credit_usd` when present). In a
-     `howhard-decision-v7`, `v8`, or `v9` result, compare quota credit with `needed_credit_usd`
-     and read `session_cost_usd` as cost.
+     `howhard-decision-v7`, `v8`, `v9`, or `v10` result, compare quota credit with
+     `needed_credit_usd` and read `session_cost_usd` as cost.
 4. Inspect `execution_mode`, `needs_review`, `invocation`, and `fallback` in the returned plan:
    - Honor `needs_review` before delegating or accepting silent-risk work.
    - When `execution_mode == "native"` (`target_agent == host_agent`), invoke the host's own

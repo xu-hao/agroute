@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.6.8 — 2026-11-24
+
+- Support `howhard` 5.0.0 by recognizing `howhard-decision-v10` receipts alongside `v7`, `v8`, and
+  `v9` in `_CREDIT_COST_SPLIT_FORMATS` (`router.plan()`), updating the `agroute` skill, workflow
+  reference, quickstart, and canonical documentation for `howhard context --auto-decide` warm
+  prototype routing and conditional `baseline_request` evaluation (`--llm off` no longer required on
+  `context`/`retrieve`/`decide`), guarding `rich.text.Text` alongside `textual` in `agroute.tui` so
+  non-TUI CLI entry points and `--no-deps` wheel verification succeed without `rich`, synchronizing
+  `AGENTS.md`, and bumping the package and native plugin manifests to `0.6.8` (#121).
 
 - Stack `host_reserve_pct` on top of the base percentage cutoff reserve (`100% - eff_lim`) in
   calibrated credit budgets (`resolve_calibrated_quota_credit`, `build_agent_calibration_summary`,

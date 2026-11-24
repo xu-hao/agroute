@@ -1,6 +1,6 @@
 # Quickstart
 
-You need Python 3.11+, a POSIX shell, Git, `howhard` 4.0.0+ and a current Codex,
+You need Python 3.11+, a POSIX shell, Git, `howhard` 5.0.0+ and a current Codex,
 Claude Code or Antigravity client with native plugin support.
 
 ## Install the backend
@@ -10,12 +10,12 @@ Run these commands from the project where you want to use `agroute`:
 ```sh
 python3 -m venv .venv-agroute
 . .venv-agroute/bin/activate
-python -m pip install "agroute==0.6.7" "howhard>=4.0.0"
+python -m pip install "agroute==0.6.8" "howhard>=5.0.0"
 agr --version
 ```
 
-Expect `agr 0.6.7`. The Python package is available on
-[PyPI](https://pypi.org/project/agroute/0.6.7/).
+Expect `agr 0.6.8`. The Python package is available on
+[PyPI](https://pypi.org/project/agroute/0.6.8/).
 
 Keep this environment active and start your coding agent from the same shell so it
 can find `agr` and `howhard`. If an existing GUI session cannot find it, configure
@@ -79,8 +79,9 @@ skills:
 1. Inspect or refresh live agent quota state with `agr usage`.
 2. Emit eligible provider-qualified candidates for this host with
    `agr candidates --host <codex|claude|agy> --output /tmp/TASK-candidates.json --json`.
-3. Select a route with `howhard` (`context`/`retrieve`/`decide` with an independent
-   stateless baseline forecast, or `pick`), then resolve the execution plan with
+3. Select a route with `howhard` (`context --auto-decide`, or `context`/`retrieve`/`decide`
+   evaluating `baseline_request` in an independent stateless context only when non-null, or
+   `pick`), then resolve the execution plan with
    `agr plan --host <codex|claude|agy> --decision /tmp/TASK-decision.json --json`.
 4. Honor `needs_review`. Execute native plans (`target_agent == host_agent`) with the
    host's native subagent tool and cross-agent plans (`target_agent != host_agent`) with
@@ -106,8 +107,8 @@ again. The {ref}`price resolution contract <calling-agent-price-resolution>` def
 priced, alias and unlisted responses.
 
 ```sh
-howhard context task --text-file /tmp/task.txt --candidates /tmp/task-candidates.json --json > /tmp/task-context.json
-# Complete the returned independent baseline/reader stages with howhard decide:
+howhard context task --text-file /tmp/task.txt --candidates /tmp/task-candidates.json --auto-decide --seed 42 --json > /tmp/task-context.json
+# If decision_id is returned directly, pass /tmp/task-context.json; otherwise complete any non-null baseline_request and reader stages with howhard retrieve/decide:
 agr plan --host agy --decision /tmp/task-decision.json --prompt-file /tmp/task.txt --json
 ```
 

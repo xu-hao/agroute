@@ -26,20 +26,20 @@ writable semantic memory remain in `howhard`.
 
 ## Quickstart
 
-You need Python 3.11+, a POSIX shell, Git, [`howhard` 4.0.0+](https://pypi.org/project/howhard/4.0.0/)
+You need Python 3.11+, a POSIX shell, Git, [`howhard` 5.0.0+](https://pypi.org/project/howhard/5.0.0/)
 and a current Codex, Claude Code or Antigravity client with native plugin support.
 
-Install the Python backend from [PyPI](https://pypi.org/project/agroute/0.6.7/) in your
+Install the Python backend from [PyPI](https://pypi.org/project/agroute/0.6.8/) in your
 project directory:
 
 ```sh
 python3 -m venv .venv-agroute
 . .venv-agroute/bin/activate
-python -m pip install "agroute==0.6.7" "howhard>=4.0.0"
+python -m pip install "agroute==0.6.8" "howhard>=5.0.0"
 agr --version
 ```
 
-Expect `agr 0.6.7`. Keep the environment active and start your agent from the same
+Expect `agr 0.6.8`. Keep the environment active and start your agent from the same
 shell so it can find `agr` and `howhard`. An existing GUI session may need the
 absolute path to `.venv-agroute/bin/agr` in your project.
 
@@ -92,8 +92,9 @@ skills:
    If `price_request` is non-null, look up official first-party provider pricing (or classify
    internal harness models as `"alias"` or `"unlisted"`), run
    `agr prices resolve --file /tmp/TASK-prices.json --json`, and re-emit candidates once.
-3. Select a route with `howhard` (`context`/`retrieve`/`decide` with an independent
-   stateless baseline forecast, or `pick`), then resolve the execution plan with
+3. Select a route with `howhard` (`context --auto-decide`, or `context`/`retrieve`/`decide`
+   evaluating `baseline_request` in an independent stateless context only when non-null, or
+   `pick`), then resolve the execution plan with
    `agr plan --host <codex|claude|agy> --decision /tmp/TASK-decision.json --json`.
 4. Honor `needs_review`. Execute native plans (`target_agent == host_agent`) with the
    host's native subagent tool and cross-agent plans (`target_agent != host_agent`) with

@@ -29,8 +29,9 @@ skills:
 1. Inspect or refresh live agent quota state with `agr usage`.
 2. Emit eligible provider-qualified candidates for this host with
    `agr candidates --host <codex|claude|agy> --output /tmp/TASK-candidates.json --json`.
-3. Select a route with `howhard` (`context`/`retrieve`/`decide` with an independent
-   stateless baseline forecast, or `pick`), then resolve the execution plan with
+3. Select a route with `howhard` (`context --auto-decide`, or `context`/`retrieve`/`decide`
+   evaluating `baseline_request` in an independent stateless context only when non-null, or
+   `pick`), then resolve the execution plan with
    `agr plan --host <codex|claude|agy> --decision /tmp/TASK-decision.json --json`.
 4. Honor `needs_review`. Execute native plans (`target_agent == host_agent`) with the
    host's native subagent tool and cross-agent plans (`target_agent != host_agent`) with
