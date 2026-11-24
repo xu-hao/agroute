@@ -1392,7 +1392,7 @@ def resolve_model_quota(
         quota_group,
         s5,
         w7,
-        reserve_pct=reserve,
+        is_host=is_host,
         reserve_credit_usd=reserve_credit,
         calibration_store=calibration_store,
         quota_pools=quota_pools,

@@ -117,7 +117,7 @@ def test_empirical_bayes_shrinkage_updates_5h_and_weekly_pools_and_surfaces_meta
 
     cfg = repo / "agroute.toml"
     cfg.write_text(
-        '[agents.agy]\nplan = "pro-20"\nhost_reserve_pct = 0.0\n',
+        '[agents.agy]\nplan = "pro-20"\nhost_reserve_pct = 5.0\n',
         encoding="utf-8",
     )
     router = Router(cfg, project=repo, state_directory=state_dir, include_user_config=False)
@@ -137,7 +137,8 @@ def test_empirical_bayes_shrinkage_updates_5h_and_weekly_pools_and_surfaces_meta
     assert m0["credit_calibration"]["session_5h"]["prior_credit_usd"] == pytest.approx(32.0)
     assert m0["credit_calibration"]["session_5h"]["calibrated_credit_usd"] == pytest.approx(32.0)
     assert m0["credit_calibration"]["session_5h"]["effective_sample_windows"] == pytest.approx(0.0)
-    assert m0["credit_budget"]["session_5h_remaining_credit_usd"] == pytest.approx(0.90 * 32.0)
+    # cli surface (target): 10% used + 10% base session cutoff reserve -> 80% of 32.0 = 25.6
+    assert m0["credit_budget"]["session_5h_remaining_credit_usd"] == pytest.approx(0.80 * 32.0)
 
     # Step 2: Record completed howhard execution (3.00 USD quota credit) at 12:10, then probe at 12:15
     # with +5.0% 5h usage (`delta_frac = 0.05`) and +1.0% weekly usage (`delta_frac = 0.01`),
@@ -169,15 +170,19 @@ def test_empirical_bayes_shrinkage_updates_5h_and_weekly_pools_and_surfaces_meta
     # weekly: (0.20 * 135.0 + 3.00) / (0.20 + 0.01) = 30.0 / 0.21 = 142.857143
     expected_5h_total = 37.6
     expected_7d_total = round(30.0 / 0.21, 6)
-    expected_5h_rem = round(0.85 * expected_5h_total, 6)
-    expected_7d_rem = round(0.79 * expected_7d_total, 6)
+    # Target (base 10% on 5h, 5% on 7d): 100 - 15 - 10 = 75% on 5h, 100 - 21 - 5 = 74% on 7d
+    expected_5h_rem_target = round(0.75 * expected_5h_total, 6)
+    expected_7d_rem_target = round(0.74 * expected_7d_total, 6)
+    # Host (base + 5% host = 15% on 5h, 10% on 7d): 100 - 15 - 15 = 70% on 5h, 100 - 21 - 10 = 69% on 7d
+    expected_5h_rem_host = round(0.70 * expected_5h_total, 6)
+    expected_7d_rem_host = round(0.69 * expected_7d_total, 6)
 
     cal_disk = json.loads((state_dir / "credit_calibration.json").read_text(encoding="utf-8"))
     assert cal_disk["format"] == "agroute-credit-calibration-v2"
     assert cal_disk["pools"]["agy:pro-20:gemini:session_5h"]["matched_intervals"] == 1
     assert cal_disk["pools"]["agy:pro-20:gemini:weekly_7d"]["matched_intervals"] == 1
 
-    # Verify `usage show` surfaces both pool summary and per-model calibrated totals
+    # Verify `usage show` surfaces both target/host pool summaries and per-model calibrated totals
     u1 = router.usage_show(agent="agy", now=t1)["agents"]["agy"]
     assert u1["credit_calibration"]["gemini"]["session_5h"]["calibrated_credit_usd"] == pytest.approx(
         expected_5h_total
@@ -185,23 +190,35 @@ def test_empirical_bayes_shrinkage_updates_5h_and_weekly_pools_and_surfaces_meta
     assert u1["credit_calibration"]["gemini"]["weekly_7d"]["calibrated_credit_usd"] == pytest.approx(
         expected_7d_total
     )
+    assert u1["credit_calibration"]["gemini"]["session_5h"]["reserve_credit_usd"] == pytest.approx(
+        0.10 * expected_5h_total
+    )
+    assert u1["credit_calibration"]["gemini"]["weekly_7d"]["reserve_credit_usd"] == pytest.approx(
+        round(0.05 * expected_7d_total, 6)
+    )
+    assert u1["host_credit_calibration"]["gemini"]["session_5h"]["reserve_credit_usd"] == pytest.approx(
+        0.15 * expected_5h_total
+    )
+    assert u1["host_credit_calibration"]["gemini"]["weekly_7d"]["reserve_credit_usd"] == pytest.approx(
+        round(0.10 * expected_7d_total, 6)
+    )
     m1 = u1["models"]["gemini-4-hydrogen-high"]
     assert m1["credit_budget"] == {
-        "available_credit_usd": min(expected_5h_rem, expected_7d_rem),
-        "session_5h_remaining_credit_usd": expected_5h_rem,
-        "weekly_7d_remaining_credit_usd": expected_7d_rem,
+        "available_credit_usd": min(expected_5h_rem_target, expected_7d_rem_target),
+        "session_5h_remaining_credit_usd": expected_5h_rem_target,
+        "weekly_7d_remaining_credit_usd": expected_7d_rem_target,
     }
 
     # Verify `candidates --json` and `inventory` (JSON + TOML) keep strict howhard cell keys
-    # while exposing `credit_calibration` at the envelope / comment level
+    # while exposing stacked host `credit_calibration` (`10%+5%=15%` 5h, `5%+5%=10%` 7d) at envelope level
     cands_res = router.candidates("agy", include_agents=["agy"], now=t1)
     assert cands_res["credit_calibration"]["agy"]["gemini"]["session_5h"]["matched_intervals"] == 1
     for cell in cands_res["candidates"]:
         assert set(cell) <= HOWHARD_CELL_KEYS
         assert set(cell["credit_budget"]) <= HOWHARD_BUDGET_KEYS
     hyd_cell = next(c for c in cands_res["candidates"] if c["model"] == "agy/gemini-4-hydrogen-high")
-    assert hyd_cell["credit_budget"]["session_5h_remaining_credit_usd"] == pytest.approx(expected_5h_rem)
-    assert hyd_cell["credit_budget"]["weekly_7d_remaining_credit_usd"] == pytest.approx(expected_7d_rem)
+    assert hyd_cell["credit_budget"]["session_5h_remaining_credit_usd"] == pytest.approx(expected_5h_rem_host)
+    assert hyd_cell["credit_budget"]["weekly_7d_remaining_credit_usd"] == pytest.approx(expected_7d_rem_host)
 
     assert (
         main(

@@ -176,20 +176,34 @@ session, the weekly window and each per-model tier.
 ```toml
 [agents.claude]
 plan = "max-20x"
+max_session_used_pct = 90.0
+max_weekly_used_pct = 95.0
 host_reserve_pct = 5.0
-host_reserve_credit_usd = 20.0
-min_remaining_credit_usd = 5.0
+host_reserve_credit_usd = 25.0
+min_remaining_credit_usd = 10.0
 ```
 
-The credit reserve is 25 USD while Claude is the routing root and 5 USD while another agent
-routes to Claude. Each value is a non-negative finite number.
+Both dollar and percentage reserves stack the routing root's host reserve on top of the target
+base reserve (`base + host`), while reconciling percentage against dollar reserves per window by
+taking the stricter of the two rather than adding percentage and dollar reserves together:
 
-On the routing root, `host_reserve_pct` describes the same headroom as a share of each window,
-so the stricter reserve applies, never the sum: each window holds back the larger of
-`host_reserve_pct` of its ceiling and the credit reserve. Here the 360 USD session holds back
-25 USD rather than 18 USD, and the 900 USD week holds back 45 USD rather than 25 USD. The
-`max_session_used_pct`, `max_weekly_used_pct` and `max_tier_used_pct` limits stay separate
-exclusion thresholds, so a route must also stay below them.
+- **While another agent routes to Claude (`target`)**: the nominal dollar reserve is `10 USD`
+  (`min_remaining_credit_usd`), and the nominal percentage cutoff reserve `100% - eff_lim` is
+  `10%` on the 360 USD session (`36 USD`) and `5%` on the 900 USD week (`45 USD`). Each window
+  holds back the larger reserve: `36 USD` on the session and `45 USD` on the week (whereas on a
+  smaller plan such as `plus-20` with a 20 USD session and 50 USD week, a `10 USD` dollar reserve
+  exceeds `10% = 2 USD` and `5% = 2.50 USD` and holds back `10 USD` in both windows).
+- **While Claude is the routing root (`--host claude`)**: the nominal dollar reserve stacks to
+  `10 + 25 = 35 USD`, and `host_reserve_pct` lowers `target_base_lim` by `5%` before applying
+  `max_tier_used_pct`, stacking the nominal percentage reserve to `15%` (`10% + 5%`) on the
+  360 USD session (`54 USD`) and `10%` (`5% + 5%`) on the 900 USD week (`90 USD`). Each window
+  holds back `max(pct_rsv_nom * ceiling, usd_rsv_nom)`: `54 USD` on the session and `90 USD` on
+  the week, matching `$RSV(eff)` and `$LEFT` in `agr tui`.
+
+Each credit reserve value is a non-negative finite number. The `max_session_used_pct`,
+`max_weekly_used_pct` (each lowered by `host_reserve_pct` on the routing root) and
+`max_tier_used_pct` limits also stay active as percentage exclusion thresholds, including on
+windows whose credit ceiling is unknown.
 
 `credit_calibration` reports the amount held back in each window as `reserve_credit_usd`.
 `credit_budget` keeps only the fields `howhard` accepts, and its remaining amounts already

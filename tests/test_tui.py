@@ -1047,3 +1047,103 @@ effort = "high"
         assert "7d weekly used:  40.0% (~$20.00/$50.00 credit, ~$25.00 left, $5.00 reserve)" in usage_body
         assert "Estimated credit pools (plan: plus-20):" in usage_body
         assert "codex/gpt-6.2-sol [shared]: 5h=25.0% (~$10.00 left) 7d=40.0% (~$25.00 left)" in usage_body
+
+
+@pytest.mark.asyncio
+async def test_tui_calibration_for_view_aligns_target_and_host_percentage_reserves(tmp_path):
+    """Worked example (#115): _calibration_for_view aligns target (base) and host (base + host) with $RSV(eff) and $LEFT."""
+    from agroute.tui import _calibration_for_view
+
+    # 1. Partial snapshot without `host_credit_calibration`: both is_host=False and is_host=True
+    #    reconcile `pct_rsv_nom` (5% on target -> $45, 10% on host -> $90) against `quota_limits`.
+    partial_info = {
+        "enabled": True,
+        "effective_plan": "max-20x",
+        "weekly_7d": {"used_pct": 92.0, "reset_at": "2026-11-27T05:00:00Z"},
+        "quota_limits": {
+            "max_session_used_pct": 95.0,
+            "max_weekly_used_pct": 95.0,
+            "max_tier_used_pct": 95.0,
+            "host_reserve_pct": 5.0,
+            "min_remaining_credit_usd": 10.0,
+            "host_reserve_credit_usd": 25.0,
+        },
+        "credit_calibration": {
+            "shared": {
+                "plan": "max-20x",
+                "available_credit_usd": 62.0,
+                "weekly_7d": {
+                    "pool_group": "shared",
+                    "calibrated_credit_usd": 900.0,
+                    "used_pct": 92.0,
+                    "remaining_credit_usd": 62.0,
+                    "reserve_credit_usd": 10.0,
+                },
+            }
+        },
+    }
+    cal_target = _calibration_for_view(partial_info, is_host=False)
+    cal_host = _calibration_for_view(partial_info, is_host=True)
+    assert cal_target["shared"]["weekly_7d"]["reserve_credit_usd"] == 45.0
+    assert cal_target["shared"]["weekly_7d"]["remaining_credit_usd"] == 27.0
+    assert cal_target["shared"]["available_credit_usd"] == 27.0
+    assert cal_host["shared"]["weekly_7d"]["reserve_credit_usd"] == 90.0
+    assert cal_host["shared"]["weekly_7d"]["remaining_credit_usd"] == 0.0
+    assert cal_host["shared"]["available_credit_usd"] == 0.0
+
+    # 2. End-to-end Router.snapshot() renders matching $RSV(eff), $LEFT, STATUS, and #route-detail
+    #    for target ($45 reserve -> $27 left, OK) vs host ($90 reserve -> $0 left, BLOCKED).
+    cfg = tmp_path / "agroute.toml"
+    cfg.write_text(
+        """
+[agents.claude]
+plan = "max-20x"
+max_session_used_pct = 95.0
+max_weekly_used_pct = 95.0
+host_reserve_pct = 5.0
+min_remaining_credit_usd = 10.0
+host_reserve_credit_usd = 25.0
+cli_candidates = [{ model = "claude-sonnet-4-6", effort = "high" }]
+native_candidates = [{ model = "claude-sonnet-4-6", effort = "high" }]
+""",
+        encoding="utf-8",
+    )
+    router = Router(cfg, project=tmp_path, state_directory=tmp_path / "state", include_user_config=False)
+    router.usage_set(
+        "claude",
+        session_used_pct=10.0,
+        weekly_used_pct=92.0,
+        now="2026-11-22T06:00:00Z",
+    )
+    app = build_app(lambda: router.snapshot(all_repos=False, now="2026-11-22T06:00:30Z"), refresh_interval=60.0)
+    async with app.run_test(size=(160, 34)) as pilot:
+        await pilot.pause()
+        await pilot.press("u")
+        await pilot.pause()
+        quotas_table = app.query_one("#quotas", DataTable)
+        all_keys = [str(r.key.value) for r in quotas_table.ordered_rows]
+
+        row_t = [c.plain for c in quotas_table.get_row("claude:shared:7d:target")]
+        row_h = [c.plain for c in quotas_table.get_row("claude:shared:7d:host")]
+        assert row_t[:14] == [
+            "claude/shared", "max-20x", "target", "OK", "7d",
+            "92%", "5%", "5%", "3%",
+            "$900", "$828", "$10", "$45", "$27",
+        ]
+        assert row_h[:14] == [
+            "claude/shared", "max-20x", "host", "BLOCKED", "7d",
+            "92%", "10%", "10%", "0%",
+            "$900", "$828", "$35", "$90", "$0",
+        ]
+
+        quotas_table.move_cursor(row=all_keys.index("claude:shared:7d:target"))
+        await pilot.pause()
+        detail_t = str(app.query_one("#route-detail", Static).render())
+        assert "reserves (7d target): nominal 5% / $10.00 -> effective 5% / $45.00" in detail_t
+        assert "7d weekly:  92% (~$828.00/$900.00 credit, ~$27.00 left, $45.00 reserve)" in detail_t
+
+        quotas_table.move_cursor(row=all_keys.index("claude:shared:7d:host"))
+        await pilot.pause()
+        detail_h = str(app.query_one("#route-detail", Static).render())
+        assert "reserves (7d host): nominal 10% (5%+5% host) / $35.00 ($10.00+$25.00 host) -> effective 10% / $90.00" in detail_h
+        assert "7d weekly:  92% (~$828.00/$900.00 credit, ~$0.00 left, $90.00 reserve)" in detail_h

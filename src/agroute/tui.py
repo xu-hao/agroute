@@ -447,19 +447,22 @@ def _ordered_pool_entries(name: str, cal: dict | None) -> list[tuple[str, dict |
 
 
 def _calibration_for_view(info: dict, *, is_host: bool) -> dict | None:
-    if is_host and isinstance(info.get("host_credit_calibration"), dict) and info["host_credit_calibration"]:
-        return info["host_credit_calibration"]
-    cal = info.get("credit_calibration")
+    cal = (
+        info.get("host_credit_calibration")
+        if is_host and isinstance(info.get("host_credit_calibration"), dict) and info["host_credit_calibration"]
+        else info.get("credit_calibration")
+    )
     if not isinstance(cal, dict) or not cal:
         return None
-    if not is_host:
-        return cal
     limits = info.get("quota_limits") or {}
+    max_session = float(limits.get("max_session_used_pct", 90.0))
+    max_weekly = float(limits.get("max_weekly_used_pct", 95.0))
+    max_tier = float(limits.get("max_tier_used_pct", 95.0))
     host_rsv_pct = float(limits.get("host_reserve_pct", 0.0))
-    host_rsv_usd = float(limits.get("host_reserve_credit_usd", 0.0))
-    if host_rsv_pct <= 0.0 and host_rsv_usd <= 0.0:
-        return cal
+    has_limits_usd = ("min_remaining_credit_usd" in limits) or ("host_reserve_credit_usd" in limits)
     min_rem_usd = float(limits.get("min_remaining_credit_usd", 0.0))
+    host_rsv_usd = float(limits.get("host_reserve_credit_usd", 0.0)) if is_host else 0.0
+
     adjusted: dict[str, dict] = {}
     for pool_name, pool_meta in cal.items():
         if not isinstance(pool_meta, dict):
@@ -471,11 +474,27 @@ def _calibration_for_view(info: dict, *, is_host: bool) -> dict | None:
             if not isinstance(w_meta, dict):
                 continue
             w_copy = dict(w_meta)
+            eff_pool = str(w_meta.get("pool_group") or pool_name)
+            target_base_lim = max_session if win_key == "session_5h" else max_weekly
+            if is_host:
+                host_base_lim = max(0.0, target_base_lim - host_rsv_pct)
+                eff_lim = host_base_lim if eff_pool == "shared" else min(max_tier, host_base_lim)
+            else:
+                eff_lim = target_base_lim if eff_pool == "shared" else min(max_tier, target_base_lim)
+            pct_rsv_nom = max(0.0, 100.0 - eff_lim)
+
+            if has_limits_usd:
+                usd_rsv_nom = min_rem_usd + host_rsv_usd
+            elif _is_num(w_meta.get("reserve_credit_usd")):
+                usd_rsv_nom = float(w_meta["reserve_credit_usd"])
+            else:
+                usd_rsv_nom = 0.0
+
             ceiling = w_meta.get("calibrated_credit_usd")
             used_pct = w_meta.get("used_pct")
             reserved_usd = float(w_meta.get("reserved_credit_usd") or 0.0)
             if _is_num(ceiling):
-                held_back = max(float(ceiling) * host_rsv_pct / 100.0, min_rem_usd + host_rsv_usd)
+                held_back = max(float(ceiling) * pct_rsv_nom / 100.0, usd_rsv_nom)
                 w_copy["reserve_credit_usd"] = round(held_back, 6)
                 if _is_num(used_pct):
                     rem = max(0.0, (100.0 - float(used_pct)) / 100.0 * float(ceiling) - held_back - reserved_usd)

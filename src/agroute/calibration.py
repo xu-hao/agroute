@@ -874,6 +874,28 @@ def credit_reserve_usd(agent_cfg: dict, *, is_host: bool) -> float:
     return host_reserve + agent_cfg["min_remaining_credit_usd"]
 
 
+def nominal_reserve_pct(
+    agent_cfg: dict,
+    pool_group: str,
+    window: str,
+    *,
+    is_host: bool = False,
+) -> float:
+    """Nominal percentage cutoff reserve `max(0.0, 100.0 - eff_lim)` for `(pool_group, window, is_host)`."""
+    max_session = float(agent_cfg.get("max_session_used_pct", 90.0))
+    max_weekly = float(agent_cfg.get("max_weekly_used_pct", 95.0))
+    max_tier = float(agent_cfg.get("max_tier_used_pct", 95.0))
+    host_reserve_pct = float(agent_cfg.get("host_reserve_pct", 0.0))
+
+    target_base_lim = max_session if window == "session_5h" else max_weekly
+    if is_host:
+        host_base_lim = max(0.0, target_base_lim - host_reserve_pct)
+        eff_lim = host_base_lim if pool_group == "shared" else min(max_tier, host_base_lim)
+    else:
+        eff_lim = target_base_lim if pool_group == "shared" else min(max_tier, target_base_lim)
+    return max(0.0, 100.0 - eff_lim)
+
+
 def resolve_calibrated_quota_credit(
     agent_name: str,
     agent_cfg: dict,
@@ -882,7 +904,8 @@ def resolve_calibrated_quota_credit(
     s5_win: dict,
     w7_win: dict,
     *,
-    reserve_pct: float = 0.0,
+    is_host: bool = False,
+    reserve_pct: float | None = None,
     reserve_credit_usd: float = 0.0,
     calibration_store: dict | None = None,
     quota_pools: list[tuple[str, dict, dict]] | None = None,
@@ -890,8 +913,9 @@ def resolve_calibrated_quota_credit(
 ) -> tuple[dict | None, dict | None, list[tuple[str, str]]]:
     """Return `(credit_budget, credit_calibration_meta, unknown_ceiling_windows)` for `(agent_name, quota_group)`.
 
-    Every consumed window with a known credit ceiling holds back the larger of `reserve_pct`
-    percent of that ceiling and `reserve_credit_usd` USD, never their sum.
+    Every consumed window with a known credit ceiling holds back the larger of its nominal
+    percentage cutoff reserve (or an explicit `reserve_pct` override) of that ceiling and
+    `reserve_credit_usd` USD, never their sum.
     `unknown_ceiling_windows` lists the consumed `(pool_group, window)` pairs without a known
     ceiling, where no credit reserve can apply.
     """
@@ -940,8 +964,13 @@ def resolve_calibrated_quota_credit(
                 unknown_ceiling_windows.append((pool_group, window))
                 continue
 
+            win_reserve_pct = (
+                float(reserve_pct)
+                if reserve_pct is not None
+                else nominal_reserve_pct(agent_cfg, pool_group, window, is_host=is_host)
+            )
             # The stricter reserve applies: percentage and credit reserves never add up.
-            held_back_usd = max(total_credit_usd * reserve_pct / 100.0, reserve_credit_usd)
+            held_back_usd = max(total_credit_usd * win_reserve_pct / 100.0, reserve_credit_usd)
             reserved_usd = round(
                 max(0.0, float((reserved_credit_by_pool or {}).get((pool_group, window), 0.0))), 6
             )
@@ -1021,10 +1050,9 @@ def build_agent_calibration_summary(
     reserved_credit_by_pool: dict[tuple[str, str], float] | None = None,
 ) -> dict[str, dict]:
     """Build per-`quota_group` calibration summary for `agent_name`."""
-    effective_plan, preset_credit, manual_credit, _ = resolve_plan_credit_sources(
+    _, preset_credit, manual_credit, _ = resolve_plan_credit_sources(
         agent_name, agent_cfg, effective_state.get("detected_plan")
     )
-    reserve = float(agent_cfg.get("host_reserve_pct", 0.0)) if is_host else 0.0
     reserve_credit = credit_reserve_usd(agent_cfg, is_host=is_host)
 
     groups: list[str] = []
@@ -1064,7 +1092,7 @@ def build_agent_calibration_summary(
             grp,
             s5,
             w7,
-            reserve_pct=reserve,
+            is_host=is_host,
             reserve_credit_usd=reserve_credit,
             calibration_store=calibration_store,
             reserved_credit_by_pool=reserved_credit_by_pool,
