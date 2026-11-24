@@ -155,6 +155,93 @@ def test_compact_zero_and_whole_dollar_formatting():
     assert _fmt_credit(10.0, compact=True) == "$10"
 
 
+def test_usage_show_stacks_host_reserve_pct_on_base_cutoff_reserves_in_calibration_and_eligibility(
+    tmp_path: Path,
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    cfg = repo / "agroute.toml"
+    cfg.write_text(
+        """
+[routing]
+default_host = "claude"
+
+[agents.claude]
+plan = "max-20x"
+max_session_used_pct = 95.0
+max_weekly_used_pct = 95.0
+host_reserve_pct = 5.0
+min_remaining_credit_usd = 10.0
+host_reserve_credit_usd = 25.0
+cli_candidates = [{ model = "claude-sonnet-4-6", effort = "high" }]
+native_candidates = [{ model = "claude-sonnet-4-6", effort = "high" }]
+""",
+        encoding="utf-8",
+    )
+    router = Router(cfg, project=repo, state_directory=repo / ".agroute", include_user_config=False)
+    # Worked example (#115): max-20x weekly $CAP = $900, max_weekly_used_pct = 95% (5% = $45),
+    # host_reserve_pct = 5% (stacked 10% = $90), min_rem = $10, host_rsv = $25 ($35 total USD).
+    # At 88% weekly used ($108 raw left, < 90% host effective limit) + $30 in-flight reservation:
+    # - target holds max(5% * $900 = $45, $10) = $45 -> $108 - $45 - $30 = $33 left (eligible_as_target = True)
+    # - host holds max(10% * $900 = $90, $35) = $90 -> $108 - $90 - $30 = $0 left (eligible_as_host_native = False,
+    #   naming the 90 USD stacked reserve even though 88% < 90% percentage cutoff!)
+    router.usage_set(
+        "claude",
+        session_used_pct=10.0,
+        session_reset_at="2026-11-22T10:00:00Z",
+        weekly_used_pct=88.0,
+        weekly_reset_at="2026-11-27T05:00:00Z",
+        now="2026-11-22T05:00:00Z",
+    )
+    router.plan(
+        "claude",
+        {
+            "format": "howhard-decision-v9",
+            "decision_id": "c" * 64,
+            "chosen": {"model": "claude/claude-sonnet-4-6", "effort": "high"},
+            "cells": [
+                {
+                    "model": "claude/claude-sonnet-4-6",
+                    "effort": "high",
+                    "needed_credit_usd": 15.0,
+                    "session_cost_usd": 0.5,
+                }
+            ],
+        },
+        prompt="Reserve $15 of the $18 host post-reserve weekly credit",
+        now="2026-11-22T05:00:30Z",
+    )
+    router.plan(
+        "claude",
+        {
+            "format": "howhard-decision-v9",
+            "decision_id": "d" * 64,
+            "chosen": {"model": "claude/claude-sonnet-4-6", "effort": "high"},
+            "cells": [
+                {
+                    "model": "claude/claude-sonnet-4-6",
+                    "effort": "high",
+                    "needed_credit_usd": 3.0,
+                    "session_cost_usd": 0.1,
+                }
+            ],
+        },
+        prompt="Exhaust the remaining $3 host post-reserve weekly credit ($18 total reserved)",
+        now="2026-11-22T05:00:45Z",
+    )
+    claude = router.usage_show("claude", now="2026-11-22T05:01:00Z")["agents"]["claude"]
+    assert claude["credit_calibration"]["shared"]["weekly_7d"]["reserve_credit_usd"] == 45.0
+    assert claude["credit_calibration"]["shared"]["weekly_7d"]["remaining_credit_usd"] == 45.0
+    assert claude["host_credit_calibration"]["shared"]["weekly_7d"]["reserve_credit_usd"] == 90.0
+    assert claude["host_credit_calibration"]["shared"]["weekly_7d"]["remaining_credit_usd"] == 0.0
+    assert claude["eligible_as_target"] is True
+    assert claude["target_exclusion_reason"] is None
+    assert claude["eligible_as_host_native"] is False
+    assert "weekly_7d credit_budget exhausted (0 USD remaining after 90 USD reserve and 18 USD reserved)" in (
+        claude["host_native_exclusion_reason"] or ""
+    )
+
+
 @pytest.mark.asyncio
 async def test_tui_host_aware_quota_ledger_and_host_cycle(tmp_path: Path):
     pytest.importorskip("textual")

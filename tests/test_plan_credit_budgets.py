@@ -411,33 +411,33 @@ plan = "plus-20"
     )
 
     assert by_model["agy/gemini-4-carbon-high"]["credit_budget"] == {
-        "available_credit_usd": 135.0,
-        "session_5h_remaining_credit_usd": 208.0,
-        "weekly_7d_remaining_credit_usd": 135.0,
+        "available_credit_usd": 67.5,
+        "session_5h_remaining_credit_usd": 176.0,
+        "weekly_7d_remaining_credit_usd": 67.5,
     }
     assert by_model["claude/claude-opus-5-5"]["credit_budget"] == {
-        "available_credit_usd": 180.0,
-        "session_5h_remaining_credit_usd": 180.0,
-        "weekly_7d_remaining_credit_usd": 810.0,
+        "available_credit_usd": 144.0,
+        "session_5h_remaining_credit_usd": 144.0,
+        "weekly_7d_remaining_credit_usd": 765.0,
     }
     assert by_model["claude/claude-fable-5-2"]["credit_budget"] == {
-        "available_credit_usd": 120.0,
-        "session_5h_remaining_credit_usd": 180.0,
-        "weekly_7d_remaining_credit_usd": 120.0,
+        "available_credit_usd": 105.0,
+        "session_5h_remaining_credit_usd": 144.0,
+        "weekly_7d_remaining_credit_usd": 105.0,
     }
     # Codex has no weekly_7d_remaining_credit_usd key (no None values in credit_budget)
     assert by_model["codex/gpt-6.1-sol"]["credit_budget"] == {
-        "available_credit_usd": 16.0,
-        "session_5h_remaining_credit_usd": 16.0,
+        "available_credit_usd": 14.0,
+        "session_5h_remaining_credit_usd": 14.0,
     }
 
-    # Check non-host agy (reserve not deducted when host is codex)
+    # Check non-host agy (only base 10% 5h / 5% 7d reserve deducted when host is codex)
     res_host_codex = router.candidates("codex", now=NOW)
     by_model_codex_host = {c["model"]: c for c in res_host_codex["candidates"]}
     assert by_model_codex_host["agy/gemini-4-carbon-high"]["credit_budget"] == {
-        "available_credit_usd": 240.0,
-        "session_5h_remaining_credit_usd": 240.0,
-        "weekly_7d_remaining_credit_usd": 270.0,
+        "available_credit_usd": 202.5,
+        "session_5h_remaining_credit_usd": 208.0,
+        "weekly_7d_remaining_credit_usd": 202.5,
     }
 
     # Verify TOML inventory rendering with inline credit_budget tables parses cleanly
@@ -445,13 +445,13 @@ plan = "plus-20"
     parsed = tomllib.loads(toml_str)
     inv_by_model = {c["model"]: c for c in parsed["inventories"]["router"]}
     assert inv_by_model["agy/gemini-4-carbon-high"]["credit_budget"] == {
-        "available_credit_usd": 135.0,
-        "session_5h_remaining_credit_usd": 208.0,
-        "weekly_7d_remaining_credit_usd": 135.0,
+        "available_credit_usd": 67.5,
+        "session_5h_remaining_credit_usd": 176.0,
+        "weekly_7d_remaining_credit_usd": 67.5,
     }
     assert inv_by_model["codex/gpt-6.1-sol"]["credit_budget"] == {
-        "available_credit_usd": 16.0,
-        "session_5h_remaining_credit_usd": 16.0,
+        "available_credit_usd": 14.0,
+        "session_5h_remaining_credit_usd": 14.0,
     }
 
 
@@ -468,16 +468,16 @@ host_reserve_pct = 10.0
         encoding="utf-8",
     )
     router = Router(cfg_file, project=tmp_path)
-    # 90% used on gemini-5h + 10% host reserve = 0% left -> 0 USD remaining
-    router.usage_set("agy", tier="gemini-5h", tier_used_pct=90.0, now=NOW)
+    # 85% used on gemini-5h ($32):
+    # - target (cli surface): 5% base cutoff reserve ($1.6) -> 4.8 - 1.6 = 3.2 USD remaining
+    # - host (native surface): 5% base + 10% host = 15% stacked reserve ($4.8) -> 0 USD remaining!
+    router.usage_set("agy", tier="gemini-5h", tier_used_pct=85.0, now=NOW)
     snap = router.usage_show("agy", now=NOW)["agents"]["agy"]
     mq = snap["models"]["gemini-4-carbon-high"]
-    # Note: in usage_show, cli surface comes first (is_host=False -> 3.2 USD),
-    # while candidates("agy") evaluates native surface with is_host=True -> 0.0 USD!
     assert mq["credit_budget"]["available_credit_usd"] == 3.2
 
-    # The reason names the 3.2 USD (10% of 32 USD) that the host reserve holds back.
-    with pytest.raises(AgRouteError, match=r"0 USD remaining after 3\.2 USD reserve"):
+    # The reason names the 4.8 USD (15% of 32 USD: 5% base + 10% host) that the stacked reserve holds back.
+    with pytest.raises(AgRouteError, match=r"0 USD remaining after 4\.8 USD reserve"):
         router.candidates("agy", include_agents=["agy"], now=NOW)
 
 
@@ -506,16 +506,16 @@ plan = "plus-20"
     )
     router = Router(cfg_file, project=tmp_path)
     # Set initial usage:
-    # claude pro-20: 5h=18.0, 7d=45.0. With 50% 5h used -> 9.0 USD available.
-    # agy pro-20 gemini: 5h=32.0, 7d=135.0. With 90% 5h used (Wait: max_session_used_pct=90, so use 80%)
-    # With 80% gemini-5h used -> 20% * 32.0 = 6.4 USD available.
+    # claude pro-20: 5h=18.0 (10% base rsv = 1.8), 7d=45.0 (5% base rsv = 2.25).
+    #   With 50% 5h used -> 40% * 18.0 = 7.2 USD; 10% 7d used -> 85% * 45.0 = 38.25 USD.
+    # agy pro-20 gemini: 5h=32.0 (10% base rsv = 3.2). With 80% gemini-5h used -> 10% * 32.0 = 3.2 USD.
     router.usage_set("claude", session_used_pct=50.0, weekly_used_pct=10.0, now=NOW)
     router.usage_set("agy", tier="gemini-5h", tier_used_pct=80.0, now=NOW)
     router.usage_set("codex", session_used_pct=10.0, now=NOW)
 
-    # 1. Decision requiring 4.5 USD on claude/claude-opus-5-5 (available 9.0 USD) succeeds.
+    # 1. Decision requiring 4.5 USD on claude/claude-opus-5-5 (available 7.2 USD) succeeds.
     # Even though agy/gemini-4-carbon-high is within host_affinity_epsilon (J=2.3 vs 2.0),
-    # agy requires 8.0 USD > 6.4 USD available, so host affinity MUST NOT substitute to agy!
+    # agy requires 8.0 USD > 3.2 USD available, so host affinity MUST NOT substitute to agy!
     decision = {
         "decision_id": "dec-credit-ok",
         "chosen": {"model": "claude/claude-opus-5-5", "effort": "high"},
@@ -543,20 +543,24 @@ plan = "plus-20"
     assert plan_ok["target_agent"] == "claude"
     assert plan_ok["needed_credit_usd"] == 4.5
     assert plan_ok["credit_budget"] == {
-        "available_credit_usd": 9.0,
-        "session_5h_remaining_credit_usd": 9.0,
-        "weekly_7d_remaining_credit_usd": 40.5,
+        "available_credit_usd": 7.2,
+        "session_5h_remaining_credit_usd": 7.2,
+        "weekly_7d_remaining_credit_usd": 38.25,
     }
     shown = router.show_route(plan_ok["route_id"], now=NOW)
     assert shown["needed_credit_usd"] == 4.5
-    assert shown["credit_budget"]["available_credit_usd"] == 9.0
+    assert shown["credit_budget"]["available_credit_usd"] == 7.2
 
-    # 2. Now live usage on claude moves to 85% used on session_5h -> 15% * 18.0 = 2.7 USD remaining.
-    # Re-running plan with needed_credit_usd = 4.5 > 2.7 raises AgRouteError!
+    # 2. Now live usage on claude moves to 85% used on session_5h -> (90 - 85)% * 18.0 = 0.9 USD remaining.
+    # Re-running plan with needed_credit_usd = 4.5 > 0.9 raises AgRouteError!
     router.usage_set("claude", session_used_pct=85.0, weekly_used_pct=10.0, now=NOW)
     with pytest.raises(
         AgRouteError,
-        match=r"requires 4\.5 USD credit, exceeding remaining credit 2\.7 USD \(session_5h_remaining_credit_usd=2\.7, weekly_7d_remaining_credit_usd=40\.5\)",
+        match=(
+            r"requires 4\.5 USD credit, exceeding remaining credit 0\.9 USD "
+            r"\(session_5h_remaining_credit_usd=0\.9, weekly_7d_remaining_credit_usd=38\.25, "
+            r"session_5h_reserve_credit_usd=1\.8, weekly_7d_reserve_credit_usd=2\.25\)"
+        ),
     ):
         router.plan("agy", decision, prompt="exceeds live credit", now=NOW)
 
@@ -574,17 +578,17 @@ plan = "plus-20"
             }
         ],
     }
-    with pytest.raises(AgRouteError, match=r"requires 3\.5 USD credit, exceeding remaining credit 2\.7 USD"):
+    with pytest.raises(AgRouteError, match=r"requires 3\.5 USD credit, exceeding remaining credit 0\.9 USD"):
         router.plan("agy", decision_c_run, prompt="c_run fallback", now=NOW)
 
 
 @pytest.mark.parametrize(
     "raw_plan_tier,expected_plan,expected_5h_usd,expected_7d_usd",
     [
-        ("Google AI Ultra", "ultra-200", 240.0, 1080.0),
-        ("Google AI Pro", "pro-20", 24.0, 108.0),
-        ("Google AI Plus", "plus-8", 9.0, 40.0),
-        ("Free", "free", 2.25, 8.0),
+        ("Google AI Ultra", "ultra-200", 208.0, 1012.5),
+        ("Google AI Pro", "pro-20", 20.8, 101.25),
+        ("Google AI Plus", "plus-8", 7.8, 37.5),
+        ("Free", "free", 1.95, 7.5),
     ],
 )
 def test_auto_plan_resolution_for_agy_statusline_and_clear(
@@ -630,10 +634,10 @@ def test_auto_plan_resolution_for_agy_statusline_and_clear(
 @pytest.mark.parametrize(
     "auth_obj,expected_plan,expected_5h_usd",
     [
-        ({"planTier": "max_20x", "subscriptionType": "max"}, "max-20x", 180.0),
-        ({"planTier": "max_5x", "subscriptionType": "max"}, "max-5x", 45.0),
-        ({"planTier": "pro", "subscriptionType": "pro"}, "pro-20", 9.0),
-        ({"subscriptionType": "pro"}, "pro-20", 9.0),
+        ({"planTier": "max_20x", "subscriptionType": "max"}, "max-20x", 144.0),
+        ({"planTier": "max_5x", "subscriptionType": "max"}, "max-5x", 36.0),
+        ({"planTier": "pro", "subscriptionType": "pro"}, "pro-20", 7.2),
+        ({"subscriptionType": "pro"}, "pro-20", 7.2),
     ],
 )
 def test_auto_plan_resolution_for_claude_and_codex_telemetry(
@@ -675,8 +679,8 @@ def test_auto_plan_resolution_for_claude_and_codex_telemetry(
     assert c_snap["effective_plan"] == expected_plan
     assert c_snap["models"]["claude-opus-5-5"]["credit_budget"]["available_credit_usd"] == expected_5h_usd
 
-    # Codex rateLimits with planType = "promax" vs "plus"
-    for raw_codex_plan, exp_codex_plan, exp_credit in (("promax", "pro-500", 375.0), ("plus", "plus-20", 15.0)):
+    # Codex rateLimits with planType = "promax" vs "plus" (25% used + 10% base session reserve -> 65% left)
+    for raw_codex_plan, exp_codex_plan, exp_credit in (("promax", "pro-500", 325.0), ("plus", "plus-20", 13.0)):
         codex_rpc = json.dumps(
             {
                 "id": 2,
@@ -713,7 +717,7 @@ def test_explicit_plan_overrides_detected_plan_and_empty_plan_disables_preset(tm
         }
     )
 
-    # 1. Explicit plan = "ultra-100" overrides detected "ultra-200" (50% of 80.0 = 40.0 USD)
+    # 1. Explicit plan = "ultra-100" overrides detected "ultra-200" ((50% - 10% rsv) of 80.0 = 32.0 USD)
     cfg_file = tmp_path / "agroute.toml"
     cfg_file.write_text('[agents.agy]\nplan = "ultra-100"\n', encoding="utf-8")
     r_explicit = Router(cfg_file, project=tmp_path)
@@ -722,7 +726,7 @@ def test_explicit_plan_overrides_detected_plan_and_empty_plan_disables_preset(tm
     assert snap_exp["plan"] == "ultra-100"
     assert snap_exp["detected_plan"] == "ultra-200"
     assert snap_exp["effective_plan"] == "ultra-100"
-    assert snap_exp["models"]["gemini-4-carbon-high"]["credit_budget"]["available_credit_usd"] == 40.0
+    assert snap_exp["models"]["gemini-4-carbon-high"]["credit_budget"]["available_credit_usd"] == 32.0
 
     # 2. Explicit plan = "" disables preset lookup even when detected_plan is "ultra-200"
     cfg_file.write_text('[agents.agy]\nplan = ""\n', encoding="utf-8")
@@ -733,7 +737,7 @@ def test_explicit_plan_overrides_detected_plan_and_empty_plan_disables_preset(tm
     assert snap_empty["effective_plan"] == ""
     assert "credit_budget" not in snap_empty["models"]["gemini-4-carbon-high"]
 
-    # 3. Explicit plan = "" with explicit [agents.agy.credit.tiers.gemini] uses only explicit credit
+    # 3. Explicit plan = "" with explicit [agents.agy.credit.tiers.gemini] uses only explicit credit (40% of 50.0 = 20.0 USD)
     cfg_file.write_text(
         '[agents.agy]\nplan = ""\n[agents.agy.credit.tiers.gemini]\nsession_5h_credit_usd = 50.0\n',
         encoding="utf-8",
@@ -741,7 +745,7 @@ def test_explicit_plan_overrides_detected_plan_and_empty_plan_disables_preset(tm
     r_credit_only = Router(cfg_file, project=tmp_path)
     snap_co = r_credit_only.usage_show("agy", now=NOW)["agents"]["agy"]
     assert snap_co["effective_plan"] == ""
-    assert snap_co["models"]["gemini-4-carbon-high"]["credit_budget"]["available_credit_usd"] == 25.0
+    assert snap_co["models"]["gemini-4-carbon-high"]["credit_budget"]["available_credit_usd"] == 20.0
 
 
 def test_agy_and_claude_adapter_probe_plan_tier_in_isolated_tmp_path(tmp_path, monkeypatch):
@@ -915,8 +919,9 @@ def test_overlapping_shared_pool_bounds_tier_model_eligibility_and_credit_budget
     router = Router(cfg_path, project=tmp_path)
     router.usage_set("codex", session_used_pct=10.0, now=NOW)
 
-    # Case 1: shared weekly_7d is 94% used (54.0 USD left of 900), while fable is 63% used (111.0 USD left of 300).
-    # Overlapping shared pool is tighter (54.0 < 111.0), so fable's available_credit_usd must be capped at 54.0.
+    # Case 1: shared weekly_7d is 94% used (1% = 9.0 USD left after 5% base cutoff reserve of 900),
+    # while fable is 63% used (32% = 96.0 USD left after 5% base cutoff reserve of 300).
+    # Overlapping shared pool is tighter (9.0 < 96.0), so fable's available_credit_usd must be capped at 9.0.
     router.usage_set(
         "claude",
         session_used_pct=10.0,
@@ -929,9 +934,9 @@ def test_overlapping_shared_pool_bounds_tier_model_eligibility_and_credit_budget
     by_model = {c["model"]: c for c in cands["candidates"]}
     assert "claude/claude-fable-5-2" in by_model
     assert by_model["claude/claude-fable-5-2"]["credit_budget"] == {
-        "available_credit_usd": 54.0,
-        "session_5h_remaining_credit_usd": 324.0,
-        "weekly_7d_remaining_credit_usd": 54.0,
+        "available_credit_usd": 9.0,
+        "session_5h_remaining_credit_usd": 288.0,
+        "weekly_7d_remaining_credit_usd": 9.0,
     }
 
     # Case 2: shared weekly_7d is 100% used (0 USD left), while fable is still 63% used.

@@ -151,10 +151,10 @@ def test_low_headroom_config_validation(tmp_path):
 def test_two_launches_exceeding_remaining_credit_are_not_both_admitted(tmp_path):
     cfg = _write_claude_config(tmp_path)
     router = Router(cfg, project=tmp_path)
-    # claude max-5x: shared 5h = $90, shared 7d = $225, fable 7d = $75.
-    # At 10% shared, 80% fable -> fable remaining = $15.0, shared 5h = $81.0, shared 7d = $202.5.
+    # claude max-5x: shared 5h = $90 (10% base rsv = $9), shared 7d = $225 (5% base rsv = $11.25), fable 7d = $75 (5% base rsv = $3.75).
+    # At 10% shared, 75% fable -> fable remaining = $15.0, shared 5h = $72.0, shared 7d = $191.25.
     router.usage_set("claude", session_used_pct=10.0, session_reset_at=RESET_5H, weekly_used_pct=10.0, weekly_reset_at=RESET_7D, now=T0)
-    router.usage_set("claude", tier="fable-weekly", tier_used_pct=80.0, tier_reset_at=RESET_7D, now=T0)
+    router.usage_set("claude", tier="fable-weekly", tier_used_pct=75.0, tier_reset_at=RESET_7D, now=T0)
 
     # First launch reserves $10 of the $15 remaining credit.
     plan1 = router.plan("claude", _fable_decision("dec-launch-1", 10.0), prompt="worker 1", include_agents=["claude"], now=T0)
@@ -165,8 +165,8 @@ def test_two_launches_exceeding_remaining_credit_are_not_both_admitted(tmp_path)
     cands = router.candidates("claude", include_agents=["claude"], now=T0)
     by_model = {c["model"]: c for c in cands["candidates"]}
     assert by_model["claude/claude-fable-5-2"]["credit_budget"]["available_credit_usd"] == 5.0
-    assert by_model["claude/claude-opus-5-5"]["credit_budget"]["session_5h_remaining_credit_usd"] == 71.0
-    assert by_model["claude/claude-opus-5-5"]["credit_budget"]["weekly_7d_remaining_credit_usd"] == 192.5
+    assert by_model["claude/claude-opus-5-5"]["credit_budget"]["session_5h_remaining_credit_usd"] == 62.0
+    assert by_model["claude/claude-opus-5-5"]["credit_budget"]["weekly_7d_remaining_credit_usd"] == 181.25
 
     # Second launch needing $10 exceeds the $5 remaining after reservation and is refused.
     with pytest.raises(AgRouteError, match=r"exceeding remaining credit 5 USD.*reserved"):
@@ -184,7 +184,7 @@ def test_reservation_updated_by_measured_observation_and_released_by_probe_or_cl
     cfg = _write_claude_config(tmp_path)
     router = Router(cfg, project=tmp_path)
     router.usage_set("claude", session_used_pct=10.0, session_reset_at=RESET_5H, weekly_used_pct=10.0, weekly_reset_at=RESET_7D, now=T0)
-    router.usage_set("claude", tier="fable-weekly", tier_used_pct=80.0, tier_reset_at=RESET_7D, now=T0)
+    router.usage_set("claude", tier="fable-weekly", tier_used_pct=75.0, tier_reset_at=RESET_7D, now=T0)
 
     router.plan("claude", _fable_decision("dec-obs-1", 10.0), prompt="worker 1", include_agents=["claude"], now=T0)
     cands_before = {c["model"]: c for c in router.candidates("claude", include_agents=["claude"], now=T0)["candidates"]}
@@ -215,13 +215,13 @@ def test_reservation_updated_by_measured_observation_and_released_by_probe_or_cl
             {
                 "session_5h": {"used_pct": 14.0, "reset_at": RESET_5H},
                 "weekly_7d": {"used_pct": 12.0, "reset_at": RESET_7D},
-                "tiers": {"fable-weekly": {"used_pct": 84.0, "reset_at": RESET_7D}},
+                "tiers": {"fable-weekly": {"used_pct": 79.0, "reset_at": RESET_7D}},
             }
         ],
     )
     router.usage_probe("claude", now=T_2M)
     cands_probed = {c["model"]: c for c in router.candidates("claude", include_agents=["claude"], now=T_2M)["candidates"]}
-    # 16% * $75 = $12.0 with zero leftover reservation.
+    # (95% - 79%) * $75 = 16% * $75 = $12.0 with zero leftover reservation.
     assert cands_probed["claude/claude-fable-5-2"]["credit_budget"]["available_credit_usd"] == 12.0
 
     # usage_clear also drops active reservations cleanly.
@@ -230,7 +230,7 @@ def test_reservation_updated_by_measured_observation_and_released_by_probe_or_cl
     assert cands_res["claude/claude-fable-5-2"]["credit_budget"]["available_credit_usd"] == 6.0
     router.usage_clear("claude")
     router.usage_set("claude", session_used_pct=14.0, session_reset_at=RESET_5H, weekly_used_pct=12.0, weekly_reset_at=RESET_7D, now=T_2M)
-    router.usage_set("claude", tier="fable-weekly", tier_used_pct=84.0, tier_reset_at=RESET_7D, now=T_2M)
+    router.usage_set("claude", tier="fable-weekly", tier_used_pct=79.0, tier_reset_at=RESET_7D, now=T_2M)
     cands_cleared = {c["model"]: c for c in router.candidates("claude", include_agents=["claude"], now=T_2M)["candidates"]}
     assert cands_cleared["claude/claude-fable-5-2"]["credit_budget"]["available_credit_usd"] == 12.0
 

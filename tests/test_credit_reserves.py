@@ -83,14 +83,15 @@ def test_credit_reserve_excludes_a_candidate_that_percentage_limits_admit(tmp_pa
     percentage_only = _router(
         tmp_path, '[agents.codex]\nplan = "plus-20"\n\n[agents.claude]\nplan = "max-5x"\n', "percentage.toml"
     )
-    # plus-20 has a 20 USD session: 80% used is below the 90% session limit and leaves 4 USD.
+    # plus-20 has a 20 USD session (10% base cutoff reserve = 2 USD) and 50 USD week (5% base cutoff reserve = 2.5 USD):
+    # 80% session used is below the 90% session limit and leaves 4 - 2 = 2 USD after the 10% cutoff reserve.
     percentage_only.usage_set("codex", session_used_pct=80.0, weekly_used_pct=10.0, now=NOW)
     percentage_only.usage_set("claude", session_used_pct=10.0, weekly_used_pct=10.0, now=NOW)
     admitted = percentage_only.candidates("agy", include_agents=["codex", "claude"], now=NOW)
     assert _cell(admitted, "codex/gpt-6.1-sol")["credit_budget"] == {
-        "available_credit_usd": 4.0,
-        "session_5h_remaining_credit_usd": 4.0,
-        "weekly_7d_remaining_credit_usd": 45.0,
+        "available_credit_usd": 2.0,
+        "session_5h_remaining_credit_usd": 2.0,
+        "weekly_7d_remaining_credit_usd": 42.5,
     }
 
     reserved = _router(
@@ -101,7 +102,8 @@ def test_credit_reserve_excludes_a_candidate_that_percentage_limits_admit(tmp_pa
     result = reserved.candidates("agy", include_agents=["codex", "claude"], now=NOW)
     assert not [cell for cell in result["candidates"] if cell["model"].startswith("codex/")]
     assert _reasons(result, "codex") == ["session_5h credit_budget exhausted (0 USD remaining after 5 USD reserve)"]
-    assert _cell(result, "claude/claude-opus-5-5")["credit_budget"]["available_credit_usd"] == 81.0
+    # claude max-5x 5h=90 USD at 10% used minus 10% base cutoff reserve (9 USD) = 72 USD.
+    assert _cell(result, "claude/claude-opus-5-5")["credit_budget"]["available_credit_usd"] == 72.0
 
 
 def test_plan_refuses_needed_credit_that_fits_only_without_the_reserve(tmp_path):
@@ -170,58 +172,60 @@ def test_host_credit_reserve_applies_only_when_the_agent_is_the_routing_root(tmp
     _write_codex_cache(["gpt-6.1-sol"])
     router = _router(
         tmp_path,
-        '[agents.codex]\nplan = "plus-20"\nhost_reserve_credit_usd = 3.0\nmin_remaining_credit_usd = 1.0\n',
+        '[agents.codex]\nplan = "plus-20"\nhost_reserve_credit_usd = 3.0\nmin_remaining_credit_usd = 3.0\n',
     )
     router.usage_set("codex", session_used_pct=50.0, weekly_used_pct=20.0, now=NOW)
 
     as_root = router.candidates("codex", include_agents=["codex"], now=NOW)
-    # Root: the host reserve and the margin add up. Session 20 * 50% - (3 + 1) = 6; weekly 50 * 80% - 4 = 36.
+    # Root: the host reserve and the margin add up (3 + 3 = 6 > 10%=$2 and 5%=$2.5).
+    # Session 20 * 50% - 6 = 4; weekly 50 * 80% - 6 = 34.
     assert _cell(as_root, "codex/gpt-6.1-sol")["credit_budget"] == {
-        "available_credit_usd": 6.0,
-        "session_5h_remaining_credit_usd": 6.0,
-        "weekly_7d_remaining_credit_usd": 36.0,
+        "available_credit_usd": 4.0,
+        "session_5h_remaining_credit_usd": 4.0,
+        "weekly_7d_remaining_credit_usd": 34.0,
     }
     root_windows = as_root["credit_calibration"]["codex"]["shared"]
-    assert root_windows["session_5h"]["reserve_credit_usd"] == 4.0
-    assert root_windows["weekly_7d"]["reserve_credit_usd"] == 4.0
+    assert root_windows["session_5h"]["reserve_credit_usd"] == 6.0
+    assert root_windows["weekly_7d"]["reserve_credit_usd"] == 6.0
 
     as_target = router.candidates("agy", include_agents=["codex"], now=NOW)
-    # Another root: only the margin applies. Session 20 * 50% - 1 = 9; weekly 50 * 80% - 1 = 39.
+    # Another root: only the 3 USD margin (> $2 and $2.5 base pct reserves) applies.
+    # Session 20 * 50% - 3 = 7; weekly 50 * 80% - 3 = 37.
     assert _cell(as_target, "codex/gpt-6.1-sol")["credit_budget"] == {
-        "available_credit_usd": 9.0,
-        "session_5h_remaining_credit_usd": 9.0,
-        "weekly_7d_remaining_credit_usd": 39.0,
+        "available_credit_usd": 7.0,
+        "session_5h_remaining_credit_usd": 7.0,
+        "weekly_7d_remaining_credit_usd": 37.0,
     }
     target_windows = as_target["credit_calibration"]["codex"]["shared"]
-    assert target_windows["session_5h"]["reserve_credit_usd"] == 1.0
-    assert target_windows["weekly_7d"]["reserve_credit_usd"] == 1.0
+    assert target_windows["session_5h"]["reserve_credit_usd"] == 3.0
+    assert target_windows["weekly_7d"]["reserve_credit_usd"] == 3.0
 
 
 @pytest.mark.parametrize(
     "reserve_pct,credit_reserve,budget,held_back",
     [
-        # Percentage reserve larger: 20% holds 4 of the 20 USD session and 10 of the 50 USD
-        # week, more than the 1 USD credit reserve; the sums (5 and 11) never apply.
+        # Stacked percentage reserve larger: 10% base + 20% host = 30% holds 6 of the 20 USD session,
+        # and 5% base + 20% host = 25% holds 12.5 of the 50 USD week, beating 1 USD; sums with USD never apply.
         (
             20.0,
             1.0,
-            {"available_credit_usd": 6.0, "session_5h_remaining_credit_usd": 6.0, "weekly_7d_remaining_credit_usd": 30.0},
-            (4.0, 10.0),
+            {"available_credit_usd": 4.0, "session_5h_remaining_credit_usd": 4.0, "weekly_7d_remaining_credit_usd": 27.5},
+            (6.0, 12.5),
         ),
-        # Credit reserve larger: 6 USD exceeds 5% of either window (1 and 2.5 USD).
+        # Credit reserve larger: 6 USD exceeds 15% of session (3 USD) and 10% of weekly (5 USD).
         (
             5.0,
             6.0,
             {"available_credit_usd": 4.0, "session_5h_remaining_credit_usd": 4.0, "weekly_7d_remaining_credit_usd": 34.0},
             (6.0, 6.0),
         ),
-        # Each window takes its own larger reserve: 4 USD beats 10% of the session (2 USD),
-        # while 10% of the week (5 USD) beats 4 USD.
+        # Each window takes its own larger reserve: 5 USD beats 20% of session (4 USD),
+        # while 15% (5% base + 10% host) of weekly (7.5 USD) beats 5 USD.
         (
             10.0,
-            4.0,
-            {"available_credit_usd": 6.0, "session_5h_remaining_credit_usd": 6.0, "weekly_7d_remaining_credit_usd": 35.0},
-            (4.0, 5.0),
+            5.0,
+            {"available_credit_usd": 5.0, "session_5h_remaining_credit_usd": 5.0, "weekly_7d_remaining_credit_usd": 32.5},
+            (5.0, 7.5),
         ),
     ],
 )
@@ -242,6 +246,93 @@ def test_larger_of_percentage_and_credit_reserve_applies_not_their_sum(
     assert (windows["session_5h"]["reserve_credit_usd"], windows["weekly_7d"]["reserve_credit_usd"]) == held_back
 
 
+def test_host_reserve_pct_stacks_on_base_percentage_cutoff_reserves_across_target_and_host(tmp_path):
+    """Worked example (#115): base + host percentage reserves stack consistently with USD reserves."""
+    from agroute.calibration import resolve_calibrated_quota_credit
+
+    _write_claude_catalog(["claude-opus-5-5", "claude-fable-5-2"])
+    router = _router(
+        tmp_path,
+        """
+[agents.claude]
+plan = "max-20x"
+max_session_used_pct = 90.0
+max_weekly_used_pct = 95.0
+max_tier_used_pct = 85.0
+host_reserve_pct = 5.0
+min_remaining_credit_usd = 10.0
+host_reserve_credit_usd = 25.0
+""",
+    )
+    # max-20x: shared 5h = $360, shared 7d = $900, fable 7d = $300.
+    router.usage_set(
+        "claude",
+        session_used_pct=20.0,
+        weekly_used_pct=30.0,
+        tier="fable",
+        tier_used_pct=20.0,
+        now=NOW,
+    )
+
+    # 1. As target (host = "agy"):
+    #    - shared 5h ($360): base 10% = $36 > $10 -> reserve = $36, remaining = $288 - $36 = $252.
+    #    - shared 7d ($900): base 5% = $45 > $10 -> reserve = $45, remaining = $630 - $45 = $585.
+    #    - fable 7d ($300): min(max_tier=85%, base=95%) -> 15% = $45 > $10 -> reserve = $45, remaining = $240 - $45 = $195.
+    as_target = router.candidates("agy", include_agents=["claude"], now=NOW)
+    assert _cell(as_target, "claude/claude-opus-5-5")["credit_budget"] == {
+        "available_credit_usd": 252.0,
+        "session_5h_remaining_credit_usd": 252.0,
+        "weekly_7d_remaining_credit_usd": 585.0,
+    }
+    assert _cell(as_target, "claude/claude-fable-5-2")["credit_budget"] == {
+        "available_credit_usd": 195.0,
+        "session_5h_remaining_credit_usd": 252.0,
+        "weekly_7d_remaining_credit_usd": 195.0,
+    }
+    cal_t = as_target["credit_calibration"]["claude"]
+    assert cal_t["shared"]["session_5h"]["reserve_credit_usd"] == 36.0
+    assert cal_t["shared"]["weekly_7d"]["reserve_credit_usd"] == 45.0
+    assert cal_t["fable"]["weekly_7d"]["reserve_credit_usd"] == 45.0
+
+    # 2. As host (host = "claude"):
+    #    - shared 5h ($360): 10% + 5% = 15% = $54 > $35 -> reserve = $54, remaining = $288 - $54 = $234.
+    #    - shared 7d ($900): 5% + 5% = 10% = $90 > $35 -> reserve = $90, remaining = $630 - $90 = $540.
+    #    - fable 7d ($300): min(max_tier=85%, host_base=90%) = 85% -> 15% = $45 > $35 -> reserve = $45, remaining = $195.
+    as_host = router.candidates("claude", include_agents=["claude"], now=NOW)
+    assert _cell(as_host, "claude/claude-opus-5-5")["credit_budget"] == {
+        "available_credit_usd": 234.0,
+        "session_5h_remaining_credit_usd": 234.0,
+        "weekly_7d_remaining_credit_usd": 540.0,
+    }
+    assert _cell(as_host, "claude/claude-fable-5-2")["credit_budget"] == {
+        "available_credit_usd": 195.0,
+        "session_5h_remaining_credit_usd": 234.0,
+        "weekly_7d_remaining_credit_usd": 195.0,
+    }
+    cal_h = as_host["credit_calibration"]["claude"]
+    assert cal_h["shared"]["session_5h"]["reserve_credit_usd"] == 54.0
+    assert cal_h["shared"]["weekly_7d"]["reserve_credit_usd"] == 90.0
+    assert cal_h["fable"]["weekly_7d"]["reserve_credit_usd"] == 45.0
+
+    # 3. Direct unit-test override: explicit caller `reserve_pct` on `resolve_calibrated_quota_credit`
+    #    overrides nominal config percentage cutoffs cleanly (including explicit 0.0).
+    claude_cfg = router.config.agents["claude"]
+    eff_state = {"detected_plan": None}
+    s5_w = {"used_pct": 20.0, "reset_at": None}
+    w7_w = {"used_pct": 30.0, "reset_at": None}
+    budget_zero, meta_zero, _ = resolve_calibrated_quota_credit(
+        "claude", claude_cfg, eff_state, "shared", s5_w, w7_w, reserve_pct=0.0, reserve_credit_usd=10.0
+    )
+    assert meta_zero["weekly_7d"]["reserve_credit_usd"] == 10.0
+    assert budget_zero["weekly_7d_remaining_credit_usd"] == 620.0
+
+    budget_custom, meta_custom, _ = resolve_calibrated_quota_credit(
+        "claude", claude_cfg, eff_state, "shared", s5_w, w7_w, reserve_pct=12.0, reserve_credit_usd=10.0
+    )
+    assert meta_custom["weekly_7d"]["reserve_credit_usd"] == 108.0
+    assert budget_custom["weekly_7d_remaining_credit_usd"] == 522.0
+
+
 @pytest.mark.parametrize("host", ["agy", "codex", "claude"])
 def test_min_remaining_credit_applies_to_every_window_for_any_root(tmp_path, host):
     _write_claude_catalog(["claude-opus-5-5", "claude-fable-5-2"])
@@ -252,13 +343,13 @@ def test_min_remaining_credit_applies_to_every_window_for_any_root(tmp_path, hos
     )
     result = router.candidates(host, include_agents=["claude"], now=NOW)
 
-    # Shared windows: 45 - 10 = 35 for the session and 180 - 10 = 170 for the week.
+    # Shared session: 45 - max(10% * 90 = 9, 10) = 35; shared week: 180 - max(5% * 225 = 11.25, 10) = 168.75.
     assert _cell(result, "claude/claude-opus-5-5")["credit_budget"] == {
         "available_credit_usd": 35.0,
         "session_5h_remaining_credit_usd": 35.0,
-        "weekly_7d_remaining_credit_usd": 170.0,
+        "weekly_7d_remaining_credit_usd": 168.75,
     }
-    # The fable tier keeps the same amount: 30 - 10 = 20, tighter than the shared week.
+    # The fable tier keeps 10 USD (> 5% * 75 = 3.75): 30 - 10 = 20, tighter than the shared week.
     assert _cell(result, "claude/claude-fable-5-2")["credit_budget"] == {
         "available_credit_usd": 20.0,
         "session_5h_remaining_credit_usd": 35.0,
@@ -269,7 +360,7 @@ def test_min_remaining_credit_applies_to_every_window_for_any_root(tmp_path, hos
 
     calibration = result["credit_calibration"]["claude"]
     assert calibration["shared"]["session_5h"]["reserve_credit_usd"] == 10.0
-    assert calibration["shared"]["weekly_7d"]["reserve_credit_usd"] == 10.0
+    assert calibration["shared"]["weekly_7d"]["reserve_credit_usd"] == 11.25
     assert calibration["fable"]["weekly_7d"]["remaining_credit_usd"] == 20.0
     assert calibration["fable"]["weekly_7d"]["reserve_credit_usd"] == 10.0
     assert _reserve_warnings(result) == []

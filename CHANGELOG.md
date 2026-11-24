@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Stack `host_reserve_pct` on top of the base percentage cutoff reserve (`100% - eff_lim`) in
+  calibrated credit budgets (`resolve_calibrated_quota_credit`, `build_agent_calibration_summary`,
+  and `resolve_model_quota`) and align `agr tui` `_calibration_for_view` across both `target` and
+  `host` roles so `credit_budget`, `reserve_credit_usd`, `available_credit_usd`, `$RSV(eff)`, and
+  `$LEFT` hold back `base` on `target` and `base + host` on `host` consistently with dollar credit
+  reserves. Issue #115 tracks calibrated percentage reserve stacking.
+
 ## 0.6.7 (2026-11-23)
 
 - Detect ChatGPT Pro 100 from Codex `prolite` quota reports and show `pro-100` in the

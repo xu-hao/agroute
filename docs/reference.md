@@ -377,12 +377,19 @@ updated with measured spend once a matching `howhard` observation lands before t
 released when a fresh probe/ingest/set updates that window or `agr usage clear` runs, and
 expires automatically when the window resets or after 5 hours. When active, each window's
 `credit_calibration` metadata reports `reserved_credit_usd`. Raw `used_pct` is never inflated
-by reservations, keeping credit calibration grounded in measured usage deltas. The
-percentage reserve `rho` is `host_reserve_pct` for the current host and `0.0` for other agents.
+by reservations, keeping credit calibration grounded in measured usage deltas. The nominal
+percentage reserve `rho = max(0, 100 - eff_lim)` holds back the configured base cutoff reserve on
+target agents (`eff_lim = target_base_lim` on `shared` else `min(max_tier_used_pct, target_base_lim)`,
+where `target_base_lim` is `max_session_used_pct` for `session_5h` and `max_weekly_used_pct` for
+`weekly_7d`) and stacks `host_reserve_pct` on top of that base cutoff reserve on the current host
+(`host_base_lim = max(0, target_base_lim - host_reserve_pct)`, `eff_lim = host_base_lim` on `shared`
+else `min(max_tier_used_pct, host_base_lim)`).
 The credit reserve `kappa` is `host_reserve_credit_usd` for the current host plus
 `min_remaining_credit_usd` for any host, and the same amount applies to every window: the
 session, the weekly window, and each per-model tier (see {ref}`credit reserves <credit-reserves>`).
-Each window holds back the larger of the two reserves, never their sum. For models consuming
+Both percentage and dollar reserves therefore stack `base + host` on the current host, and each
+window holds back the larger of its percentage and dollar reserves (`max(C_credit * rho / 100, kappa)`),
+never adding percentage and dollar reserves together. For models consuming
 overlapping pools, `agroute` retains the tightest known remaining balance per window. Unknown
 windows do not contribute a calculated balance.
 
