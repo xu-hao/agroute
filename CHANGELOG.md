@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.9 — 2026-11-25
 
 - Split active in-flight `agr plan` reservations out of the `agr tui` `#quotas` `$RSV(nom)` column
   into a new `$LIVE` column (`—` when none), so `$RSV(nom)` shows only the configured dollar
@@ -8,6 +8,7 @@
   dropped from `%RSV(eff)` and `%LEFT` when the percentage cutoff reserve dominates. The detail pane
   lists nominal and live reserves separately (`nominal 10% / $5.00 · live $3.00 -> effective 13% /
   $13.00`) (#123).
+- Bump the package and native plugin manifests to `0.6.9` (#125).
 
 ## 0.6.8 — 2026-11-24
 
