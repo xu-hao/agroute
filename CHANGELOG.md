@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Split active in-flight `agr plan` reservations out of the `agr tui` `#quotas` `$RSV(nom)` column
+  into a new `$LIVE` column (`—` when none), so `$RSV(nom)` shows only the configured dollar
+  reserve, and compute `%RSV(eff)` as `$RSV(eff) / $CAP` so live reservations are no longer
+  dropped from `%RSV(eff)` and `%LEFT` when the percentage cutoff reserve dominates. The detail pane
+  lists nominal and live reserves separately (`nominal 10% / $5.00 · live $3.00 -> effective 13% /
+  $13.00`) (#123).
+
 ## 0.6.8 — 2026-11-24
 
 - Support `howhard` 5.0.0 by recognizing `howhard-decision-v10` receipts alongside `v7`, `v8`, and

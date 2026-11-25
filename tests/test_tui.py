@@ -249,6 +249,7 @@ async def test_tui_renders_routes_modals_and_filters():
             "$CAP",
             "$USED",
             "$RSV(nom)",
+            "$LIVE",
             "$RSV(eff)",
             "$LEFT",
             "RESETS",
@@ -270,11 +271,11 @@ async def test_tui_renders_routes_modals_and_filters():
         ]
         codex_5h_t = [c.plain for c in quotas.get_row("codex:shared:5h:target")]
         codex_5h_h = [c.plain for c in quotas.get_row("codex:shared:5h:host")]
-        assert codex_5h_t[:14] == [
-            "codex", "—", "target", "OK", "5h", "42%", "10%", "10%", "48%", "—", "—", "—", "—", "—"
+        assert codex_5h_t[:15] == [
+            "codex", "—", "target", "OK", "5h", "42%", "10%", "10%", "48%", "—", "—", "—", "—", "—", "—"
         ]
-        assert codex_5h_h[:14] == [
-            "codex", "—", "host", "OK", "5h", "42%", "10%", "10%", "48%", "—", "—", "—", "—", "—"
+        assert codex_5h_h[:15] == [
+            "codex", "—", "host", "OK", "5h", "42%", "10%", "10%", "48%", "—", "—", "—", "—", "—", "—"
         ]
         assert "(Enter for full breakdown)" in str(detail.render())
 
@@ -740,6 +741,7 @@ async def test_tui_shows_estimated_credit_alongside_percentages():
             "$CAP",
             "$USED",
             "$RSV(nom)",
+            "$LIVE",
             "$RSV(eff)",
             "$LEFT",
             "RESETS",
@@ -801,17 +803,17 @@ async def test_tui_shows_estimated_credit_alongside_percentages():
         assert [c.plain for c in row_7d[:5]] == ["codex", "plus-20", "target", "OK", "7d"]
         assert row_5h[3].style == "bold green"
         # 5h: 42% used, 10% nom rsv, $10/$20 = 50% eff rsv -> 8% left, $8.40 used, $10 nom, $10 eff, $1.60 left
-        assert [c.plain for c in row_5h[5:14]] == [
-            "42%", "10%", "50%", "8%", "$20", "$8.40", "$10", "$10", "$1.60"
+        assert [c.plain for c in row_5h[5:15]] == [
+            "42%", "10%", "50%", "8%", "$20", "$8.40", "$10", "—", "$10", "$1.60"
         ]
-        assert [c.plain for c in row_7d[5:14]] == [
-            "18%", "5%", "20%", "62%", "$50", "$9", "$10", "$10", "$31"
+        assert [c.plain for c in row_7d[5:15]] == [
+            "18%", "5%", "20%", "62%", "$50", "$9", "$10", "—", "$10", "$31"
         ]
 
         claude_shared_7d = quotas_table.get_row("claude:shared:7d:target")
         claude_fable_7d = quotas_table.get_row("claude:fable:7d:target")
-        assert claude_shared_7d[0].plain == "claude/shared" and claude_shared_7d[1].plain == "max-20x" and claude_shared_7d[13].plain == "$585"
-        assert claude_fable_7d[0].plain == "claude/fable" and claude_fable_7d[13].plain == "$195"
+        assert claude_shared_7d[0].plain == "claude/shared" and claude_shared_7d[1].plain == "max-20x" and claude_shared_7d[14].plain == "$585"
+        assert claude_fable_7d[0].plain == "claude/fable" and claude_fable_7d[14].plain == "$195"
 
         agy_gem_5h_t = quotas_table.get_row("agy:gemini:5h:target")
         agy_gem_5h_h = quotas_table.get_row("agy:gemini:5h:host")
@@ -1036,9 +1038,9 @@ effort = "high"
         row_5h = [c.plain for c in quotas_table.get_row("codex:shared:5h:target")]
         row_7d = [c.plain for c in quotas_table.get_row("codex:shared:7d:target")]
         assert row_5h[:5] == ["codex", "plus-20", "target", "OK", "5h"]
-        assert row_5h[5:14] == ["25%", "10%", "25%", "50%", "$20", "$5", "$5", "$5", "$10"]
+        assert row_5h[5:15] == ["25%", "10%", "25%", "50%", "$20", "$5", "$5", "—", "$5", "$10"]
         assert row_7d[:5] == ["codex", "plus-20", "target", "OK", "7d"]
-        assert row_7d[5:14] == ["40%", "5%", "10%", "50%", "$50", "$20", "$5", "$5", "$25"]
+        assert row_7d[5:15] == ["40%", "5%", "10%", "50%", "$50", "$20", "$5", "—", "$5", "$25"]
 
         await pilot.press("enter")
         await pilot.pause()
@@ -1125,15 +1127,15 @@ native_candidates = [{ model = "claude-sonnet-4-6", effort = "high" }]
 
         row_t = [c.plain for c in quotas_table.get_row("claude:shared:7d:target")]
         row_h = [c.plain for c in quotas_table.get_row("claude:shared:7d:host")]
-        assert row_t[:14] == [
+        assert row_t[:15] == [
             "claude/shared", "max-20x", "target", "OK", "7d",
             "92%", "5%", "5%", "3%",
-            "$900", "$828", "$10", "$45", "$27",
+            "$900", "$828", "$10", "—", "$45", "$27",
         ]
-        assert row_h[:14] == [
+        assert row_h[:15] == [
             "claude/shared", "max-20x", "host", "BLOCKED", "7d",
             "92%", "10%", "10%", "0%",
-            "$900", "$828", "$35", "$90", "$0",
+            "$900", "$828", "$35", "—", "$90", "$0",
         ]
 
         quotas_table.move_cursor(row=all_keys.index("claude:shared:7d:target"))
@@ -1147,3 +1149,64 @@ native_candidates = [{ model = "claude-sonnet-4-6", effort = "high" }]
         detail_h = str(app.query_one("#route-detail", Static).render())
         assert "reserves (7d host): nominal 10% (5%+5% host) / $35.00 ($10.00+$25.00 host) -> effective 10% / $90.00" in detail_h
         assert "7d weekly:  92% (~$828.00/$900.00 credit, ~$0.00 left, $90.00 reserve)" in detail_h
+
+
+def _live_reserve_snapshot(*, live_usd: float) -> dict:
+    return {
+        "agents": {
+            "codex": {
+                "enabled": True,
+                "plan": "plus-20",
+                "quota_limits": {
+                    "max_session_used_pct": 90.0,
+                    "max_weekly_used_pct": 90.0,
+                    "min_remaining_credit_usd": 5.0,
+                },
+                "session_5h": {"used_pct": 20.0, "reset_at": "2026-11-09T01:00:00Z"},
+                "credit_calibration": {
+                    "shared": {
+                        "session_5h": {
+                            "calibrated_credit_usd": 100.0,
+                            "used_pct": 20.0,
+                            "reserved_credit_usd": live_usd,
+                        },
+                    },
+                },
+            },
+        },
+    }
+
+
+def test_quota_rows_split_live_reservations_and_include_them_in_effective_percentage():
+    """Issue #123: a $3 live reservation on a $100 cap with a dominant 10% cutoff reserve
+    must raise %RSV(eff) to 13% (= $RSV(eff) / $CAP) and appear only in the $LIVE column."""
+    from agroute.tui import _build_quota_rows, _moment, _quota_detail_text
+
+    rows = _build_quota_rows(
+        _live_reserve_snapshot(live_usd=3.0), role_filter="target", now=_moment("2026-11-08T21:00:00Z")
+    )
+    row = next(r for r in rows if r["key"] == "codex:shared:5h:target")
+    assert row["credit_cap"] == "$100"
+    assert row["pct_used"] == "20%"
+    assert row["credit_used"] == "$20"
+    assert row["pct_rsv_nom"] == "10%"
+    assert row["credit_rsv_nom"] == "$5"
+    assert row["credit_live"] == "$3"
+    assert row["credit_rsv_eff"] == "$13"
+    assert row["pct_rsv_eff"] == "13%"
+    assert row["pct_left"] == "67%"
+    assert row["credit_left"] == "$67"
+    detail = _quota_detail_text(row)
+    assert "reserves (5h target): nominal 10% / $5.00 · live $3.00 -> effective 13% / $13.00" in detail
+
+    idle = next(
+        r
+        for r in _build_quota_rows(
+            _live_reserve_snapshot(live_usd=0.0), role_filter="target", now=_moment("2026-11-08T21:00:00Z")
+        )
+        if r["key"] == "codex:shared:5h:target"
+    )
+    assert idle["credit_live"] == "—"
+    assert (idle["credit_rsv_nom"], idle["credit_rsv_eff"], idle["pct_rsv_eff"]) == ("$5", "$10", "10%")
+    assert (idle["pct_left"], idle["credit_left"]) == ("70%", "$70")
+    assert "reserves (5h target): nominal 10% / $5.00 -> effective 10% / $10.00" in _quota_detail_text(idle)
