@@ -344,22 +344,22 @@ native_candidates = [
         assert [str(col.label) for col in pre_quotas.ordered_columns] == [
             "POOL", "PLAN", "ROLE", "STATUS", "WIN",
             "%USED", "%RSV(nom)", "%RSV(eff)", "%LEFT",
-            "$CAP", "$USED", "$RSV(nom)", "$RSV(eff)", "$LEFT", "RESETS",
+            "$CAP", "$USED", "$RSV(nom)", "$LIVE", "$RSV(eff)", "$LEFT", "RESETS",
         ]
         # agy/gemini 7d ($1,350) without live rsv:
         # target: %RSV(nom)=5%, $RSV(nom)=$10, %RSV(eff)=5%, $RSV(eff)=$67.50
         # host:   %RSV(nom)=10%, $RSV(nom)=$35, %RSV(eff)=10%, $RSV(eff)=$135
         gem_7d_t = [c.plain for c in pre_quotas.get_row("agy:gemini:7d:target")]
         gem_7d_h = [c.plain for c in pre_quotas.get_row("agy:gemini:7d:host")]
-        assert gem_7d_t[:14] == [
+        assert gem_7d_t[:15] == [
             "agy/gemini", "ultra-200", "target", "OK", "7d",
             "26%", "5%", "5%", "69%",
-            "$1,350", "$351", "$10", "$67.50", "$932",
+            "$1,350", "$351", "$10", "—", "$67.50", "$932",
         ]
-        assert gem_7d_h[:14] == [
+        assert gem_7d_h[:15] == [
             "agy/gemini", "ultra-200", "host", "OK", "7d",
             "26%", "10%", "10%", "64%",
-            "$1,350", "$351", "$35", "$135", "$864",
+            "$1,350", "$351", "$35", "—", "$135", "$864",
         ]
 
     # Add an active $4 in-flight reservation on agy/gemini
@@ -443,21 +443,21 @@ native_candidates = [
         codex_5h_t = quotas.get_row("codex:shared:5h:target")
         codex_5h_h = quotas.get_row("codex:shared:5h:host")
         codex_7d_t = quotas.get_row("codex:shared:7d:target")
-        assert [c.plain for c in codex_5h_t[:14]] == [
+        assert [c.plain for c in codex_5h_t[:15]] == [
             "codex", "plus-20", "target", "BLOCKED", "5h",
             "0%", "5%", "50%", "50%",
-            "$20", "$0", "$10", "$10", "$10",
+            "$20", "$0", "$10", "—", "$10", "$10",
         ]
         assert codex_5h_t[3].style == "bold red"
-        assert [c.plain for c in codex_5h_h[:14]] == [
+        assert [c.plain for c in codex_5h_h[:15]] == [
             "codex", "plus-20", "host", "BLOCKED", "5h",
             "0%", "10%", "100%", "0%",
-            "$20", "$0", "$35", "$35", "$0",
+            "$20", "$0", "$35", "—", "$35", "$0",
         ]
-        assert [c.plain for c in codex_7d_t[:14]] == [
+        assert [c.plain for c in codex_7d_t[:15]] == [
             "codex", "plus-20", "target", "BLOCKED", "7d",
             "81%", "5%", "20%", "0%",
-            "$50", "$40.50", "$10", "$10", "$0",
+            "$50", "$40.50", "$10", "—", "$10", "$0",
         ]
 
         claude_shared_7d = quotas.get_row("claude:shared:7d:target")
@@ -467,26 +467,26 @@ native_candidates = [
 
         # agy/gemini 5h host with $4 active in-flight reservation:
         agy_gem_5h_h = quotas.get_row("agy:gemini:5h:host")
-        assert [c.plain for c in agy_gem_5h_h[:14]] == [
+        assert [c.plain for c in agy_gem_5h_h[:15]] == [
             "agy/gemini", "ultra-200", "host", "OK", "5h",
             "10%", "10%", "12.2%", "77.8%",
-            "$320", "$32", "$35+$4", "$39", "$249",
+            "$320", "$32", "$35", "$4", "$39", "$249",
         ]
         assert agy_gem_5h_h[3].style == "bold green"
 
         # agy/3p shows BOTH target OK ($15 left) and host BLOCKED ($35 rsv > $25 cap) simultaneously in "all":
         agy_3p_5h_t = quotas.get_row("agy:3p:5h:target")
         agy_3p_5h_h = quotas.get_row("agy:3p:5h:host")
-        assert [c.plain for c in agy_3p_5h_t[:14]] == [
+        assert [c.plain for c in agy_3p_5h_t[:15]] == [
             "agy/3p", "ultra-200", "target", "OK", "5h",
             "0%", "5%", "40%", "60%",
-            "$25", "$0", "$10", "$10", "$15",
+            "$25", "$0", "$10", "—", "$10", "$15",
         ]
         assert agy_3p_5h_t[3].style == "bold green"
-        assert [c.plain for c in agy_3p_5h_h[:14]] == [
+        assert [c.plain for c in agy_3p_5h_h[:15]] == [
             "agy/3p", "ultra-200", "host", "BLOCKED", "5h",
             "0%", "10%", "100%", "0%",
-            "$25", "$0", "$35", "$35", "$0",
+            "$25", "$0", "$35", "—", "$35", "$0",
         ]
         assert agy_3p_5h_h[3].style == "bold red"
 
@@ -495,7 +495,7 @@ native_candidates = [
         await pilot.pause()
         detail_host = str(app.query_one("#route-detail", Static).render())
         assert "agy/gemini [gemini · host]" in detail_host
-        assert "nominal 10% (5%+5% host) / $35.00 ($10.00+$25.00 host) +$4.00 live -> effective 12.2% / $39.00" in detail_host
+        assert "nominal 10% (5%+5% host) / $35.00 ($10.00+$25.00 host) · live $4.00 -> effective 12.2% / $39.00" in detail_host
 
         # Cycling role filter with 'H': all -> target -> host -> agy -> claude -> codex -> all
         await pilot.press("H")  # target

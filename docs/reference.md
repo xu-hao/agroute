@@ -728,8 +728,8 @@ linked raw observations use `linked_raw`.
     (`a`), model (`m`), and route lifecycle or outcome (`s`); `?` explains keybindings and both
     status columns.
   - **`QUOTAS` view (`u` / `Tab`)**: full-height, cursor-navigable `#quotas` Textual `DataTable`
-    with 15 columns (`POOL`, `PLAN`, `ROLE`, `STATUS`, `WIN`, `%USED`, `%RSV(nom)`, `%RSV(eff)`,
-    `%LEFT`, `$CAP`, `$USED`, `$RSV(nom)`, `$RSV(eff)`, `$LEFT`, and `RESETS`) across multi-pool
+    with 16 columns (`POOL`, `PLAN`, `ROLE`, `STATUS`, `WIN`, `%USED`, `%RSV(nom)`, `%RSV(eff)`,
+    `%LEFT`, `$CAP`, `$USED`, `$RSV(nom)`, `$LIVE`, `$RSV(eff)`, `$LEFT`, and `RESETS`) across multi-pool
     quotas (`codex`, `claude/shared`, `claude/fable`, `agy/gemini`, `agy/3p`), where `STATUS`
     distinguishes `OK`, `BLOCKED` (quota, rate-limit, or credit reserve exhausted), `LOGIN` (CLI
     authentication expired or logged out), `EXCLUDED`, and `OFF`. Rows are ordered
@@ -741,14 +741,16 @@ linked raw observations use `linked_raw`.
     `7d` per pool). `%RSV(nom)`
     and `$RSV(nom)` show the configured percentage cutoff reserve (`100% - eff_max_pct`, adding
     `host_reserve_pct` on `host` rows) and configured dollar reserve (`min_remaining_credit_usd`,
-    plus `host_reserve_credit_usd` on `host` rows, formatted as `$nom+$live` when in-flight
-    reservations are active); `%RSV(eff)` and `$RSV(eff)` reconcile both reserves (plus active
-    in-flight credit) against `$CAP` (`—` for `$RSV(eff)` when `$CAP` is unknown) so `%LEFT`
+    plus `host_reserve_credit_usd` on `host` rows); `$LIVE` shows the window's active in-flight
+    `agr plan` reservations (`reserved_credit_usd`, released on the next probe; `—` when none);
+    `$RSV(eff)` is `max($CAP * %RSV(nom), $RSV(nom)) + $LIVE` and `%RSV(eff)` is
+    `$RSV(eff) / $CAP` capped at 100% (`—` for `$RSV(eff)` and `%RSV(nom)` for `%RSV(eff)` when
+    `$CAP` is unknown) so `%LEFT`
     (`max(0%, 100% - %USED - %RSV(eff))`) and `$LEFT` (`max($0, $CAP - $USED - $RSV(eff))`) stay
     consistent across percentage and dollar columns. Highlighting a row updates `#route-detail`
     with a 6-line `[pool_name · role]` summary (subscription cost, `cost_per_credit`, target and
     host-native eligibility and exclusion reasons, explicit nominal-to-effective reserve breakdown
-    including additive `base+host` and `+$live` components on `host` rows, 5h/7d calibrated credit
+    including additive `base+host` components on `host` rows and a separate `live` amount, 5h/7d calibrated credit
     and resets, and eligible/total pool models), and pressing `Enter` opens the full `Agent Usage &
     Eligibility` per-model breakdown modal.
   Enabled providers with missing, stale, failed, or expired usage are probed off the UI loop

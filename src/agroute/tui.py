@@ -606,24 +606,21 @@ def _compute_window_quota_metrics(
         usd_rsv_nom = 0.0
         has_nom_usd = False
 
-    if has_nom_usd and (_is_num(ceiling) or usd_rsv_nom > 0.0 or live_rsv > 0.0):
-        c_rsv_nom_str = (
-            f"{_fmt_credit(usd_rsv_nom, compact=True)}+{_fmt_credit(live_rsv, compact=True)}"
-            if live_rsv > 0.0
-            else _fmt_credit(usd_rsv_nom, compact=True)
-        )
-    elif not has_nom_usd and live_rsv > 0.0:
-        c_rsv_nom_str = f"$0+{_fmt_credit(live_rsv, compact=True)}"
+    # $RSV(nom) shows only the configured dollar reserve; active in-flight reservations from
+    # `agr plan` are shown separately in $LIVE.
+    if has_nom_usd and (_is_num(ceiling) or usd_rsv_nom > 0.0):
+        c_rsv_nom_str = _fmt_credit(usd_rsv_nom, compact=True)
     else:
         c_rsv_nom_str = "—"
+    c_live_str = _fmt_credit(live_rsv, compact=True) if live_rsv > 0.0 else "—"
 
     if _is_num(ceiling) and float(ceiling) > 0.0:
         ceil_f = float(ceiling)
-        nom_plus_live_usd = (usd_rsv_nom if has_nom_usd else 0.0) + live_rsv
         usd_rsv_eff: float | None = (
             max(pct_rsv_nom / 100.0 * ceil_f, usd_rsv_nom if has_nom_usd else 0.0) + live_rsv
         )
-        pct_rsv_eff = min(100.0, max(pct_rsv_nom, nom_plus_live_usd / ceil_f * 100.0))
+        # Keep %RSV(eff) == $RSV(eff) / $CAP so %LEFT agrees with $LEFT.
+        pct_rsv_eff = min(100.0, usd_rsv_eff / ceil_f * 100.0)
         c_rsv_eff_str = _fmt_credit(usd_rsv_eff, compact=True)
     else:
         usd_rsv_eff = None
@@ -670,6 +667,7 @@ def _compute_window_quota_metrics(
         "credit_cap": c_cap_str,
         "credit_used": c_used_str,
         "credit_rsv_nom": c_rsv_nom_str,
+        "credit_live": c_live_str,
         "credit_rsv_eff": c_rsv_eff_str,
         "credit_left": c_left_str,
     }
@@ -804,6 +802,7 @@ def _build_quota_rows(snapshot: dict, *, role_filter: str = "all", now: datetime
                             "credit_cap": m_win["credit_cap"],
                             "credit_used": m_win["credit_used"],
                             "credit_rsv_nom": m_win["credit_rsv_nom"],
+                            "credit_live": m_win["credit_live"],
                             "credit_rsv_eff": m_win["credit_rsv_eff"],
                             "credit_left": m_win["credit_left"],
                             "resets": reset_by_win[w_short],
@@ -873,7 +872,7 @@ def _quota_detail_text(qrow: dict) -> str:
         )
 
     live_val = float(m_win.get("live_rsv_val") or 0.0)
-    live_detail = f" +{_fmt_credit(live_val)} live" if live_val > 0.0 else ""
+    live_detail = f" · live {_fmt_credit(live_val)}" if live_val > 0.0 else ""
     eff_usd_val = m_win.get("usd_rsv_eff_val")
     eff_usd_detail = _fmt_credit(float(eff_usd_val)) if _is_num(eff_usd_val) else "—"
     reserve_line = (
@@ -1357,6 +1356,7 @@ def build_app(
                 "$CAP",
                 "$USED",
                 "$RSV(nom)",
+                "$LIVE",
                 "$RSV(eff)",
                 "$LEFT",
                 "RESETS",
@@ -1589,6 +1589,7 @@ def build_app(
                     _compact_cell(qrow["credit_cap"]),
                     _compact_cell(qrow["credit_used"]),
                     _compact_cell(qrow["credit_rsv_nom"]),
+                    _compact_cell(qrow["credit_live"]),
                     _compact_cell(qrow["credit_rsv_eff"]),
                     _compact_cell(qrow["credit_left"]),
                     _compact_cell(qrow["resets"]),
