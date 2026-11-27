@@ -13,7 +13,7 @@ surface actually enforces.
 
 ## Provider-qualified identities for `howhard`
 
-`howhard` 2.1+ evaluates `(model, effort)` cells and treats provider-qualified model IDs as
+`howhard` evaluates `(model, effort)` cells and treats provider-qualified model IDs as
 opaque identities. `agr candidates` prefixes every bare model ID with its agent ID:
 
 - `agy/gemini-4-carbon-high` (`effort = "high"`) for `agy` on either surface: the native

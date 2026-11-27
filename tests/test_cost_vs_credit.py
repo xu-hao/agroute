@@ -311,6 +311,7 @@ def test_howhard_v7_ranks_by_session_cost_and_plan_checks_credit_budget(tmp_path
         "howhard-decision-v8",
         "howhard-decision-v9",
         "howhard-decision-v10",
+        "howhard-decision-v11",
     }
     by_model = {cell["model"]: cell for cell in decision["cells"]}
     assert by_model["codex/gpt-6.1-sol"]["needed_credit_usd"] > by_model["claude/claude-opus-5-5"]["needed_credit_usd"]

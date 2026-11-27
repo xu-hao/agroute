@@ -15,7 +15,7 @@ from agroute import AgRouteError, Router
 from agroute.cli import main
 from agroute.discovery import parse_agy_models_output
 
-HOWHARD_CELL_KEYS = {"model", "effort", "usd_per_mtok", "rate_card", "credit_budget", "cost_per_credit"}
+HOWHARD_CELL_KEYS = {"model", "effort", "agent", "usd_per_mtok", "rate_card", "credit_budget", "cost_per_credit"}
 HOWHARD_BUDGET_KEYS = {"available_credit_usd", "session_5h_remaining_credit_usd", "weekly_7d_remaining_credit_usd"}
 
 

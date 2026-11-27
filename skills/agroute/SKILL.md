@@ -22,7 +22,8 @@ while `howhard` owns model/effort selection, execution accounting, and writable 
    back in, and excludes other infrastructure probe failures after two bounded attempts.
 3. Follow [the routing and decision workflow](references/workflow.md):
    - Run `agr candidates --host HOST --output /tmp/TASK-candidates.json --json` to emit
-     the full eligible inventory (`<agent>/<model>`, `<effort>`). (Without `--json`,
+     the full eligible inventory (`<agent>/<model>`, `<effort>`, and the `agent` label that
+     `howhard` 6.0.0+ stores). (Without `--json`,
      `agr candidates` prints the plain JSON candidate array directly for `howhard --candidates`.)
      When `target == host`, `agroute` emits `native_candidates` supported by the host's native
      delegation tool; when `target != host`, `agroute` emits `cli_candidates` supported by the
@@ -45,16 +46,20 @@ while `howhard` owns model/effort selection, execution accounting, and writable 
      observed quota deltas; current measurements use `needed_credit_usd` or `credit_usd`, while
      older `cost_usd` observations remain readable. Active budgets require priced candidates,
      and `exclude_quota_groups` (such as `["3p"]`) is honored.
-   - Pass `--candidates /tmp/TASK-candidates.json` to `howhard context ... --auto-decide --seed SEED`
+   - Pass `--candidates /tmp/TASK-candidates.json --host HOST` to
+     `howhard context ... --auto-decide --seed SEED`
      (which completes warm memory-free prototype routes in one step when `decision_id` is returned;
      otherwise follow `context`, `retrieve`, and `decide`, evaluating each `baseline_request` in an
-     independent stateless context only when non-null, without needing `--llm off`) or `howhard pick`,
+     independent stateless context only when non-null, without needing `--llm off`) or
+     `howhard pick ... --host HOST`,
      saving the decision JSON to `/tmp/TASK-decision.json`.
    - Run `agr plan --host HOST --decision /tmp/TASK-decision.json --json` to resolve the
-     decision into an `agroute-execution-plan-v1` payload (which also verifies live
-     `needed_credit_usd <= credit_budget.available_credit_usd` when present). In a
-     `howhard-decision-v7`, `v8`, `v9`, or `v10` result, compare quota credit with
-     `needed_credit_usd` and read `session_cost_usd` as cost.
+     decision into an `agroute-execution-plan-v1` payload (which also verifies that live
+     `credit_budget.available_credit_usd` covers the larger of `needed_credit_usd` and
+     `credit_p80_usd` when present, including for a host-affinity override). In a
+     `howhard-decision-v7`, `v8`, `v9`, `v10`, or `v11` result, read quota credit from
+     `needed_credit_usd` (the average, which `agroute` reserves) and `credit_p80_usd` (`v11`'s
+     80% point), and read `session_cost_usd` as cost.
 4. Inspect `execution_mode`, `needs_review`, `invocation`, `fallback`, and `rate_card` (the
    target cell's price frozen at planning time, or `null`; `usd_per_mtok` appears for a blended
    price) in the returned plan:
@@ -90,8 +95,8 @@ while `howhard` owns model/effort selection, execution accounting, and writable 
      [workflow](references/workflow.md#4-execute-and-record-outcome-in-howhard) describes:
      `codex-exec-v1` and `claude-sdk-v1` for those CLI streams (the Claude adapters refuse the
      provider-qualified card), `agy-print-v1` for `agy` CLI streams, and `agy-transcript-v1`
-     for Antigravity `swarm` `transcript.jsonl` files. The two `agy` adapters need a `howhard`
-     release that provides them (`xu-hao/howhard#156`); otherwise follow the workflow's
+     for Antigravity `swarm` `transcript.jsonl` files. `howhard` 6.0.0+ ships both `agy`
+     adapters for Antigravity `1.5.18`; if it cannot collect an artifact, follow the workflow's
      fallback. Then complete `howhard memory learn-context` / `howhard memory learn`.
    - When `howhard` has no priced measurement, pass measured quota credit to
      `agr close ROUTE_ID --credit-usd USD` (with `--obs EXECUTION_ID` for raw feedback).

@@ -281,7 +281,7 @@ def record_plan_route(
         record["credit_budget"] = deepcopy(plan["credit_budget"])
     if "needed_credit_usd" in plan and plan["needed_credit_usd"] is not None:
         record["needed_credit_usd"] = plan["needed_credit_usd"]
-    for key in ("session_cost_usd", "cost_per_credit", "monthly_cost_usd", "weekly_cost_usd"):
+    for key in ("credit_p80_usd", "session_cost_usd", "cost_per_credit", "monthly_cost_usd", "weekly_cost_usd"):
         if plan.get(key) is not None:
             record[key] = plan[key]
     for key in ("rate_card", "usd_per_mtok"):
@@ -360,6 +360,7 @@ def _summarize_decision(document: dict) -> dict:
         "model", "family", "effort", "clean", "loud", "silent", "tokens", "seconds",
         "C_run", "session_cost_usd", "needed_credit_usd", "cost_per_credit", "J",
         "cap_met", "needs_review", "available_credit_usd", "credit_ok",
+        "agent", "credit_p80_usd", "tier", "pi",
     )
 
     def cell_summary(cell):
@@ -376,7 +377,7 @@ def _summarize_decision(document: dict) -> dict:
     chosen_cell = _chosen_selection_cell(document, chosen)
     context = document.get("context")
     task_text = context.get("task_text") if isinstance(context, dict) else None
-    return {
+    summary = {
         "task_type": document.get("task_type"),
         "risk_class": document.get("risk_class"),
         "cap_met": _decision_selection_flag(document, "cap_met"),
@@ -386,6 +387,9 @@ def _summarize_decision(document: dict) -> dict:
         "cells": [cell_summary(chosen_cell)] if chosen_cell is not None else [],
         "forecasts": [cell_summary(cell) for cell in _extract_forecasts(document)[:8]],
     }
+    if isinstance(document.get("host"), str):
+        summary["host"] = document["host"]
+    return summary
 
 
 def _load_howhard_observations(hh_root: Path) -> tuple[dict[str, dict], list[dict]]:
@@ -820,7 +824,10 @@ def load_repository_routes(capture_root: Path, state_root: Path, repository_id: 
             route_entry["credit_budget"] = deepcopy(rec["credit_budget"])
         if type(rec.get("needed_credit_usd")) in (int, float):
             route_entry["needed_credit_usd"] = float(rec["needed_credit_usd"])
-        for key in ("session_cost_usd", "cost_per_credit", "monthly_cost_usd", "weekly_cost_usd", "usd_per_mtok"):
+        for key in (
+            "credit_p80_usd", "session_cost_usd", "cost_per_credit",
+            "monthly_cost_usd", "weekly_cost_usd", "usd_per_mtok",
+        ):
             if type(rec.get(key)) in (int, float):
                 route_entry[key] = float(rec[key])
         if isinstance(rec.get("rate_card"), dict):
@@ -917,7 +924,7 @@ def load_repository_routes(capture_root: Path, state_root: Path, repository_id: 
         if isinstance(chosen_cell, dict):
             if isinstance(chosen_cell.get("credit_budget"), dict):
                 entry["credit_budget"] = deepcopy(chosen_cell["credit_budget"])
-            for key in ("session_cost_usd", "needed_credit_usd", "cost_per_credit"):
+            for key in ("session_cost_usd", "needed_credit_usd", "credit_p80_usd", "cost_per_credit"):
                 if type(chosen_cell.get(key)) in (int, float):
                     entry[key] = float(chosen_cell[key])
         routes.append(entry)

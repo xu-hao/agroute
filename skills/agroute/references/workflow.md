@@ -14,7 +14,9 @@ Unless explicitly overridden in `agroute.toml`, `agroute` automatically discover
 available models and reasoning efforts from the installed `codex`, `claude`, and `agy` clients.
 `--output` writes the full eligible candidate JSON array consumed by `howhard`'s
 `--candidates` flag, while stdout prints the full `agroute-candidates-v1` envelope including
-any `excluded` agents or model tiers and their quota exclusion reasons. Routing refreshes
+any `excluded` agents or model tiers and their quota exclusion reasons. Every candidate
+cell carries an `agent` label (`codex`, `claude`, or `agy`), which `howhard` 6.0.0+ stores and
+earlier releases refuse. Routing refreshes
 missing, stale, or expired known quota evidence; a provider whose refresh fails after two
 bounded attempts is excluded with a retry reason. Inspect or retry the provider before
 using it; independently fresh providers remain available.
@@ -45,7 +47,7 @@ prints the full `agroute-candidates-v1` envelope (`candidates`, `excluded`, `pri
 the whole inventory (or is excluded automatically when `credit_budget` is active). See the
 rate-card and calling-agent callback contracts in `docs/reference.md`.
 
-To generate a named `[inventories]` section for `howhard.toml` (`howhard` 2.1+ `--inventory`):
+To generate a named `[inventories]` section for `howhard.toml` (`howhard` 6.0.0+ `--inventory`):
 
 ```sh
 agr inventory --host agy --name router
@@ -53,8 +55,10 @@ agr inventory --host agy --name router
 
 ## 2. Select a route with `howhard`
 
-Use the calling-agent workflow (`--llm off` is no longer needed on `context`, `retrieve`, or
-`decide` in `howhard` 5.0.0+). Pass `--auto-decide --seed 42` to `howhard context` so warm
+Use the calling-agent workflow of `howhard` 6.0.0+ (`--llm off` is not needed on `context`,
+`retrieve`, or `decide`). Pass `--host HOST`, the same value as for `agr candidates --host`, to
+`howhard context` or `howhard pick` so the receipt stores the agent that asked for the route.
+Pass `--auto-decide --seed 42` to `howhard context` so warm
 memory-free prototype routes complete in one step and return `decision_id` directly; otherwise
 follow `context`, `retrieve`, and `decide`, evaluating each `baseline_request` in a fresh
 stateless context only when non-null (when `baseline_request` is `null`, matched prototypes
@@ -62,7 +66,7 @@ already cover that stage's cells, so omit `filter` or `forecasts` and reason onl
 memories):
 
 ```sh
-howhard context task --text-file /tmp/task.txt --candidates /tmp/task-candidates.json --auto-decide --seed 42 --json > /tmp/task-context.json
+howhard context task --text-file /tmp/task.txt --candidates /tmp/task-candidates.json --host agy --auto-decide --seed 42 --json > /tmp/task-context.json
 # If /tmp/task-context.json already contains "decision_id", use it directly as /tmp/task-decision.json.
 # Otherwise complete retrieval, Stage 1 filter, and Stage 2 forecast (evaluating baseline_request independently only when non-null):
 howhard retrieve REQUEST_ID --file /tmp/retrieval-queries.json --json
@@ -71,11 +75,11 @@ howhard decide FORECAST_REQUEST_ID --file /tmp/forecasts.json --seed 42 --json >
 ```
 
 Or use `howhard pick` (which completes warm memory-free prototype routes directly or uses a
-configured provider adapter otherwise), producing a `howhard-decision-v10` receipt (alongside
-`howhard-decision-v7`, `v8`, and `v9`):
+configured provider adapter otherwise). `howhard` 6.0.0+ produces a `howhard-decision-v11`
+receipt; `agr plan` also reads `howhard-decision-v7`, `v8`, `v9`, and `v10`:
 
 ```sh
-howhard pick task --text-file /tmp/task.txt --candidates /tmp/task-candidates.json --seed 42 --json > /tmp/task-decision.json
+howhard pick task --text-file /tmp/task.txt --candidates /tmp/task-candidates.json --host agy --seed 42 --json > /tmp/task-decision.json
 ```
 
 ## 3. Resolve the `howhard` decision into an execution plan
@@ -83,6 +87,13 @@ howhard pick task --text-file /tmp/task.txt --candidates /tmp/task-candidates.js
 ```sh
 agr plan --host agy --decision /tmp/task-decision.json --prompt-file /tmp/task.txt --output /tmp/task-plan.json --json
 ```
+
+`agr plan` rechecks live `credit_budget.available_credit_usd` against the larger of
+`needed_credit_usd` (average quota credit) and `credit_p80_usd` (its 80% point, in
+`howhard-decision-v11` rows), and names `credit_p80_usd` in the refusal when that bound is the
+one checked because it is larger or the average is absent. A host-affinity override applies the
+same check to the native cell. The reservation holds `needed_credit_usd`, or `credit_p80_usd`
+only when there is no average.
 
 The returned `agroute-execution-plan-v1` object includes:
 
@@ -94,6 +105,8 @@ The returned `agroute-execution-plan-v1` object includes:
   object (`argv`, `output_capture_adapter`, `prompt_delivery`) for the target model and effort so the
   host agent can recover immediately if native delegation fails at launch (e.g. subagent slot exhaustion);
   `null` when `execution_mode == "cli"`.
+- `needed_credit_usd` and `credit_p80_usd`: the resolved target cell's quota credit and its
+  80% point, each present when the decision reports it.
 - `rate_card`: the resolved target cell's `howhard-rate-card-v1` object, frozen at planning
   time, or `null` when it has none. `usd_per_mtok` is present instead when the cell has a blended
   price. The route record keeps both (`agr show ROUTE_ID --json`). Price usage from this copy,
@@ -140,9 +153,10 @@ The Claude adapters take a bare model ID from the artifact and refuse the provid
 card, so collect without it (`claude-sdk-v1` keeps the client's cost estimate). When the plan's
 `rate_card` is `null`, omit the manifest field.
 
-`agy-print-v1` and `agy-transcript-v1` need a `howhard` release with the Antigravity
-collectors (`xu-hao/howhard#156`); `howhard` 5.0.0 refuses them. With such a release, attach
-the artifact instead of collapsing its categories into a scalar `--tokens`. Without it, sum
+`howhard` 6.0.0+ ships `agy-print-v1` and `agy-transcript-v1` for Antigravity `1.5.18`; set the
+manifest's `host_version` to the version that wrote the artifact. Attach the artifact instead of
+collapsing its categories into a scalar `--tokens`. If `howhard` cannot collect it, for example
+from another Antigravity version, sum
 `input_tokens`, `cache_read_tokens` and `output_tokens` over the transcript's
 `PLANNER_RESPONSE` steps, record that total with the outcome, and give the quota credit (each
 category at the frozen rates) to `agr close ROUTE_ID --credit-usd`. Never estimate unmeasured

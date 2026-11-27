@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 import json
+import math
 import re
 
 from .adapters import get_adapter
@@ -117,6 +118,23 @@ def _extract_needed_credit(entry, *, allow_legacy_cost=False):
     return None
 
 
+def _extract_credit_p80(entry):
+    """The howhard 6 80% point of quota credit, or ``None`` unless it is finite and nonnegative."""
+    if not isinstance(entry, dict):
+        return None
+    val = entry.get("credit_p80_usd")
+    if type(val) in (int, float) and math.isfinite(val) and val >= 0:
+        return float(val)
+    return None
+
+
+def _checked_credit(needed_credit, credit_p80):
+    """The amount compared with available credit: the larger of the average and its 80% point."""
+    if credit_p80 is not None and (needed_credit is None or credit_p80 > needed_credit):
+        return credit_p80
+    return needed_credit
+
+
 def _extract_session_cost(entry, *, allow_legacy_cost=False):
     if not isinstance(entry, dict):
         return None
@@ -129,7 +147,13 @@ def _extract_session_cost(entry, *, allow_legacy_cost=False):
 
 
 _CREDIT_COST_SPLIT_FORMATS = frozenset(
-    {"howhard-decision-v7", "howhard-decision-v8", "howhard-decision-v9", "howhard-decision-v10"}
+    {
+        "howhard-decision-v7",
+        "howhard-decision-v8",
+        "howhard-decision-v9",
+        "howhard-decision-v10",
+        "howhard-decision-v11",
+    }
 )
 
 
@@ -591,7 +615,7 @@ class Router:
                     )
                     continue
                 qualified = f"{name}{sep}{cand['model']}"
-                cell = {"model": qualified, "effort": cand["effort"]}
+                cell = {"model": qualified, "effort": cand["effort"], "agent": name}
                 cell["cost_per_credit"] = mq.get("cost_per_credit", 1.0)
                 if priced:
                     if is_discovered:
@@ -908,6 +932,9 @@ class Router:
         needed_credit = _extract_needed_credit(chosen_panel_item, allow_legacy_cost=allow_legacy_cost)
         if needed_credit is None:
             needed_credit = _extract_needed_credit(chosen, allow_legacy_cost=allow_legacy_cost)
+        credit_p80 = _extract_credit_p80(chosen_panel_item)
+        if credit_p80 is None:
+            credit_p80 = _extract_credit_p80(chosen)
         session_cost = _extract_session_cost(chosen_panel_item, allow_legacy_cost=allow_legacy_cost)
         if session_cost is None:
             session_cost = _extract_session_cost(chosen, allow_legacy_cost=allow_legacy_cost)
@@ -944,10 +971,11 @@ class Router:
                         nat_meta = admitted_meta[(ag, nat_m, eff_raw)]
                         nat_budget = nat_meta.get("credit_budget")
                         nat_needed = _extract_needed_credit(item, allow_legacy_cost=allow_legacy_cost)
+                        nat_checked = _checked_credit(nat_needed, _extract_credit_p80(item))
                         if (
                             nat_budget is not None
-                            and nat_needed is not None
-                            and nat_needed > nat_budget["available_credit_usd"]
+                            and nat_checked is not None
+                            and nat_checked > nat_budget["available_credit_usd"]
                         ):
                             continue
                         if best_native is None or score < best_native[0]:
@@ -960,6 +988,7 @@ class Router:
                         target_effort = nat_eff
                         needed_credit = nat_needed
                         target_panel_item = nat_item
+                        credit_p80 = _extract_credit_p80(nat_item)
                         session_cost = _extract_session_cost(nat_item, allow_legacy_cost=allow_legacy_cost)
                         host_affinity_applied = True
                         affinity_detail = {
@@ -976,8 +1005,10 @@ class Router:
         window_reserved = dict(meta.get("window_reserved", {}))
         reservation_pools = deepcopy(meta.get("reservation_pools", []))
 
+        checked_credit = _checked_credit(needed_credit, credit_p80)
+
         def _check_credit_fit(budget, reserves, reserved):
-            if budget is not None and needed_credit is not None and needed_credit > budget["available_credit_usd"]:
+            if budget is not None and checked_credit is not None and checked_credit > budget["available_credit_usd"]:
                 window_parts = []
                 if "session_5h_remaining_credit_usd" in budget:
                     window_parts.append(
@@ -994,8 +1025,11 @@ class Router:
                     if in_flight > 0.0:
                         window_parts.append(f"{window}_reserved_credit_usd={in_flight:.6g}")
                 window_detail = f" ({', '.join(window_parts)})" if window_parts else ""
+                p80_binds = needed_credit is None or checked_credit > needed_credit
+                bound_detail = " (credit_p80_usd)" if p80_binds else ""
                 raise AgRouteError(
-                    f"plan: chosen cell ({qualified_target_model!r}, {target_effort!r}) requires {needed_credit:.6g} USD credit, "
+                    f"plan: chosen cell ({qualified_target_model!r}, {target_effort!r}) requires "
+                    f"{checked_credit:.6g} USD credit{bound_detail}, "
                     f"exceeding remaining credit {budget['available_credit_usd']:.6g} USD{window_detail}"
                 )
 
@@ -1168,6 +1202,8 @@ class Router:
             result["credit_budget"] = deepcopy(live_budget)
         if needed_credit is not None:
             result["needed_credit_usd"] = needed_credit
+        if credit_p80 is not None:
+            result["credit_p80_usd"] = credit_p80
         if session_cost is not None:
             result["session_cost_usd"] = session_cost
         result["cost_per_credit"] = cell_cost_per_credit
@@ -1175,7 +1211,9 @@ class Router:
             result["monthly_cost_usd"] = meta["monthly_cost_usd"]
         if meta.get("weekly_cost_usd") is not None:
             result["weekly_cost_usd"] = meta["weekly_cost_usd"]
-        if needed_credit is not None and needed_credit > 0.0 and reservation_pools:
+        # Reserve the average forecast; the 80% point stands in only when there is no average.
+        reserved_credit = needed_credit if needed_credit is not None else credit_p80
+        if reserved_credit is not None and reserved_credit > 0.0 and reservation_pools:
             # Re-verify against live reservations and record atomically under the usage lock.
             with _usage_locked(self.config):
                 live_store = read_store(self.config)
@@ -1227,7 +1265,7 @@ class Router:
                     agent=target_agent,
                     model=target_model,
                     pools=live_mq.get("reservation_pools") or reservation_pools,
-                    reserved_credit_usd=needed_credit,
+                    reserved_credit_usd=reserved_credit,
                     created_at=result["evaluated_at"],
                     now_dt=now_dt,
                 )

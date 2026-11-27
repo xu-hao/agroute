@@ -219,8 +219,9 @@ fields.
 (howhard-inventories)=
 ## Generating `[inventories]` for `howhard.toml`
 
-`howhard` 2.1+ accepts explicitly named `[inventories]` in `howhard.toml` selected via
-`howhard ... --inventory NAME` or Python `inventory="NAME"`. Generate a filtered inventory
+`howhard` accepts explicitly named `[inventories]` in `howhard.toml` selected via
+`howhard ... --inventory NAME` or Python `inventory="NAME"`. Generated cells carry an `agent`
+label, which needs `howhard` 6.0.0+. Generate a filtered inventory
 table for the current host with:
 
 ```sh

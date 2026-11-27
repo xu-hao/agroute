@@ -13,9 +13,9 @@ use the [evaluation guide](docs/evaluation.md) to measure it on real work.
 `agroute` routes delegated coding-agent tasks across Codex (`codex`), Claude Code
 (`claude`), and Antigravity (`agy`) within live subscription quota and rate-limit
 windows. It filters available `(agent, model, effort)` candidate routes, emits a
-`howhard` 2.1+ candidate inventory with
-provider-qualified model identities (`<agent>/<model>`), and resolves a `howhard`
-decision into a deterministic execution plan.
+`howhard` 6.0.0+ candidate inventory with
+provider-qualified model identities (`<agent>/<model>`) and an `agent` label on every cell,
+and resolves a `howhard` decision into a deterministic execution plan.
 
 When the selected target agent matches the current host agent, `agroute` emits a
 native delegation tool directive (`swarm` or `invoke_subagent`, `Agent`, or `spawn_agent`).
@@ -26,7 +26,7 @@ writable semantic memory remain in `howhard`.
 
 ## Quickstart
 
-You need Python 3.11+, a POSIX shell, Git, [`howhard` 5.0.0+](https://pypi.org/project/howhard/5.0.0/)
+You need Python 3.11+, a POSIX shell, Git, [`howhard` 6.0.0+](https://pypi.org/project/howhard/6.0.0/)
 and a current Codex, Claude Code or Antigravity client with native plugin support.
 
 Install the Python backend from [PyPI](https://pypi.org/project/agroute/0.6.9/) in your
@@ -35,7 +35,7 @@ project directory:
 ```sh
 python3 -m venv .venv-agroute
 . .venv-agroute/bin/activate
-python -m pip install "agroute==0.6.9" "howhard>=5.0.0"
+python -m pip install "agroute==0.6.9" "howhard>=6.0.0"
 agr --version
 ```
 
@@ -92,9 +92,10 @@ skills:
    If `price_request` is non-null, look up official first-party provider pricing (or classify
    internal harness models as `"alias"` or `"unlisted"`), run
    `agr prices resolve --file /tmp/TASK-prices.json --json`, and re-emit candidates once.
-3. Select a route with `howhard` (`context --auto-decide`, or `context`/`retrieve`/`decide`
-   evaluating `baseline_request` in an independent stateless context only when non-null, or
-   `pick`), then resolve the execution plan with
+3. Select a route with `howhard` (`context --host <codex|claude|agy> --auto-decide`, or
+   `context`/`retrieve`/`decide` evaluating `baseline_request` in an independent stateless
+   context only when non-null, or `pick --host <codex|claude|agy>`), then resolve the
+   execution plan with
    `agr plan --host <codex|claude|agy> --decision /tmp/TASK-decision.json --json`.
 4. Honor `needs_review`. Execute native plans (`target_agent == host_agent`) with the
    host's native subagent tool and cross-agent plans (`target_agent != host_agent`) with
