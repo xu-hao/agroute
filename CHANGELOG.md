@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Fix credit calibration across route boundaries. A usage probe taken while a routed execution
+  is still running (such as the `agr tui` auto-probe or a concurrent `agr candidates` call) now
+  keeps the calibration anchor at the previous snapshot instead of advancing it and discarding
+  the run's quota increase; the first snapshot after the run ends calibrates the whole span.
+  An execution that began before the anchor snapshot no longer has all of its credit
+  attributed to the later part of its quota increase, which inflated the calibrated ceiling or
+  caused false outlier rejections; that interval is skipped. A route that is never observed or
+  closed skips only the interval it overlapped, so it cannot block later intervals (#130).
 - Share quota-credit calibration across repositories: unless a state directory is explicitly
   selected, `credit_calibration.json` now lives in the user spool
   (`${AGROUTE_SPOOL_DIR:-${XDG_DATA_HOME:-~/.local/share}/agroute}`) with updates serialized by

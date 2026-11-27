@@ -385,11 +385,23 @@ Subscription quotas belong to the account, so the store's location follows state
 - Non-resetting intervals `[t_prev, t_curr]` with `delta_used_pct >= 0.25`
   (`delta_frac = delta_used_pct / 100.0`) match completed `howhard` observations in
   `outcomes.jsonl` / `pending.jsonl`, including amendments and execution usage, when all
-  matched observations have positive measured credit and no unobserved or in-flight route in
-  `routes.sqlite3` straddles `t_curr`. New observations use `needed_credit_usd` or `credit_usd`;
+  matched observations have positive measured credit and no route in `routes.sqlite3` makes
+  the interval unbounded (see the next item). New observations use `needed_credit_usd` or `credit_usd`;
   older `cost_usd` measurements remain readable as credit evidence. Credit recorded with
   `agr close --credit-usd` is first
   {ref}`reconciled with these observations <close-credit-reconciliation>`.
+- Routes for the same agent and pool group planned at or before `t_curr` bound the interval.
+  A route ends at its matched `howhard` observation, otherwise at a priced `agr close`;
+  cancelled routes are ignored. A route still running at `t_curr` — planned before `t_curr`
+  and ending after it, or neither observed nor closed within 5 hours (`18000` seconds) of
+  planning — holds `last_snapshot` at `t_prev`, so mid-run probes (such as the `agr tui`
+  auto-probe or concurrent `agr candidates` calls) never split an execution and the first
+  snapshot after it ends evaluates the whole span. Otherwise `last_snapshot` advances to
+  `t_curr`, but the interval is skipped without counting an outlier when a route planned
+  before `t_prev` ends after `t_prev` (part of its credit precedes the interval), an unpriced
+  closed route without an observation overlaps the interval, or a route that was never
+  observed or closed was still within its 5-hour window at `t_prev`. Such an expired route
+  affects only that one interval.
 - Intervals whose implied credit ceiling falls outside `[0.1 * prior_credit_usd,
   10.0 * prior_credit_usd]` are rejected as outliers. Accepted intervals update `(s_credit,
   s_frac)` with an exponential forgetting cap of `2.0` windows and estimate
@@ -902,7 +914,7 @@ not launch a worker. Close that continuation with `agr close CONTINUATION_ID --t
 --seconds SEC --credit-usd USD` after completion, leaving howhard unscored for the
 post-switch task. Alternatively, link separately planned routes with `--from` and
 `--superseded-by`. Abandoned plans use `--status cancelled`.
-Closed routes no longer block calibration as in-flight work; measured close credit may
+Closed routes no longer hold calibration as in-flight work; measured close credit may
 contribute within cleanly bounded quota intervals. Cancellation releases its reservation.
 
 A continuation route stores its own {ref}`frozen cell price <plan-rate-card>`, resolved

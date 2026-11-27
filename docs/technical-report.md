@@ -224,9 +224,16 @@ is not used as the credit budget.
 A qualifying interval joins two non-resetting quota snapshots and completed
 howhard observations for the same agent and consumed pool. It must have a quota
 increase of at least 0.25 percentage points, positive measured credit for all matched
-observations, and no relevant unobserved or in-flight route straddling the boundary.
-Reset changes, declining usage and missing measurements prevent an inappropriate
-interval update. Each interval boundary is advanced so the interval is not reused.
+observations, and every relevant route execution must lie wholly inside the interval.
+While an execution is still running at the later snapshot, the earlier boundary is held,
+so periodic probes during a run do not split it; the first snapshot after the run ends
+evaluates the whole span. An execution that began before the earlier snapshot is only
+partly inside the interval, so that interval is skipped rather than attributing all of its
+credit to the remaining quota increase. An unmeasured overlap, or a route that was never
+completed and was still within its 5-hour allowance at the earlier snapshot, also skips the
+interval. Reset changes, declining usage and missing measurements prevent an inappropriate
+interval update. Apart from held boundaries, each interval boundary is advanced so the
+interval is not reused and an abandoned route cannot block later intervals.
 
 This matching depends on observation coverage. Consumption from other activity,
 delayed reports, coarse counters or changing price bases can affect the inferred
