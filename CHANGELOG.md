@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Share quota-credit calibration across repositories: unless a state directory is explicitly
+  selected, `credit_calibration.json` now lives in the user spool
+  (`${AGROUTE_SPOOL_DIR:-${XDG_DATA_HOME:-~/.local/share}/agroute}`) with updates serialized by
+  `credit_calibration.lock`, so quota snapshots and observations from different repositories
+  calibrate the same account-wide pools. Until that file exists, it is seeded from existing
+  per-repository stores, which are left unchanged. `--state-dir` / `AGROUTE_STATE_DIR` stores
+  stay isolated, and a spool that cannot be written skips calibration updates without failing
+  usage commands (#129).
+
 ## 0.6.9 — 2026-11-25
 
 - Split active in-flight `agr plan` reservations out of the `agr tui` `#quotas` `$RSV(nom)` column

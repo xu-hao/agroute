@@ -214,7 +214,12 @@ emitted fields and policy behavior.
 Credit calibration is separate from howhard's learning about task suitability.
 It estimates the quota-credit ceiling for a full native quota window from recorded
 execution credit measurements. Its state is keyed by agent, effective plan, pool group and
-window. Subscription cash cost is reported separately and is not used as the credit budget.
+window. Because subscription quotas are shared by all of an account's repositories,
+calibration state is by default one store in the user spool, updated under a cross-process
+lock; an explicitly selected state directory keeps an isolated store. The
+{ref}`calibration store contract <credit-calibration-store>` defines location, locking and
+seeding from earlier per-repository stores. Subscription cash cost is reported separately and
+is not used as the credit budget.
 
 A qualifying interval joins two non-resetting quota snapshots and completed
 howhard observations for the same agent and consumed pool. It must have a quota
@@ -310,7 +315,7 @@ required application dependency.
 | --- | --- |
 | `usage.json` | Native usage, reset and availability evidence |
 | `prices.json` | Validated local price resolutions and expiry |
-| `credit_calibration.json` | Pool snapshots and calibration statistics |
+| `credit_calibration.json` | Pool snapshots and calibration statistics (in the user spool unless state is explicitly selected) |
 | `routes.sqlite3` | Complete route/closure history and lightweight decision-summary cache (legacy JSONL migrates automatically) |
 | howhard's own store | Decisions, execution outcomes, accounting and semantic memory |
 
