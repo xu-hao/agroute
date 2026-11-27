@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 — 2026-11-27
 
 - Align with `howhard` 6.0.0, which routing now requires (#135). Every candidate cell from
   `agr candidates` and `agr inventory` carries an `agent` label; earlier `howhard` releases
@@ -44,6 +44,7 @@
 - Document pricing `howhard usage collect` / `howhard usage attach` manifests with the plan's
   frozen `rate_card`, including the `agy-print-v1` and `agy-transcript-v1` collectors tracked in
   `xu-hao/howhard#156` (#128).
+- Bump the package, native plugin manifests, and quickstart installation pointers to `0.7.0` (#136).
 
 ## 0.6.9 — 2026-11-25
 
