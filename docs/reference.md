@@ -89,6 +89,9 @@ these fields:
 Effort never changes a price. The per-token price is fixed by the model, and effort enters
 `howhard`'s comparison through its per-cell token forecasts.
 
+`agr plan` and `agr close --switched-to` also store the price on the plan and route records;
+see {ref}`frozen plan prices <plan-rate-card>`.
+
 (price-precedence)=
 ### Precedence
 
@@ -384,7 +387,9 @@ Subscription quotas belong to the account, so the store's location follows state
   `outcomes.jsonl` / `pending.jsonl`, including amendments and execution usage, when all
   matched observations have positive measured credit and no unobserved or in-flight route in
   `routes.sqlite3` straddles `t_curr`. New observations use `needed_credit_usd` or `credit_usd`;
-  older `cost_usd` measurements remain readable as credit evidence.
+  older `cost_usd` measurements remain readable as credit evidence. Credit recorded with
+  `agr close --credit-usd` is first
+  {ref}`reconciled with these observations <close-credit-reconciliation>`.
 - Intervals whose implied credit ceiling falls outside `[0.1 * prior_credit_usd,
   10.0 * prior_credit_usd]` are rejected as outliers. Accepted intervals update `(s_credit,
   s_frac)` with an exponential forgetting cap of `2.0` windows and estimate
@@ -667,8 +672,9 @@ An Antigravity native `swarm` worker writes no CLI capture artifact. Its actual 
 recorded in the worker's own conversation transcript,
 `<appDataDir>/brain/<conversationId>/.system_generated/logs/transcript.jsonl`: every step with
 `type = "PLANNER_RESPONSE"` carries `input_tokens`, `cache_read_tokens` and `output_tokens`
-for one model generation. The worker's usage is the sum of those fields over its steps; read
-it after the worker finishes and record it with the execution outcome.
+for one model generation. After the worker finishes, attach that transcript as
+{ref}`priced execution usage <plan-rate-card>` (`agy-transcript-v1`), which keeps the token
+categories apart.
 
 When `routing.host_affinity_epsilon > 0.0` and `howhard` chose a cross-agent route, `agr plan`
 checks whether an eligible native host route in the decision's scored panel (`candidates`,
@@ -693,7 +699,49 @@ a reserve. It does not
 use `session_cost_usd` as quota credit. Older decision formats without the explicit split
 retain their legacy `C_run` compatibility. The resolved execution plan and persisted route
 record include `session_cost_usd`, `needed_credit_usd`, `cost_per_credit`, and `credit_budget`
-when available.
+when available. They also carry the {ref}`frozen cell price <plan-rate-card>`.
+
+(plan-rate-card)=
+### Frozen plan prices and usage manifests
+
+Every `agroute-execution-plan-v1` carries the price of its `resolved_target` cell. `agr plan`
+computes it offline at `evaluated_at` under the same {ref}`price precedence <price-precedence>`
+that `candidates` uses, so it equals the price on that candidate cell at that time. After a
+host-affinity override it is the executed native cell's price.
+
+- `rate_card` is always present: a copy of the cell's `howhard-rate-card-v1` object, or `null`
+  when the cell has no card.
+- `usd_per_mtok` is present only when the cell has a blended price (`rate_card` is then
+  `null`).
+
+The route record in `routes.sqlite3` stores whichever of the two is known, and `agr list --json`
+and `agr show <id> --json` return it. This price is frozen: later configuration edits,
+`prices.json` overwrites or expiry, and scheduled catalog changes do not alter it. Use it for
+usage accounting instead of looking the price up after the run. Price state never changes
+eligibility. If `prices.json` is unreadable and no configured price applies, the plan still
+resolves with `rate_card: null`, and `warnings` gains a
+`plan: rate card unavailable for <model>: ...` entry.
+
+To price measured usage, copy the plan's `rate_card` unchanged into the optional `rate_card`
+field of a `howhard-usage-manifest-v1`, and set the manifest's `provider` and `service_tier`
+to the card's values. Then run `howhard usage collect --manifest FILE` and
+`howhard usage attach EXECUTION_ID --manifest FILE --id CORRECTION_ID`. `howhard` prices a
+segment only when the card's `provider`, `model`, and `service_tier` all equal the segment's.
+The usage manifest has no field for `usd_per_mtok`.
+
+| Usage source | Manifest `adapter` | Segment model, and how to use the card |
+| --- | --- | --- |
+| `codex exec --json` stream or Codex session | `codex-exec-v1`, `codex-session-v1` | Taken from the manifest: set manifest `model` to `rate_card.model`. |
+| `agy --output-format stream-json` CLI stream | `agy-print-v1` | Antigravity collector: set manifest `model` to `rate_card.model`. |
+| Antigravity native `swarm` worker's `transcript.jsonl` | `agy-transcript-v1` | Antigravity collector: set manifest `model` to `rate_card.model`. |
+| Claude SDK result stream or Claude session | `claude-sdk-v1`, `claude-session-v1` | Taken from the artifact as a bare model ID, so `howhard` refuses the provider-qualified card. Collect without it; `claude-sdk-v1` keeps the client's own cost estimate. |
+
+The two Antigravity adapters need a `howhard` release with the collectors tracked in
+`xu-hao/howhard#156`; `howhard` 5.0.0 refuses them as unsupported. When no priced usage can
+be attached, record the measured tokens with the outcome and give the quota credit (those
+tokens at the frozen rates) to
+{ref}`agr close --credit-usd <close-credit-reconciliation>`. Leave the credit out when usage
+was not measured.
 
 (worktree-state-contract)=
 ## Worktree-aware state ownership
@@ -856,3 +904,30 @@ post-switch task. Alternatively, link separately planned routes with `--from` an
 `--superseded-by`. Abandoned plans use `--status cancelled`.
 Closed routes no longer block calibration as in-flight work; measured close credit may
 contribute within cleanly bounded quota intervals. Cancellation releases its reservation.
+
+A continuation route stores its own {ref}`frozen cell price <plan-rate-card>`, resolved
+offline at close time: a price on the configured candidate for that model, effort, and surface
+(`native` when the target is the route's host, otherwise `cli`), then the per-model user price,
+then `prices.json` or the built-in catalog. Closing never probes usage or discovers models. The
+continuation's `howhard_cell.model` and `rate_card.model` both follow `namespace_separator`.
+An unknown price leaves both `rate_card` and `usd_per_mtok` off the record. If `prices.json`
+is unreadable and no configured price applies, the route still closes, and the result lists a
+`close: rate card unavailable for <model>: ...` entry in `warnings`.
+
+(close-credit-reconciliation)=
+#### Reconciling close credit with `howhard` observations
+
+Calibration counts one execution once. For each route closed as `done` or `switched` with a
+positive `--credit-usd`, it looks for the route's `howhard` observation: first the one with the
+route's `decision_id`, otherwise the one linked with `--obs`.
+
+| What calibration finds | Credit used |
+| --- | --- |
+| An observation with no measured credit, or zero | The close credit, filled into that observation. |
+| An observation with positive measured credit | `howhard`'s measurement. The close credit is not added. |
+| No observation, and the route was closed without `--obs` | The close credit, as a separate `close:<route_id>` observation. |
+| No observation, although the route was closed with `--obs` | None. |
+
+This applies to receipt-matched and `--obs`-linked observations alike. The filled value
+exists only while calibrating, and `agr` never writes to `howhard`'s files. Cancelled routes
+contribute no close credit.

@@ -504,8 +504,9 @@ def main(argv=None):
             else:
                 cont = f" -> spawned {closed['continuation_route_id']}" if closed.get("continuation_route_id") else ""
                 linked = f" (linked obs {closed['linked_execution_id']})" if closed.get("linked_execution_id") else ""
+                warned = "".join(f"\nwarning: {w}" for w in closed.get("warnings", []))
                 _emit(
-                    f"closed {closed['route_id']} as {closed['close_status']}{linked}{cont}",
+                    f"closed {closed['route_id']} as {closed['close_status']}{linked}{cont}{warned}",
                     as_json=False,
                 )
             return 0

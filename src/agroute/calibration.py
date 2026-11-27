@@ -577,21 +577,33 @@ def _collect_telemetry_sources(config) -> tuple[dict[str, dict], list[dict], lis
     obs_by_id: dict[str, dict] = {}
     for hh_root in hh_roots:
         dec_map, obs_list = _load_hh_observations(hh_root)
-        obs_by_decision.update(dec_map)
+        # These dicts live in `_OBS_CACHE`: copy them, because close credit is backfilled below.
+        # Both indexes share one copy, so a backfill is visible through either of them.
         for obs in obs_list:
-            obs_by_id[obs["id"]] = obs
+            obs_by_id[obs["id"]] = dict(obs)
+        for decision_id, obs in dec_map.items():
+            obs_by_decision[decision_id] = obs_by_id[obs["id"]]
 
     routes_by_id: dict[str, dict] = {}
     for rf in route_files:
         for rec in _load_routes_file(rf):
             routes_by_id[rec["route_id"]] = rec
             if (
-                rec.get("closed_dt") is not None
-                and rec.get("linked_execution_id") is None
-                and rec.get("close_status") in ("done", "switched")
-                and rec.get("credit_usd") is not None
-                and rec["credit_usd"] > 0.0
+                rec.get("closed_dt") is None
+                or rec.get("close_status") not in ("done", "switched")
+                or rec.get("credit_usd") is None
+                or rec["credit_usd"] <= 0.0
             ):
+                continue
+            # A route with a howhard observation is one execution: its close credit only fills
+            # a missing measurement and never becomes a second observation.
+            matched_obs = obs_by_decision.get(rec["decision_id"]) if rec.get("decision_id") else None
+            if matched_obs is None and rec.get("linked_execution_id") is not None:
+                matched_obs = obs_by_id.get(rec["linked_execution_id"])
+            if matched_obs is not None:
+                if matched_obs.get("credit_usd") is None or matched_obs["credit_usd"] <= 0.0:
+                    matched_obs["credit_usd"] = float(rec["credit_usd"])
+            elif rec.get("linked_execution_id") is None:
                 synth_id = f"close:{rec['route_id']}"
                 obs_by_id[synth_id] = {
                     "id": synth_id,
@@ -605,7 +617,11 @@ def _collect_telemetry_sources(config) -> tuple[dict[str, dict], list[dict], lis
                     "credit_usd": rec["credit_usd"],
                 }
 
-    return obs_by_decision, list(obs_by_id.values()), list(routes_by_id.values())
+    # Stores can reuse a human-readable execution ID, but decision IDs are unique: an execution
+    # that lost the ID slot stays an observation, so credit reconciled onto it still counts.
+    # It goes first, so indexing the list by ID agrees with `obs_by_id`.
+    shadowed = [obs for obs in obs_by_decision.values() if obs_by_id[obs["id"]] is not obs]
+    return obs_by_decision, shadowed + list(obs_by_id.values()), list(routes_by_id.values())
 
 
 def _canonical_pool_group_for_window(

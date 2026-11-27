@@ -55,7 +55,9 @@ while `howhard` owns model/effort selection, execution accounting, and writable 
      `needed_credit_usd <= credit_budget.available_credit_usd` when present). In a
      `howhard-decision-v7`, `v8`, `v9`, or `v10` result, compare quota credit with
      `needed_credit_usd` and read `session_cost_usd` as cost.
-4. Inspect `execution_mode`, `needs_review`, `invocation`, and `fallback` in the returned plan:
+4. Inspect `execution_mode`, `needs_review`, `invocation`, `fallback`, and `rate_card` (the
+   target cell's price frozen at planning time, or `null`; `usd_per_mtok` appears for a blended
+   price) in the returned plan:
    - Honor `needs_review` before delegating or accepting silent-risk work.
    - When `execution_mode == "native"` (`target_agent == host_agent`), invoke the host's own
      native delegation tool (`swarm` or `invoke_subagent` in Antigravity, as named by
@@ -83,8 +85,18 @@ while `howhard` owns model/effort selection, execution accounting, and writable 
      record raw native feedback with `howhard observe ... --native` without attaching the
      unexecuted receipt. Then run `agr close ROUTE_ID --obs EXECUTION_ID` to link the raw
      observation and remove the duplicate dashboard row, preserving a human-readable execution ID.
-   - Attach measured execution usage via `howhard usage collect` / `howhard usage attach` when
-     supported, and complete `howhard memory learn-context` / `howhard memory learn`.
+   - Attach measured execution usage via `howhard usage collect` / `howhard usage attach`,
+     putting the plan's frozen `rate_card` in the `howhard-usage-manifest-v1` as the
+     [workflow](references/workflow.md#4-execute-and-record-outcome-in-howhard) describes:
+     `codex-exec-v1` and `claude-sdk-v1` for those CLI streams (the Claude adapters refuse the
+     provider-qualified card), `agy-print-v1` for `agy` CLI streams, and `agy-transcript-v1`
+     for Antigravity `swarm` `transcript.jsonl` files. The two `agy` adapters need a `howhard`
+     release that provides them (`xu-hao/howhard#156`); otherwise follow the workflow's
+     fallback. Then complete `howhard memory learn-context` / `howhard memory learn`.
+   - When `howhard` has no priced measurement, pass measured quota credit to
+     `agr close ROUTE_ID --credit-usd USD` (with `--obs EXECUTION_ID` for raw feedback).
+     Calibration counts the execution once: close credit fills a missing or zero `howhard`
+     credit, and a positive `howhard` measurement wins.
 
 6. Keep route lifecycle separate from howhard outcome: `ROUTE` is `routed` / `review`, then
    `done` / `switched` / `cancelled`; `done*` retains a plan review warning. After an in-place

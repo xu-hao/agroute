@@ -94,6 +94,11 @@ The returned `agroute-execution-plan-v1` object includes:
   object (`argv`, `output_capture_adapter`, `prompt_delivery`) for the target model and effort so the
   host agent can recover immediately if native delegation fails at launch (e.g. subagent slot exhaustion);
   `null` when `execution_mode == "cli"`.
+- `rate_card`: the resolved target cell's `howhard-rate-card-v1` object, frozen at planning
+  time, or `null` when it has none. `usd_per_mtok` is present instead when the cell has a blended
+  price. The route record keeps both (`agr show ROUTE_ID --json`). Price usage from this copy,
+  never from a lookup made after the run. An unreadable `prices.json` can leave it `null` with a
+  `plan: rate card unavailable ...` warning.
 - `host_affinity_applied`: `true` if `routing.host_affinity_epsilon > 0.0` overrode a cross-agent
   choice in favor of an admissible native host cell within `epsilon` of the chosen cell's
   objective `J`.
@@ -116,15 +121,32 @@ howhard observe DECISION_ID clean --id EXECUTION_ID --json
 howhard memory learn-context EXECUTION_ID --json
 ```
 
-When `execution_mode == "cli"` produces an owned JSONL artifact for Codex (`codex-exec-v1`)
-or Claude Code (`claude-sdk-v1`), collect and attach measured token usage through
-`howhard usage collect` and `howhard usage attach` as documented in `howhard`.
+When the run leaves an owned JSONL artifact, collect and attach measured token usage through
+`howhard usage collect` and `howhard usage attach` as documented in `howhard`:
 
-An Antigravity native `swarm` worker (`invocation.tool_name == "swarm"`) writes no CLI
-artifact. Read its actual usage from the worker's own conversation transcript,
-`<appDataDir>/brain/<conversationId>/.system_generated/logs/transcript.jsonl`: sum
-`input_tokens`, `cache_read_tokens` and `output_tokens` over its `PLANNER_RESPONSE` steps
-after the worker finishes, and record that total with the outcome.
+- Codex CLI stream: `codex-exec-v1`.
+- Claude Code CLI stream: `claude-sdk-v1`.
+- Antigravity CLI stream (`agy --output-format stream-json`): `agy-print-v1`.
+- Antigravity native `swarm` worker (`invocation.tool_name == "swarm"`): `agy-transcript-v1`.
+  It writes no CLI artifact; the source is the worker's own conversation transcript,
+  `<appDataDir>/brain/<conversationId>/.system_generated/logs/transcript.jsonl`, read after
+  the worker finishes.
+
+Build the `howhard-usage-manifest-v1` with the plan's frozen `rate_card`. Copy the card
+unchanged into the manifest's `rate_card`, and set `provider` and `service_tier` to the card's
+values. `howhard` prices a segment only when all of `provider`, `model`, and `service_tier`
+match. For the Codex and Antigravity adapters, set the manifest `model` to `rate_card.model`.
+The Claude adapters take a bare model ID from the artifact and refuse the provider-qualified
+card, so collect without it (`claude-sdk-v1` keeps the client's cost estimate). When the plan's
+`rate_card` is `null`, omit the manifest field.
+
+`agy-print-v1` and `agy-transcript-v1` need a `howhard` release with the Antigravity
+collectors (`xu-hao/howhard#156`); `howhard` 5.0.0 refuses them. With such a release, attach
+the artifact instead of collapsing its categories into a scalar `--tokens`. Without it, sum
+`input_tokens`, `cache_read_tokens` and `output_tokens` over the transcript's
+`PLANNER_RESPONSE` steps, record that total with the outcome, and give the quota credit (each
+category at the frozen rates) to `agr close ROUTE_ID --credit-usd`. Never estimate unmeasured
+usage or credit.
 
 There is no model-count or cell-count cap. Every current model and supported effort is
 emitted after quota filtering. Use `--include-agents` to restrict agents by policy. A
@@ -152,11 +174,26 @@ agr close CONTINUATION_ROUTE_ID --tokens 19000 --seconds 180 --credit-usd 1.4 --
 
 Use the returned `continuation_route_id` for the second command after Model 2 finishes.
 The first route is `switched`; the continuation is `done` with `OUTCOME=unscored`.
+The continuation record freezes Model 2's offline `rate_card` or `usd_per_mtok` when known,
+without probing usage; read it with `agr show CONTINUATION_ROUTE_ID --json`.
 Do not attribute the whole task's capability outcome to Model 2. Separately planned
 routes can be linked with `--from ROUTE_ID` and `--superseded-by ROUTE_ID`.
 `agr close ROUTE_ID --status cancelled --note "Declined after review"` abandons a plan.
 `--status` otherwise defaults to `done`, or `switched` with `--switched-to` /
 `--superseded-by`. Closure also accepts `--note`, `--tokens`, `--seconds`, and `--credit-usd`.
+
+On a `done` or `switched` route, pass measured quota credit with `--credit-usd` whenever
+`howhard` has no priced measurement, including with `--obs` for raw native feedback:
+
+```sh
+agr close ROUTE_ID --obs EXECUTION_ID --credit-usd 1.4 --json
+```
+
+Calibration matches the close to the observation with the route's `decision_id`, otherwise
+the `--obs` one, and counts the execution once. The close credit fills a missing or zero
+`howhard` credit. A positive `howhard` measurement wins. A separate `close:<route_id>`
+observation exists only for a route with neither a matching observation nor `--obs`.
+
 Completed review-flagged plans retain `done*`. Closed routes stop blocking calibration
 intervals; cancellation releases its credit reservation. The TUI's `h` hides terminal
 routes and observed raw rows; `s` filters lifecycle or outcome, and `?` explains both.
