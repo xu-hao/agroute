@@ -1,6 +1,6 @@
 # Routing and storage contracts
 
-`agroute` is a plan-only router that connects native agent quota state to `howhard` 2.1+
+`agroute` is a plan-only router that connects native agent quota state to `howhard` 6.0.0+
 candidate selection and host execution surfaces.
 
 The [technical report](technical-report.md) connects these contracts into one
@@ -51,6 +51,10 @@ Explicit `[[agents.<name>.native_candidates]]` or `[[agents.<name>.cli_candidate
 `agent == HOST` and `cli_candidates` for `agent != HOST`, filters out quota-blocked agents
 and model tiers, and prefixes every bare model ID with `<agent>/` (or `<agent>:` when
 `namespace_separator = ":"`). `model_default`, `null`, and empty effort controls are refused.
+Every candidate cell also carries `agent`, the ID (`codex`, `claude`, or `agy`) of the agent
+that would run it, in `candidates` output and in `inventory` JSON and TOML. `howhard` 6.0.0+
+stores this label; it is not part of the cell's identity. Earlier `howhard` releases refuse a
+cell that has it.
 The emitted list is the full eligible inventory with no model-count or cell-count cap.
 Efforts appear in canonical order (`low`, `medium`, `high`, `xhigh`, `max`), followed by
 additional efforts in their declared order. Missing effort catalogs retain the declared
@@ -647,6 +651,10 @@ delegates authentication detection to `claude` CLI output and session transcript
 (execution-plan-resolution)=
 ## Execution plan resolution and host affinity
 
+Name the requesting agent when selecting the route, with
+`howhard context ... --host HOST` or `howhard pick ... --host HOST`. `howhard` 6.0.0+ stores
+the name in the decision receipt.
+
 `agr plan --host HOST --decision FILE` validates a `howhard` decision JSON (`decision_id`,
 `chosen.model`, `chosen.effort`, `cap_met`, `needs_review`) against the current host's active
 eligible candidate pool and emits an `agroute-execution-plan-v1` object:
@@ -691,27 +699,42 @@ categories apart.
 When `routing.host_affinity_epsilon > 0.0` and `howhard` chose a cross-agent route, `agr plan`
 checks whether an eligible native host route in the decision's scored panel (`candidates`,
 `cells`, or `ranking`) has `cap_met != false`, fits within its live
-`credit_budget["available_credit_usd"]` when `needed_credit_usd` is present, and has expected
-cost `J_native <= J_chosen + epsilon`.
+`credit_budget["available_credit_usd"]` under the {ref}`credit check <plan-credit-check>`
+when it reports credit, and has expected cost `J_native <= J_chosen + epsilon`.
 When that condition holds, `agr plan` selects the native host cell, sets
 `host_affinity_applied = true`, and sets `feedback.mode = "raw_native"` so the caller records
 `howhard observe ... --native` instead of attaching the unexecuted cross-agent receipt.
 
-For a `howhard-decision-v7`, `howhard-decision-v8`, `howhard-decision-v9`, or
-`howhard-decision-v10` panel (whether top-level `cells` from live `howhard context --auto-decide`,
+For a `howhard-decision-v7`, `howhard-decision-v8`, `howhard-decision-v9`,
+`howhard-decision-v10`, or `howhard-decision-v11` panel (whether top-level `cells` from live `howhard context --auto-decide`,
 `howhard decide`, or `howhard pick` output, loaded by 64-hex `decision_id` from `howhard`
 4.0+ `<howhard_root>/payloads.sqlite3`, or nested under `selection.cells` in a saved
 receipt), `agr plan` reads `session_cost_usd` as
 cost, `needed_credit_usd` as quota credit, and `cap_met`/`needs_review` from top-level or
-`selection`. It validates `needed_credit_usd` against
-`credit_budget["available_credit_usd"]`, refusing an over-budget target with the separate
-`session_5h_remaining_credit_usd` / `weekly_7d_remaining_credit_usd` breakdown, plus
-`session_5h_reserve_credit_usd` / `weekly_7d_reserve_credit_usd` for each window that holds back
-a reserve. It does not
-use `session_cost_usd` as quota credit. Older decision formats without the explicit split
-retain their legacy `C_run` compatibility. The resolved execution plan and persisted route
-record include `session_cost_usd`, `needed_credit_usd`, `cost_per_credit`, and `credit_budget`
-when available. They also carry the {ref}`frozen cell price <plan-rate-card>`.
+`selection`. It does not use `session_cost_usd` as quota credit. Older decision formats without
+the explicit split retain their legacy `C_run` compatibility.
+
+(plan-credit-check)=
+`howhard-decision-v11` rows can also report `credit_p80_usd`, the 80% point of the quota
+credit, while `needed_credit_usd` is its average. `agr plan` reads it from the chosen cell's
+panel row, otherwise from `chosen`, and uses it only when it is a finite nonnegative number.
+Like `howhard` 6.0.0, `agr plan` rechecks the larger of the two against the live
+`credit_budget["available_credit_usd"]`; with only one present, it checks that one. An
+over-budget target is refused with the separate `session_5h_remaining_credit_usd` /
+`weekly_7d_remaining_credit_usd` breakdown, plus `session_5h_reserve_credit_usd` /
+`weekly_7d_reserve_credit_usd` for each window that holds back a reserve and
+`session_5h_reserved_credit_usd` / `weekly_7d_reserved_credit_usd` for each window with
+in-flight reservations. The message names `credit_p80_usd` when that value is the one
+checked because it exceeds `needed_credit_usd` or the average is absent. Host affinity applies
+the same check to each native alternative, and after an override the plan reports the native
+cell's values.
+
+The 80% point only limits admission. The in-flight reservation holds the average,
+`needed_credit_usd`, and holds `credit_p80_usd` only when there is no average. The resolved
+execution plan and persisted route record include `session_cost_usd`, `needed_credit_usd`,
+`credit_p80_usd`, `cost_per_credit`, and `credit_budget` when available, and
+`agr list --json` and `agr show <id> --json` return them. They also carry the
+{ref}`frozen cell price <plan-rate-card>`.
 
 (plan-rate-card)=
 ### Frozen plan prices and usage manifests
@@ -744,12 +767,14 @@ The usage manifest has no field for `usd_per_mtok`.
 | Usage source | Manifest `adapter` | Segment model, and how to use the card |
 | --- | --- | --- |
 | `codex exec --json` stream or Codex session | `codex-exec-v1`, `codex-session-v1` | Taken from the manifest: set manifest `model` to `rate_card.model`. |
-| `agy --output-format stream-json` CLI stream | `agy-print-v1` | Antigravity collector: set manifest `model` to `rate_card.model`. |
-| Antigravity native `swarm` worker's `transcript.jsonl` | `agy-transcript-v1` | Antigravity collector: set manifest `model` to `rate_card.model`. |
+| `agy --output-format stream-json` CLI stream | `agy-print-v1` | Taken from the manifest: set manifest `model` to `rate_card.model`. |
+| Antigravity native `swarm` worker's `transcript.jsonl` | `agy-transcript-v1` | Taken from the manifest: set manifest `model` to `rate_card.model`. |
 | Claude SDK result stream or Claude session | `claude-sdk-v1`, `claude-session-v1` | Taken from the artifact as a bare model ID, so `howhard` refuses the provider-qualified card. Collect without it; `claude-sdk-v1` keeps the client's own cost estimate. |
 
-The two Antigravity adapters need a `howhard` release with the collectors tracked in
-`xu-hao/howhard#156`; `howhard` 5.0.0 refuses them as unsupported. When no priced usage can
+`howhard` 6.0.0+ ships both Antigravity adapters for Antigravity `1.5.18` and refuses other
+runtime versions. Both check the conversation and model identity against the manifest; see
+`howhard`'s usage reference for baselines and completeness, for example when a stream resumes
+an earlier conversation. When no priced usage can
 be attached, record the measured tokens with the outcome and give the quota credit (those
 tokens at the frozen rates) to
 {ref}`agr close --credit-usd <close-credit-reconciliation>`. Leave the credit out when usage
@@ -879,7 +904,8 @@ or `.howhard/decisions/*.json` files and never perform automatic migration.
 The `decision_summaries` table caches lightweight `howhard` 4.0 metadata extracted from
 `<howhard_root>/payloads.sqlite3` (`decisions` table, refusing symlinks): a 4,000-character
 task excerpt, task/risk classification, review flags, chosen cell costs, and the first eight
-forecasts. A writable-store cache miss is serialized across processes, so each immutable
+forecasts. Cell and forecast entries keep `agent`, `credit_p80_usd`, `tier`, and `pi` when
+the receipt's rows have them, and the summary keeps the receipt's `host` when it names one. A writable-store cache miss is serialized across processes, so each immutable
 `zstd`-compressed receipt blob is inflated at most once (falling back to uncompressed
 `decisions` summary columns if decompression is unavailable). Raw `decision.semantic` objects
 are released immediately and never retained in memory. Read-only cache misses are extracted

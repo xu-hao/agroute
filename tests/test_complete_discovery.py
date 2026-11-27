@@ -96,7 +96,7 @@ def test_explicit_inventory_overrides_discovery_without_size_limit(tmp_path):
         result = router.candidates(host, include_agents=["claude"])
         assert len(result["candidates"]) == 40
         assert result["candidates"][-1] == {
-            "model": "claude/custom-39", "effort": "high", "cost_per_credit": 1.0,
+            "model": "claude/custom-39", "effort": "high", "agent": "claude", "cost_per_credit": 1.0,
         }
 
 

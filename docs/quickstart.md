@@ -1,6 +1,6 @@
 # Quickstart
 
-You need Python 3.11+, a POSIX shell, Git, `howhard` 5.0.0+ and a current Codex,
+You need Python 3.11+, a POSIX shell, Git, `howhard` 6.0.0+ and a current Codex,
 Claude Code or Antigravity client with native plugin support.
 
 ## Install the backend
@@ -10,7 +10,7 @@ Run these commands from the project where you want to use `agroute`:
 ```sh
 python3 -m venv .venv-agroute
 . .venv-agroute/bin/activate
-python -m pip install "agroute==0.6.9" "howhard>=5.0.0"
+python -m pip install "agroute==0.6.9" "howhard>=6.0.0"
 agr --version
 ```
 
@@ -79,9 +79,10 @@ skills:
 1. Inspect or refresh live agent quota state with `agr usage`.
 2. Emit eligible provider-qualified candidates for this host with
    `agr candidates --host <codex|claude|agy> --output /tmp/TASK-candidates.json --json`.
-3. Select a route with `howhard` (`context --auto-decide`, or `context`/`retrieve`/`decide`
-   evaluating `baseline_request` in an independent stateless context only when non-null, or
-   `pick`), then resolve the execution plan with
+3. Select a route with `howhard` (`context --host <codex|claude|agy> --auto-decide`, or
+   `context`/`retrieve`/`decide` evaluating `baseline_request` in an independent stateless
+   context only when non-null, or `pick --host <codex|claude|agy>`), then resolve the
+   execution plan with
    `agr plan --host <codex|claude|agy> --decision /tmp/TASK-decision.json --json`.
 4. Honor `needs_review`. Execute native plans (`target_agent == host_agent`) with the
    host's native subagent tool and cross-agent plans (`target_agent != host_agent`) with
@@ -106,8 +107,12 @@ with `agr prices resolve --file PRICE_RESPONSE.json --json`, and emit candidates
 again. The {ref}`price resolution contract <calling-agent-price-resolution>` defines
 priced, alias and unlisted responses.
 
+Each candidate carries an `agent` label, which `howhard` 6.0.0+ stores with the cell. Pass
+`--host` to `howhard context` or `howhard pick` to name the agent that asks for the route;
+use the same value as for `agr candidates --host`.
+
 ```sh
-howhard context task --text-file /tmp/task.txt --candidates /tmp/task-candidates.json --auto-decide --seed 42 --json > /tmp/task-context.json
+howhard context task --text-file /tmp/task.txt --candidates /tmp/task-candidates.json --host agy --auto-decide --seed 42 --json > /tmp/task-context.json
 # If decision_id is returned directly, pass /tmp/task-context.json; otherwise complete any non-null baseline_request and reader stages with howhard retrieve/decide:
 agr plan --host agy --decision /tmp/task-decision.json --prompt-file /tmp/task.txt --json
 ```

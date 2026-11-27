@@ -248,9 +248,15 @@ effort = "high"
 
 @pytest.mark.parametrize(
     "fmt",
-    ["howhard-decision-v7", "howhard-decision-v8", "howhard-decision-v9", "howhard-decision-v10"],
+    [
+        "howhard-decision-v7",
+        "howhard-decision-v8",
+        "howhard-decision-v9",
+        "howhard-decision-v10",
+        "howhard-decision-v11",
+    ],
 )
-def test_plan_recognizes_v7_v8_v9_credit_cost_split_formats(tmp_path, fmt):
+def test_plan_recognizes_credit_cost_split_formats(tmp_path, fmt):
     assert _decision_has_credit_cost_split({"format": fmt}) is True
     assert _decision_has_credit_cost_split({"format": "howhard-decision-v6"}) is False
 
@@ -269,7 +275,7 @@ effort = "high"
     router = Router(cfg, project=tmp_path, state_directory=tmp_path / "state", include_user_config=False)
     router.usage_set("codex", session_used_pct=10.0, weekly_used_pct=10.0, now="2026-11-20T12:00:00Z")
 
-    # Legacy C_run must NOT be misread as needed_credit_usd on v7/v8/v9 receipts.
+    # Legacy C_run must NOT be misread as needed_credit_usd on v7 to v11 receipts.
     plan = router.plan(
         "agy",
         {

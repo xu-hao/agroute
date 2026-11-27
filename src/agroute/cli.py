@@ -169,7 +169,7 @@ def _build_parser():
     _add_common_flags(p_p_show)
 
     # inventory
-    p_inv = subparsers.add_parser("inventory", help="Emit howhard.toml [inventories] block for howhard 2.1+")
+    p_inv = subparsers.add_parser("inventory", help="Emit howhard.toml [inventories] block for howhard 6.0.0+")
     p_inv.add_argument("--host", default=None, help="Current host agent (codex|claude|agy)")
     p_inv.add_argument("--name", default="router", help="Inventory name in howhard.toml (default: router)")
     p_inv.add_argument("--include-agents", default=None, help="Comma-separated subset of agents to consider")

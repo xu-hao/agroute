@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Align with `howhard` 6.0.0, which routing now requires (#135). Every candidate cell from
+  `agr candidates` and `agr inventory` carries an `agent` label; earlier `howhard` releases
+  refuse it. `agr plan` recognizes `howhard-decision-v11` and, like `howhard`, checks live
+  available credit against the larger of `needed_credit_usd` and `credit_p80_usd`, both for the
+  chosen cell and for a host-affinity override, naming `credit_p80_usd` in the refusal when it
+  is the bound. A plan that passed on its average credit alone can now be refused. The
+  reservation still holds the average, or `credit_p80_usd` when there is no average. Execution
+  plans, route records, `agr list --json` and `agr show --json` include `credit_p80_usd`;
+  receipt summaries also keep `agent`, `tier`, `pi` and `host`. Documented routing commands
+  pass `--host` to `howhard context` / `howhard pick`, and the `agy-print-v1` and
+  `agy-transcript-v1` usage collectors ship in `howhard` 6.0.0 for Antigravity 1.5.18.
 - Fix credit calibration across route boundaries. A usage probe taken while a routed execution
   is still running (such as the `agr tui` auto-probe or a concurrent `agr candidates` call) now
   keeps the calibration anchor at the previous snapshot instead of advancing it and discarding
