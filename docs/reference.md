@@ -346,10 +346,36 @@ proportion to their calibrated weekly credit ceilings. Each pool reports its all
 cost divided by calibrated weekly credit). A free plan reports `0.0`; a pay-as-you-go agent
 without a subscription plan reports `1.0`.
 
+(credit-calibration-store)=
 Plan credit ceilings are calibrated empirically per `(agent, effective_plan, pool_group,
-window)` in `<state_root>/credit_calibration.json` (`format = "agroute-credit-calibration-v2"`).
+window)` in `credit_calibration.json` (`format = "agroute-credit-calibration-v2"`).
 The v1 store is read and normalized by treating its `s_cost` sufficient statistic as the
 historically measured credit amount. The next calibration write emits v2 with `s_credit`.
+
+Subscription quotas belong to the account, so the store's location follows state selection:
+
+| State selection | Calibration store |
+| --- | --- |
+| Default | `<spool_dir>/credit_calibration.json`, shared by every repository; `<spool_dir>` is `${AGROUTE_SPOOL_DIR:-${XDG_DATA_HOME:-~/.local/share}/agroute}` |
+| `--state-dir`, `AGROUTE_STATE_DIR`, configured `state_dir`, or `Router(..., state_directory=...)` | `<state_root>/credit_calibration.json`, isolated, with the {ref}`store identity checks <worktree-state-contract>` |
+| `AGROUTE_DISABLE_SPOOL` set | `<state_root>/credit_calibration.json` |
+
+- Updates to the shared store, including the `agr usage clear` reset, hold an exclusive lock
+  on `<spool_dir>/credit_calibration.lock` from read through atomic replacement, so
+  concurrent probes from different repositories cannot overwrite each other. The spool is
+  not a per-project store and receives no `store.json` identity.
+- While the shared store does not exist, it is seeded from `credit_calibration.json` in the
+  current repository's state root and in each state root listed in
+  `<spool_dir>/repositories.json`. For each pool, the statistics (`s_credit`, `s_frac`,
+  `matched_intervals`, `rejected_outliers`, `updated_at`) come from the entry with the highest
+  `(s_frac, matched_intervals, updated_at)`, and `last_snapshot` is independently the one
+  with the newest `observed_at`. Statistics are never added together. Missing or unreadable
+  files and invalid pool entries are ignored, and per-repository files are never modified or
+  deleted. Reads use the seed without saving it; the first calibration write (including
+  `agr usage clear` for an agent with seeded pools) saves it. After that, per-repository
+  files are no longer read as calibration stores.
+- If the host does not permit writing to the spool (for example, a sandbox that mounts it
+  read-only), usage commands still succeed but skip the calibration update.
 
 - Windows with `<600s` `reset_at` jitter stay in the same window; `>=600s` shifts, passed
   `reset_at` timestamps, or declining `used_pct` roll over `last_snapshot`.
@@ -676,7 +702,9 @@ when available.
 and `config_path`. Fresh zero-config Git worktrees share `<git-common-dir>/agroute` while
 capturing the current checkout root. Plain folders use local `.agroute`. `--state-dir PATH`
 (or `AGROUTE_STATE_DIR`) selects an intentional store and enforces `agroute-project-v1` and
-`agroute-store-v1` identity checks so another project's store is refused.
+`agroute-store-v1` identity checks so another project's store is refused. Without an explicit
+store, quota-credit calibration lives in the user spool instead of `state_root`; see the
+{ref}`calibration store contract <credit-calibration-store>`.
 
 (agent-adapters-and-dynamic-dispatch)=
 ## Agent adapters and dynamic dispatch

@@ -6,16 +6,23 @@ intervals update bounded sufficient statistics `(s_credit, s_frac)` and estimate
 credit ceiling. Subscription cash cost is maintained separately and allocated across weekly
 pools by their calibrated credit ceilings. Explicit manual `[agents.<name>].credit`
 overrides remain exact.
+
+Subscription quotas are account-wide, so repositories share one calibration store in the user
+spool. An explicit state directory keeps its own isolated store.
 """
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timezone
+import errno
+import fcntl
 import json
 import math
 import os
 from pathlib import Path
+import threading
 
 from .adapters import get_adapter
 from .config import resolve_plan_credit_sources, resolve_plan_monthly_cost
@@ -46,12 +53,73 @@ OUTLIER_MAX_FACTOR = 10.0
 UNOBSERVED_ROUTE_TTL_SECONDS = 18000.0
 _MAX_OUTCOMES_TAIL_BYTES = 4 * 1024 * 1024
 _OBSERVED_OUTCOMES = frozenset({"clean", "loud", "silent", "interrupted"})
+_STORE_NAME = "credit_calibration.json"
+_LOCK_NAME = "credit_calibration.lock"
+_UNWRITABLE_ERRNOS = frozenset({errno.EACCES, errno.EPERM, errno.EROFS})
+
+# `flock` excludes other open file descriptions, including this process's own, so nested
+# acquisitions are tracked here. The `RLock` makes that bookkeeping safe across threads.
+_SPOOL_THREAD_LOCK = threading.RLock()
+_HELD_SPOOL_LOCKS: set[Path] = set()
 
 _OBS_CACHE: dict[str, tuple[tuple[int, int] | None, tuple[int, int] | None, tuple[dict[str, dict], list[dict]]]] = {}
 
 
+def _shared_spool_dir(config) -> Path | None:
+    """Return the spool holding the account-wide store, or None for a `state_root` store."""
+    if getattr(config, "explicit_state", False):
+        return None
+    from .routes import _spool_dir
+
+    return _spool_dir()
+
+
 def calibration_path(config) -> Path:
-    return config.state_root / "credit_calibration.json"
+    spool = _shared_spool_dir(config)
+    return (config.state_root if spool is None else spool) / _STORE_NAME
+
+
+@contextmanager
+def _calibration_locked(config):
+    """Serialize read-modify-write updates of the shared store across processes (re-entrant).
+
+    A `state_root` store is already serialized by the caller's `_usage_locked`. Take this lock
+    after `_usage_locked`, never before: nothing run under it may take a state or identity lock.
+    """
+    spool = _shared_spool_dir(config)
+    if spool is None:
+        yield
+        return
+    with _SPOOL_THREAD_LOCK:
+        if spool in _HELD_SPOOL_LOCKS:
+            yield
+            return
+        spool.mkdir(parents=True, exist_ok=True)
+        with (spool / _LOCK_NAME).open("a+b") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            _HELD_SPOOL_LOCKS.add(spool)
+            try:
+                yield
+            finally:
+                _HELD_SPOOL_LOCKS.discard(spool)
+                fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+@contextmanager
+def _skip_unwritable_spool(config):
+    """Abandon a calibration update, not the usage command, when the spool is not writable.
+
+    Sandboxed hosts can expose the user spool read-only. Any other error still propagates.
+    """
+    try:
+        yield
+    except OSError as exc:
+        spool = _shared_spool_dir(config)
+        if spool is None or exc.errno not in _UNWRITABLE_ERRNOS or exc.filename is None:
+            raise
+        failed = Path(exc.filename)
+        if not (failed.is_relative_to(spool) or spool.is_relative_to(failed)):
+            raise
 
 
 def make_pool_key(agent: str, plan: str, quota_group: str, window: str) -> str:
@@ -140,12 +208,75 @@ def _validate_calibration_store(payload: dict, path: Path) -> dict:
     return {"format": CALIBRATION_STORE_FORMAT, "pools": pools}
 
 
+def _read_legacy_pools(path: Path) -> dict[str, dict]:
+    """Return the individually valid pools of a per-repository store, ignoring damaged evidence."""
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError):
+        return {}
+    if not isinstance(raw, dict) or not isinstance(raw.get("pools"), dict):
+        return {}
+    pools: dict[str, dict] = {}
+    for pkey, entry in raw["pools"].items():
+        if not isinstance(entry, dict):
+            continue
+        try:
+            pools.update(_validate_calibration_store({**raw, "pools": {pkey: entry}}, path)["pools"])
+        except (AgRouteError, TypeError, ValueError, OverflowError):
+            continue
+    return pools
+
+
+def _seed_stats_rank(pool: dict) -> tuple[float, int, datetime]:
+    updated_at = pool["updated_at"]
+    updated_dt = parse_timestamp(updated_at) if updated_at else datetime.min.replace(tzinfo=timezone.utc)
+    return pool["s_frac"], pool["matched_intervals"], updated_dt
+
+
+def _merge_seed_pool(first: dict, second: dict) -> dict:
+    """Keep the best-supported statistics and, independently, the newest snapshot anchor."""
+    merged = dict(max(first, second, key=_seed_stats_rank))
+    merged["last_snapshot"] = max(
+        (pool["last_snapshot"] for pool in (first, second) if pool["last_snapshot"] is not None),
+        key=lambda snapshot: parse_timestamp(snapshot["observed_at"]),
+        default=None,
+    )
+    return merged
+
+
+def _seed_spool_calibration_from_repositories(config) -> dict:
+    """Merge the current and registered per-repository stores without modifying any of them."""
+    from .routes import _read_cached_json
+
+    state_roots = [str(config.state_root)]
+    spool = _shared_spool_dir(config)
+    registry = _read_cached_json(spool / "repositories.json") if spool is not None else None
+    if registry and isinstance(registry.get("repositories"), list):
+        state_roots.extend(
+            item["state_root"]
+            for item in registry["repositories"]
+            if isinstance(item, dict) and isinstance(item.get("state_root"), str)
+        )
+    store = _empty_calibration_store()
+    for state_root in dict.fromkeys(state_roots):
+        for pkey, pool in _read_legacy_pools(Path(state_root) / _STORE_NAME).items():
+            seeded = store["pools"].get(pkey)
+            store["pools"][pkey] = pool if seeded is None else _merge_seed_pool(seeded, pool)
+    return store
+
+
 def read_calibration_store(config) -> dict:
-    """Read and validate `<state_root>/credit_calibration.json`, or return an empty store."""
-    check(config)
+    """Read and validate the calibration store at `calibration_path(config)`.
+
+    A missing shared store is seeded in memory from per-repository stores; the next write
+    persists it. A missing `state_root` store is empty.
+    """
+    shared = _shared_spool_dir(config) is not None
+    if not shared:
+        check(config)
     path = calibration_path(config)
     if not path.exists():
-        return _empty_calibration_store()
+        return _seed_spool_calibration_from_repositories(config) if shared else _empty_calibration_store()
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, UnicodeError) as exc:
@@ -154,11 +285,18 @@ def read_calibration_store(config) -> dict:
 
 
 def write_calibration_store(config, store: dict) -> dict:
-    """Validate and atomically persist `<state_root>/credit_calibration.json` (caller holds `_usage_locked`)."""
+    """Validate and atomically persist the store at `calibration_path(config)`.
+
+    For a `state_root` store the caller holds `_usage_locked`. A read-modify-write of the
+    shared store must hold `_calibration_locked` from the read through this write.
+    """
     path = calibration_path(config)
     normalized = _validate_calibration_store(store, path)
-    claim(config)
-    atomic_write(path, json.dumps(normalized, indent=2, sort_keys=True) + "\n")
+    with _calibration_locked(config):
+        if _shared_spool_dir(config) is None:
+            # The spool is shared by every project, so only a `state_root` store is claimed.
+            claim(config)
+        atomic_write(path, json.dumps(normalized, indent=2, sort_keys=True) + "\n")
     return normalized
 
 
@@ -672,6 +810,19 @@ def record_usage_calibration_snapshot(
     now_dt: datetime,
 ) -> dict | None:
     """Update empirical calibration pools for `agent_name` under `_usage_locked(config)`."""
+    with _skip_unwritable_spool(config):
+        with _calibration_locked(config):
+            return _record_usage_calibration_snapshot_unlocked(config, agent_name, agent_state, now_dt)
+    return None
+
+
+def _record_usage_calibration_snapshot_unlocked(
+    config,
+    agent_name: str,
+    agent_state: dict,
+    now_dt: datetime,
+) -> dict | None:
+    """Advance snapshot anchors and match intervals (caller holds `_calibration_locked`)."""
     agent_cfg = config.agents[agent_name]
     effective_plan, preset_credit, manual_credit, _ = resolve_plan_credit_sources(
         agent_name, agent_cfg, agent_state.get("detected_plan")
@@ -854,18 +1005,20 @@ def record_usage_calibration_snapshot(
 
 def reset_calibration_snapshots(config, agents: list[str]) -> None:
     """Clear `last_snapshot` anchors for cleared agents while retaining learned pool priors."""
-    path = calibration_path(config)
-    if not path.exists():
-        return
-    cal_store = read_calibration_store(config)
-    target_set = set(agents)
-    changed = False
-    for pool in cal_store["pools"].values():
-        if pool["agent"] in target_set and pool.get("last_snapshot") is not None:
-            pool["last_snapshot"] = None
-            changed = True
-    if changed:
-        write_calibration_store(config, cal_store)
+    with _skip_unwritable_spool(config):
+        with _calibration_locked(config):
+            exists = calibration_path(config).exists()
+            if not exists and _shared_spool_dir(config) is None:
+                return
+            cal_store = read_calibration_store(config)
+            target_set = set(agents)
+            targeted = [pool for pool in cal_store["pools"].values() if pool["agent"] in target_set]
+            anchored = [pool for pool in targeted if pool["last_snapshot"] is not None]
+            for pool in anchored:
+                pool["last_snapshot"] = None
+            # Persisting a seed stops a later reseed from restoring what was just cleared.
+            if anchored or (targeted and not exists):
+                write_calibration_store(config, cal_store)
 
 
 def credit_reserve_usd(agent_cfg: dict, *, is_host: bool) -> float:
