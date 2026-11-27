@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 
 from .files import atomic_write
+from .price_store import planned_cell_price
 from .route_store import (
     append_route_records,
     decision_summary,
@@ -283,6 +284,9 @@ def record_plan_route(
     for key in ("session_cost_usd", "cost_per_credit", "monthly_cost_usd", "weekly_cost_usd"):
         if plan.get(key) is not None:
             record[key] = plan[key]
+    for key in ("rate_card", "usd_per_mtok"):
+        if plan.get(key) is not None:
+            record[key] = deepcopy(plan[key])
     if locked:
         claim(config)
         record["repository_id"] = config.project_identity or config.capture_root.name
@@ -528,6 +532,7 @@ def close_plan_route(
 
     continuation_record: dict | None = None
     continuation_route_id: str | None = None
+    price_warning: str | None = None
     if switched_to is not None:
         raw_sw = text(switched_to, "switched_to", max_length=200).strip()
         if "/" in raw_sw or ":" in raw_sw:
@@ -555,6 +560,19 @@ def close_plan_route(
             cont_effort,
         )
         sup_id = continuation_route_id
+        qualified_cont = f"{cont_agent}{config.namespace_separator}{cont_model}"
+        configured_cell = next(
+            (
+                c
+                for c in config.agents[cont_agent][f"{cont_mode}_candidates"]
+                if c["model"] == cont_model and c["effort"] == cont_effort
+            ),
+            {"model": cont_model, "effort": cont_effort},
+        )
+        # Offline by design: closing a route never probes usage or discovers models.
+        price_fields, price_warning = planned_cell_price(
+            config, cont_agent, configured_cell, cont_mode, qualified_cont, now_dt
+        )
         continuation_record = {
             "format": "agroute-route-v1",
             "route_id": continuation_route_id,
@@ -570,7 +588,7 @@ def close_plan_route(
             "needs_review": bool(target_rec.get("needs_review", False)),
             "host_affinity_applied": False,
             "host_affinity_detail": None,
-            "howhard_cell": {"model": f"{cont_agent}/{cont_model}", "effort": cont_effort},
+            "howhard_cell": {"model": qualified_cont, "effort": cont_effort},
             "resolved_target": {
                 "agent": cont_agent,
                 "model": cont_model,
@@ -580,6 +598,7 @@ def close_plan_route(
             "role": str(target_rec.get("role") or "Task Worker"),
             "invocation": None,
             "feedback": None,
+            **price_fields,
         }
         if isinstance(target_rec.get("task_text"), str):
             continuation_record["task_text"] = target_rec["task_text"]
@@ -624,6 +643,8 @@ def close_plan_route(
     result = deepcopy(close_record)
     if continuation_route_id is not None:
         result["continuation_route_id"] = continuation_route_id
+    if price_warning is not None:
+        result["warnings"] = [f"close: {price_warning}"]
     return result
 
 
@@ -799,9 +820,11 @@ def load_repository_routes(capture_root: Path, state_root: Path, repository_id: 
             route_entry["credit_budget"] = deepcopy(rec["credit_budget"])
         if type(rec.get("needed_credit_usd")) in (int, float):
             route_entry["needed_credit_usd"] = float(rec["needed_credit_usd"])
-        for key in ("session_cost_usd", "cost_per_credit", "monthly_cost_usd", "weekly_cost_usd"):
+        for key in ("session_cost_usd", "cost_per_credit", "monthly_cost_usd", "weekly_cost_usd", "usd_per_mtok"):
             if type(rec.get(key)) in (int, float):
                 route_entry[key] = float(rec[key])
+        if isinstance(rec.get("rate_card"), dict):
+            route_entry["rate_card"] = deepcopy(rec["rate_card"])
         routes.append(route_entry)
 
     for ev in hh_events:

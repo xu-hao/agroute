@@ -15,8 +15,9 @@ import fcntl
 import json
 from pathlib import Path
 
+from .adapters import get_adapter
 from .files import atomic_write
-from .pricing import RATE_CATEGORIES, _CATALOG, resolve_price
+from .pricing import RATE_CATEGORIES, _CATALOG, cell_price, resolve_price
 from .state import check, claim, identity_locked
 from .validation import AgRouteError, format_timestamp, keys, number, parse_timestamp, table, text
 
@@ -256,6 +257,25 @@ def read_snapshot(config) -> dict | None:
         return _validate_snapshot(raw, path)
     except AgRouteError as exc:
         raise AgRouteError(f"{exc}; repair with agr prices resolve --file <path>") from exc
+
+
+def planned_cell_price(
+    config, agent: str, candidate: dict, surface: str, model: str, at: datetime
+) -> tuple[dict, str | None]:
+    """Return `(price_fields, warning)` for one planned or continuation cell, fully offline.
+
+    Price state never blocks planning or closing. An unreadable `prices.json` matters only when
+    no configured price applies; the cell then stays unpriced and the warning says why.
+    """
+    user_prices = config.agents[agent]["prices"]
+    snapshot = None
+    if not ("usd_per_mtok" in candidate or "rate_card" in candidate or candidate["model"] in user_prices):
+        try:
+            snapshot = read_snapshot(config)
+        except AgRouteError as exc:
+            return {}, f"rate card unavailable for {model}: {exc}"
+    catalog_key = get_adapter(agent).rate_card_key(candidate["model"], candidate["effort"], surface)
+    return cell_price(agent, candidate, user_prices, catalog_key, model, at, snapshot), None
 
 
 @contextmanager

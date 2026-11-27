@@ -302,3 +302,21 @@ def user_rate_card(rates, agent, model, at):
         },
         model,
     )
+
+
+def cell_price(agent, candidate, user_prices, catalog_key, model, at, snapshot=None):
+    """The price fields one cell carries: `rate_card`, `usd_per_mtok`, or neither.
+
+    Precedence: candidate price, per-model user price, later of snapshot and built-in, none.
+    """
+    if "usd_per_mtok" in candidate:
+        return {"usd_per_mtok": candidate["usd_per_mtok"]}
+    if "rate_card" in candidate:
+        return {"rate_card": deepcopy(candidate["rate_card"])}
+    price = user_prices.get(candidate["model"])
+    if price is not None:
+        if "usd_per_mtok" in price:
+            return {"usd_per_mtok": price["usd_per_mtok"]}
+        return {"rate_card": user_rate_card(price, agent, model, at)}
+    resolved = resolve_price(catalog_key, at, snapshot)
+    return {"rate_card": rate_card(resolved, model)} if resolved is not None else {}

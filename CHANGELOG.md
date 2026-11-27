@@ -10,6 +10,21 @@
   per-repository stores, which are left unchanged. `--state-dir` / `AGROUTE_STATE_DIR` stores
   stay isolated, and a spool that cannot be written skips calibration updates without failing
   usage commands (#129).
+- Emit the resolved target cell's price on `agroute-execution-plan-v1` as `rate_card` (the
+  `howhard-rate-card-v1` object, or `null`) plus `usd_per_mtok` for blended prices, and freeze it
+  on the `routes.sqlite3` route record returned by `agr list --json` and `agr show --json`, so
+  usage manifests no longer depend on a price lookup after the run. `agr close --switched-to`
+  prices the continuation route offline in the same way, and its `howhard_cell.model` now follows
+  `namespace_separator`. An unreadable `prices.json` never blocks planning or closing; the cell
+  stays unpriced with a warning (#128).
+- Reconcile `agr close --credit-usd` with the route's `howhard` observation (matched by
+  `decision_id` or `--obs`) during credit calibration. The close credit now fills a missing or
+  zero measurement instead of being ignored with `--obs`, or added beside a receipt-matched
+  observation as a duplicate `close:<route_id>` entry that either blocked the interval or counted
+  the execution twice. A positive `howhard` measurement is kept (#128).
+- Document pricing `howhard usage collect` / `howhard usage attach` manifests with the plan's
+  frozen `rate_card`, including the `agy-print-v1` and `agy-transcript-v1` collectors tracked in
+  `xu-hao/howhard#156` (#128).
 
 ## 0.6.9 — 2026-11-25
 

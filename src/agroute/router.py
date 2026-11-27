@@ -11,12 +11,13 @@ from .discovery import discover_agent_candidates
 from .price_store import (
     PENDING_FORMAT,
     build_price_request,
+    planned_cell_price,
     read_snapshot,
     resolve_prices,
     show_prices,
     snapshot_path,
 )
-from .pricing import needs_price_resolution, rate_card, resolve_price, user_rate_card
+from .pricing import cell_price, needs_price_resolution
 from .routes import build_snapshot, close_plan_route, find_route, mint_route_id, record_plan_route, register_repository
 from .usage import (
     _now_utc,
@@ -605,7 +606,8 @@ class Router:
                             snapshot,
                             pending_prices,
                         )
-                    cell.update(self._price(name, cfg, adapter, cand, surface_name, qualified, now_dt, snapshot))
+                    catalog_key = adapter.rate_card_key(cand["model"], cand["effort"], surface_name)
+                    cell.update(cell_price(name, cand, cfg["prices"], catalog_key, qualified, now_dt, snapshot))
                     if mq.get("credit_budget") is not None:
                         if "rate_card" not in cell and "usd_per_mtok" not in cell:
                             excluded.append(
@@ -722,21 +724,6 @@ class Router:
             slot["display_names"].append(disp.strip())
         if snapshot is not None and rc_key in snapshot["models"] and now_dt >= snapshot["models"][rc_key]["expires"]:
             slot["expired_at"] = snapshot["models"][rc_key]["expires_at"]
-
-    @staticmethod
-    def _price(name, cfg, adapter, cand, surface, qualified, now_dt, snapshot):
-        """Precedence: candidate price, per-model price, later of snapshot and built-in, none."""
-        if "usd_per_mtok" in cand:
-            return {"usd_per_mtok": cand["usd_per_mtok"]}
-        if "rate_card" in cand:
-            return {"rate_card": deepcopy(cand["rate_card"])}
-        price = cfg["prices"].get(cand["model"])
-        if price is not None:
-            if "usd_per_mtok" in price:
-                return {"usd_per_mtok": price["usd_per_mtok"]}
-            return {"rate_card": user_rate_card(price, name, qualified, now_dt)}
-        resolved = resolve_price(adapter.rate_card_key(cand["model"], cand["effort"], surface), now_dt, snapshot)
-        return {"rate_card": rate_card(resolved, qualified)} if resolved is not None else {}
 
     def prices_pending(self, host=None, *, include_agents=None, now=None):
         """Inspect unpriced or expired discovered models and emit a calling-agent `price_request`."""
@@ -1013,6 +1000,13 @@ class Router:
                 )
 
         _check_credit_fit(live_budget, window_reserves, window_reserved)
+        # Freeze the target cell's price exactly as `candidates` emits it now, so later usage
+        # accounting never needs a retroactive lookup. Price state never affects eligibility.
+        price_fields, price_warning = planned_cell_price(
+            self.config, target_agent, meta["candidate"], meta["surface"], qualified_target_model, now_dt
+        )
+        if price_warning is not None:
+            warnings.append(f"plan: {price_warning}")
         cell_cost_per_credit = meta.get("cost_per_credit", 1.0)
         if isinstance(target_panel_item, dict) and type(target_panel_item.get("cost_per_credit")) in (int, float):
             cell_cost_per_credit = float(target_panel_item["cost_per_credit"])
@@ -1160,6 +1154,7 @@ class Router:
                 "effort": target_effort,
                 "surface": meta["surface"],
             },
+            "rate_card": price_fields.get("rate_card"),
             "host_affinity_applied": host_affinity_applied,
             "host_affinity_detail": affinity_detail,
             "invocation": invocation,
@@ -1167,6 +1162,8 @@ class Router:
             "feedback": feedback,
             "warnings": warnings,
         }
+        if "usd_per_mtok" in price_fields:
+            result["usd_per_mtok"] = price_fields["usd_per_mtok"]
         if live_budget is not None:
             result["credit_budget"] = deepcopy(live_budget)
         if needed_credit is not None:
