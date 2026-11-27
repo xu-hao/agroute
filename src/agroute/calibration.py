@@ -938,16 +938,16 @@ def _record_usage_calibration_snapshot_unlocked(
             # Keep `last_snapshot` anchored at `t_prev` so sub-0.25% steps accumulate cleanly.
             continue
 
-        # Advance `last_snapshot` so `[t_prev, t_curr]` is evaluated at most once.
-        pool["last_snapshot"] = curr_snap
-        dirty = True
-
         if not telemetry_loaded:
             obs_by_decision, observations, routes = _collect_telemetry_sources(config)
             obs_by_exec_id = {obs["id"]: obs for obs in observations}
             telemetry_loaded = True
 
-        straddled = False
+        # `hold_anchor`: an execution is still running at `t_curr`, so keep the anchor at `t_prev`
+        # until a later snapshot covers its whole span. `contaminated`: part of an execution's
+        # quota falls outside `(t_prev, t_curr]`, so skip the interval but advance the anchor.
+        hold_anchor = False
+        contaminated = False
         for route in routes:
             if route["agent"] != agent_name:
                 continue
@@ -960,26 +960,37 @@ def _record_usage_calibration_snapshot_unlocked(
             if r_obs is None and route.get("linked_execution_id"):
                 r_obs = obs_by_exec_id.get(route["linked_execution_id"])
             if r_obs is not None:
-                if r_created < t_curr < r_obs["observed_dt"]:
-                    straddled = True
-                    break
+                end_dt = r_obs["observed_dt"]
             elif route.get("closed_dt") is not None:
-                c_status = route.get("close_status")
-                closed_dt = route["closed_dt"]
-                if c_status == "cancelled":
+                if route.get("close_status") == "cancelled":
                     continue
-                if route.get("credit_usd") is not None and route["credit_usd"] > 0.0:
-                    if r_created < t_curr < closed_dt:
-                        straddled = True
-                        break
-                elif r_created < t_curr and closed_dt > t_prev:
-                    straddled = True
-                    break
+                if route.get("credit_usd") is None or route["credit_usd"] <= 0.0:
+                    # An unscored, unpriced close leaves its quota unmeasured.
+                    if r_created < t_curr and route["closed_dt"] > t_prev:
+                        contaminated = True
+                    continue
+                end_dt = route["closed_dt"]
             else:
-                if r_created >= t_prev or (t_curr - r_created).total_seconds() <= UNOBSERVED_ROUTE_TTL_SECONDS:
-                    straddled = True
+                if (t_curr - r_created).total_seconds() <= UNOBSERVED_ROUTE_TTL_SECONDS:
+                    hold_anchor = True
                     break
-        if straddled:
+                # Expired and never observed: contaminate only the interval its TTL overlapped,
+                # so an abandoned route never deadlocks later intervals.
+                if (t_prev - r_created).total_seconds() < UNOBSERVED_ROUTE_TTL_SECONDS:
+                    contaminated = True
+                continue
+            if r_created < t_curr < end_dt:
+                hold_anchor = True
+                break
+            if r_created < t_prev < end_dt:
+                contaminated = True
+        if hold_anchor:
+            continue
+
+        # Advance `last_snapshot` so `[t_prev, t_curr]` is evaluated at most once.
+        pool["last_snapshot"] = curr_snap
+        dirty = True
+        if contaminated:
             continue
 
         interval_obs = [
