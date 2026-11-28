@@ -35,7 +35,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=8", "pytest-asyncio>=0.24", "build>=1.2", "twine>=5"]
+test = ["pytest>=8", "pytest-asyncio>=0.24", "build>=1.2", "setuptools>=77", "twine>=5"]
 docs = ["sphinx>=8", "myst-parser>=4", "furo"]
 
 [project.scripts]
