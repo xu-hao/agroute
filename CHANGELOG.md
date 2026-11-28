@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Ship a short, trigger-only root `AGENTS.snippet.md` to paste into a consumer `AGENTS.md` or
+  `CLAUDE.md`, replacing the numbered list of `agr` and `howhard` commands. Commands and flags
+  stay in the `agroute` skill, so consumer instructions no longer need editing when they change.
+  The installation guide and quickstart include the file verbatim and the README links to it.
+  The source distribution and the strict Antigravity validation payload include it, and the
+  `test` extra now requires `setuptools>=77` so tests can build the sdist without network
+  access (#139).
+
 ## 0.7.0 — 2026-11-27
 
 - Align with `howhard` 6.0.0, which routing now requires (#135). Every candidate cell from

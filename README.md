@@ -79,30 +79,12 @@ before starting a worker:
 Invoke the skill explicitly with `$agroute` or `/skills` in Codex,
 `/agroute:agroute` in Claude Code, or `/agroute` in Antigravity.
 
-To require `agroute` and `howhard` before worker delegation across sessions, paste this
-into your repository's `AGENTS.md` or `CLAUDE.md` (see
-[requiring agroute before delegation](docs/skills.md#require-agroute-before-delegation)):
-
-```text
-Before delegating an authorized task to a worker, use the installed agroute and howhard
-skills:
-1. Inspect or refresh live agent quota state with `agr usage`.
-2. Emit eligible provider-qualified candidates for this host with
-   `agr candidates --host <codex|claude|agy> --output /tmp/TASK-candidates.json --json`.
-   If `price_request` is non-null, look up official first-party provider pricing (or classify
-   internal harness models as `"alias"` or `"unlisted"`), run
-   `agr prices resolve --file /tmp/TASK-prices.json --json`, and re-emit candidates once.
-3. Select a route with `howhard` (`context --host <codex|claude|agy> --auto-decide`, or
-   `context`/`retrieve`/`decide` evaluating `baseline_request` in an independent stateless
-   context only when non-null, or `pick --host <codex|claude|agy>`), then resolve the
-   execution plan with
-   `agr plan --host <codex|claude|agy> --decision /tmp/TASK-decision.json --json`.
-4. Honor `needs_review`. Execute native plans (`target_agent == host_agent`) with the
-   host's native subagent tool and cross-agent plans (`target_agent != host_agent`) with
-   the returned non-interactive CLI command.
-5. Record the actual outcome and measured usage in `howhard` following the plan's
-   `feedback` block (`matched_receipt` or `raw_native`), then update `howhard` memory.
-```
+To require `agroute` and `howhard` before worker delegation across sessions, paste the
+contents of [`AGENTS.snippet.md`](AGENTS.snippet.md) into your repository's `AGENTS.md` or
+`CLAUDE.md` (see
+[requiring agroute before delegation](docs/skills.md#require-agroute-before-delegation)).
+It only says when to use the skills, so your instructions do not need to change when
+commands or flags do.
 
 The [complete quickstart](docs/quickstart.md) walks through quota inspection, candidate
 emission, execution-plan resolution, feedback and memory learning. If all candidate

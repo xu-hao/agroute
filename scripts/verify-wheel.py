@@ -29,6 +29,8 @@ with tarfile.open(sdist) as archive:
     sdist_names = archive.getnames()
     assert f"agroute-{expected}/tests/conftest.py" in sdist_names
     assert f"agroute-{expected}/scripts/migrate-routes.py" in sdist_names
+    snippet = archive.extractfile(f"agroute-{expected}/AGENTS.snippet.md")
+    assert snippet.read() == Path("AGENTS.snippet.md").read_bytes()
     for name in ("SKILL.md", "references/hosts.md", "references/workflow.md", "references/usage.md"):
         assert f"agroute-{expected}/skills/agroute/{name}" in sdist_names
     for name in ("plugin.json", ".claude-plugin/plugin.json", ".antigravity-plugin/plugin.json"):
